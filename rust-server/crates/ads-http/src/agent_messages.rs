@@ -138,7 +138,7 @@ pub fn enqueue_review_verdict_message(
         .map_err(|error| error.to_string())?;
     for message_id in &result.superseded_ids {
         if let Ok(Some(superseded)) = store.get_by_message_id(message_id) {
-            publish_agent_message_event(db, hub, &superseded);
+            publish_superseded_transition(db, hub, &superseded);
         }
     }
     if !result.duplicate && !result.message.is_unstarted_superseded() {
@@ -147,11 +147,51 @@ pub fn enqueue_review_verdict_message(
     Ok(result)
 }
 
+fn publish_superseded_transition(
+    db: &StateDb,
+    hub: &WebSocketHub,
+    message: &AgentMessageRecord,
+) {
+    if message.is_unstarted_superseded() {
+        broadcast_agent_message_snapshot(db, hub, message);
+    } else {
+        publish_agent_message_event(db, hub, message);
+    }
+}
+
+fn broadcast_agent_message_snapshot(
+    db: &StateDb,
+    hub: &WebSocketHub,
+    message: &AgentMessageRecord,
+) {
+    let entries = agent_message_snapshots(
+        db,
+        &message.auth_user_id,
+        &message.project_id,
+        message.lane_generation,
+    );
+    let payload = json!({
+        "type": "agent_message_snapshot",
+        "entries": entries,
+    });
+    hub.broadcast_lane_frame(
+        &message.auth_user_id,
+        &message.project_id,
+        &message.chat_session_id,
+        &message.logical_history_key,
+        message.lane_generation,
+        &payload,
+    );
+}
+
 pub(crate) fn publish_agent_message_event(
     db: &StateDb,
     hub: &WebSocketHub,
     message: &AgentMessageRecord,
 ) {
+    if message.is_unstarted_superseded() {
+        return;
+    }
     let payload = agent_message_event_payload(message);
     let mut connection = match db.connect() {
         Ok(connection) => connection,
@@ -252,7 +292,7 @@ where
     if let Ok(store) = AgentMessageStore::new(&connection) {
         if let Ok(superseded) = store.supersede_messages_for_superseded_review_jobs(now) {
             for record in superseded {
-                publish_agent_message_event(db, hub, &record);
+                publish_superseded_transition(db, hub, &record);
             }
         }
     }
@@ -486,7 +526,7 @@ impl AgentMessageService {
                     .with_store(|store| store.supersede_messages_for_superseded_review_jobs(now))
                 {
                     for record in superseded {
-                        publish_agent_message_event(&service.db, &service.hub, &record);
+                        publish_superseded_transition(&service.db, &service.hub, &record);
                     }
                 }
                 let messages = service
@@ -657,7 +697,7 @@ impl AgentMessageService {
                     .unwrap_or(false)
                     && let Ok(Some(updated)) = store.get_by_message_id(&message.message_id)
                 {
-                    publish_agent_message_event(&self.db, &self.hub, &updated);
+                    publish_superseded_transition(&self.db, &self.hub, &updated);
                 }
             }
             return;
@@ -1312,9 +1352,9 @@ mod tests {
             .execute(
                 "INSERT INTO action_jobs
                    (id, project_id, job_kind, issue_title, status, created_at, updated_at,
-                    requires_agent_handoff)
+                    requires_agent_handoff, agent_handoff_ready)
                  VALUES ('job-stale-generation', 'project-1', 'pull_request_review',
-                         'Review handoff', 'completed', 1, 1, 1)",
+                         'Review handoff', 'completed', 1, 1, 1, 1)",
                 [],
             )
             .expect("review job");
@@ -1401,9 +1441,9 @@ mod tests {
             .execute(
                 "INSERT INTO action_jobs
                    (id, project_id, job_kind, issue_title, status, created_at, updated_at,
-                    requires_agent_handoff)
+                    requires_agent_handoff, agent_handoff_ready)
                  VALUES ('job-1', 'project-1', 'pull_request_review',
-                         'Review handoff', 'completed', 1, 1, 1)",
+                         'Review handoff', 'completed', 1, 1, 1, 1)",
                 [],
             )
             .expect("review job");
@@ -1622,9 +1662,9 @@ mod tests {
             .execute(
                 "INSERT INTO action_jobs
                    (id, project_id, job_kind, issue_title, status, created_at, updated_at,
-                    requires_agent_handoff)
+                    requires_agent_handoff, agent_handoff_ready)
                  VALUES ('job-race', 'project-1', 'pull_request_review',
-                         'Review handoff', 'completed', 1, 1, 1)",
+                         'Review handoff', 'completed', 1, 1, 1, 1)",
                 [],
             )
             .expect("review job");
@@ -1711,9 +1751,9 @@ mod tests {
             .execute(
                 "INSERT INTO action_jobs
                    (id, project_id, job_kind, issue_title, status, created_at, updated_at,
-                    requires_agent_handoff)
+                    requires_agent_handoff, agent_handoff_ready)
                  VALUES ('job-abort', 'project-1', 'pull_request_review',
-                         'Review handoff', 'completed', 1, 1, 1)",
+                         'Review handoff', 'completed', 1, 1, 1, 1)",
                 [],
             )
             .expect("review job");
@@ -1831,9 +1871,9 @@ mod tests {
             .execute(
                 "INSERT INTO action_jobs
                    (id, project_id, job_kind, issue_title, status, created_at, updated_at,
-                    requires_agent_handoff)
+                    requires_agent_handoff, agent_handoff_ready)
                  VALUES ('job-reset-lane', 'project-1', 'pull_request_review',
-                         'Review handoff', 'completed', 1, 1, 1)",
+                         'Review handoff', 'completed', 1, 1, 1, 1)",
                 [],
             )
             .expect("review job");
@@ -1918,9 +1958,9 @@ mod tests {
                 .execute(
                     "INSERT INTO action_jobs
                        (id, project_id, job_kind, issue_title, status, created_at, updated_at,
-                        requires_agent_handoff)
+                        requires_agent_handoff, agent_handoff_ready)
                      VALUES (?1, 'project-1', 'pull_request_review',
-                             'Review handoff', 'completed', ?2, ?2, 1)",
+                             'Review handoff', 'completed', ?2, ?2, 1, 1)",
                     params![job_id, created_at],
                 )
                 .expect("review job");
@@ -2016,5 +2056,231 @@ mod tests {
         assert_eq!(snapshots[0]["attempts"], 1);
         assert_eq!(snapshots[1]["status"], "pending");
         assert_eq!(snapshots[1]["attempts"], 0);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn superseding_unstarted_pending_handoff_never_writes_superseded_sync_events() {
+        let directory = tempdir().expect("temp dir");
+        let db = StateDb::open(directory.path().join("state.db")).expect("state db");
+        let hub = WebSocketHub::new(crate::WebSocketConfig::default());
+        let connection = db.connect().expect("connection");
+        for (job_id, created_at) in [("job-a", 10), ("job-b", 20), ("job-c", 30)] {
+            connection
+                .execute(
+                    "INSERT INTO action_jobs
+                       (id, project_id, job_kind, issue_title, status, created_at, updated_at,
+                        requires_agent_handoff, agent_handoff_ready)
+                     VALUES (?1, 'project-1', 'pull_request_review',
+                             'Review handoff', 'completed', ?2, ?2, 1, 1)",
+                    params![job_id, created_at],
+                )
+                .expect("review job");
+        }
+        drop(connection);
+
+        enqueue_review_verdict_message(
+            &db,
+            &hub,
+            ReviewVerdictMessage {
+                auth_user_id: "user-1",
+                project_id: "project-1",
+                workspace_root: "/repo",
+                issue_id: 676,
+                issue_title: "Review handoff",
+                issue_url: Some("https://github.com/Andy963/ads/issues/676"),
+                pr_number: Some(688),
+                branch: Some("codex/issue-676"),
+                base_sha: Some("base"),
+                head_sha: Some("head-a"),
+                status: "INCOMPLETE",
+                job_id: "job-a",
+                source_created_at: 10,
+                lane_generation: 1,
+            },
+        )
+        .expect("enqueue job-a");
+
+        // Supersede unstarted job-a with job-b via newer verdict enqueue.
+        enqueue_review_verdict_message(
+            &db,
+            &hub,
+            ReviewVerdictMessage {
+                auth_user_id: "user-1",
+                project_id: "project-1",
+                workspace_root: "/repo",
+                issue_id: 676,
+                issue_title: "Review handoff",
+                issue_url: Some("https://github.com/Andy963/ads/issues/676"),
+                pr_number: Some(688),
+                branch: Some("codex/issue-676"),
+                base_sha: Some("base"),
+                head_sha: Some("head-b"),
+                status: "PASS",
+                job_id: "job-b",
+                source_created_at: 20,
+                lane_generation: 1,
+            },
+        )
+        .expect("enqueue job-b");
+
+        // Also supersede unstarted job-b via review job supersession + reconciliation.
+        {
+            let connection = db.connect().expect("connection");
+            connection
+                .execute(
+                    "UPDATE action_jobs SET superseded_at = 25 WHERE id = 'job-b'",
+                    [],
+                )
+                .expect("supersede job-b");
+        }
+        reconcile_completed_review_handoffs_with(&db, &hub, |_, _, _| async { true })
+            .await
+            .expect("reconcile");
+
+        let connection = db.connect().expect("connection");
+        let replay = ads_state::SyncEventStore::default()
+            .read_after(
+                &connection,
+                WEB_ACOPILOT_NAMESPACE,
+                "user-1::project-1::acopilot",
+                None,
+                None,
+            )
+            .expect("replay")
+            .events;
+        assert!(
+            replay.iter().all(|event| {
+                !(event.event_type == AGENT_MESSAGE_EVENT
+                    && event.payload["status"] == "superseded"
+                    && event.payload["attempts"] == 0)
+            }),
+            "unstarted superseded handoffs must never be persisted to sync_events: {replay:?}"
+        );
+        // Enqueue and claim job-c, then supersede it after execution started:
+        // started superseded handoffs must still update sync_events and stay visible.
+        enqueue_review_verdict_message(
+            &db,
+            &hub,
+            ReviewVerdictMessage {
+                auth_user_id: "user-1",
+                project_id: "project-1",
+                workspace_root: "/repo",
+                issue_id: 676,
+                issue_title: "Review handoff",
+                issue_url: Some("https://github.com/Andy963/ads/issues/676"),
+                pr_number: Some(688),
+                branch: Some("codex/issue-676"),
+                base_sha: Some("base"),
+                head_sha: Some("head-c"),
+                status: "PASS",
+                job_id: "job-c",
+                source_created_at: 30,
+                lane_generation: 1,
+            },
+        )
+        .expect("enqueue job-c");
+        {
+            let store = AgentMessageStore::new(&connection).expect("store");
+            store
+                .claim("review-verdict:job-c", "worker-1", 10_000, 100)
+                .expect("claim job-c")
+                .expect("claimed job-c");
+            connection
+                .execute(
+                    "UPDATE action_jobs SET superseded_at = 110 WHERE id = 'job-c'",
+                    [],
+                )
+                .expect("supersede job-c");
+        }
+        reconcile_completed_review_handoffs_with(&db, &hub, |_, _, _| async { true })
+            .await
+            .expect("reconcile job-c");
+
+        let replay_after_c = ads_state::SyncEventStore::default()
+            .read_after(
+                &connection,
+                WEB_ACOPILOT_NAMESPACE,
+                "user-1::project-1::acopilot",
+                None,
+                None,
+            )
+            .expect("replay after c")
+            .events;
+        assert!(
+            replay_after_c.iter().all(|event| {
+                !(event.event_type == AGENT_MESSAGE_EVENT
+                    && event.payload["status"] == "superseded"
+                    && event.payload["attempts"] == 0)
+            }),
+            "unstarted superseded handoffs must never be persisted to sync_events"
+        );
+        assert!(
+            replay_after_c.iter().any(|event| {
+                event.event_type == AGENT_MESSAGE_EVENT
+                    && event.payload["messageId"] == "review-verdict:job-c"
+                    && event.payload["status"] == "superseded"
+                    && event.payload["attempts"] == 1
+            }),
+            "started superseded handoffs must update timeline cards via sync_events"
+        );
+        let snapshots = agent_message_snapshots(&db, "user-1", "project-1", 1);
+        assert_eq!(snapshots.len(), 1);
+        assert_eq!(snapshots[0]["messageId"], "review-verdict:job-c");
+        assert_eq!(snapshots[0]["status"], "superseded");
+        assert_eq!(snapshots[0]["attempts"], 1);
+    }
+
+    #[test]
+    fn enqueue_review_verdict_message_rejects_non_terminal_and_unready_jobs() {
+        let directory = tempdir().expect("temp dir");
+        let db = StateDb::open(directory.path().join("state.db")).expect("state db");
+        let hub = WebSocketHub::new(crate::WebSocketConfig::default());
+        let connection = db.connect().expect("connection");
+        connection
+            .execute(
+                "INSERT INTO action_jobs
+                   (id, project_id, job_kind, issue_title, status, created_at, updated_at,
+                    requires_agent_handoff, agent_handoff_ready)
+                 VALUES ('job-running', 'project-1', 'pull_request_review',
+                         'Running', 'running', 1, 1, 1, 1)",
+                [],
+            )
+            .expect("running job");
+        connection
+            .execute(
+                "INSERT INTO action_jobs
+                   (id, project_id, job_kind, issue_title, status, created_at, updated_at,
+                    requires_agent_handoff, agent_handoff_ready)
+                 VALUES ('job-unready', 'project-1', 'pull_request_review',
+                         'Unready', 'completed', 2, 2, 1, 0)",
+                [],
+            )
+            .expect("unready job");
+        drop(connection);
+
+        for job_id in ["job-running", "job-unready"] {
+            let error = enqueue_review_verdict_message(
+                &db,
+                &hub,
+                ReviewVerdictMessage {
+                    auth_user_id: "user-1",
+                    project_id: "project-1",
+                    workspace_root: "/repo",
+                    issue_id: 676,
+                    issue_title: "Review handoff",
+                    issue_url: Some("https://github.com/Andy963/ads/issues/676"),
+                    pr_number: Some(688),
+                    branch: Some("codex/issue-676"),
+                    base_sha: Some("base"),
+                    head_sha: Some("head"),
+                    status: "PASS",
+                    job_id,
+                    source_created_at: 1,
+                    lane_generation: 1,
+                },
+            )
+            .expect_err("ineligible job must be rejected");
+            assert!(!error.is_empty());
+        }
     }
 }

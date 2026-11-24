@@ -520,7 +520,7 @@ impl<'a> AgentMessageStore<'a> {
         now: i64,
     ) -> StateResult<EnqueueAgentMessageResult> {
         let transaction = self.connection.unchecked_transaction()?;
-        let result = self.enqueue_on(&transaction, input, now)?;
+        let result = self.enqueue_on(&transaction, input, now, true)?;
         transaction.commit()?;
         Ok(result)
     }
@@ -530,7 +530,7 @@ impl<'a> AgentMessageStore<'a> {
         input: NewAgentMessage,
         now: i64,
     ) -> StateResult<EnqueueAgentMessageResult> {
-        self.enqueue_on(self.connection, input, now)
+        self.enqueue_on(self.connection, input, now, false)
     }
 
     fn enqueue_on(
@@ -538,6 +538,7 @@ impl<'a> AgentMessageStore<'a> {
         connection: &Connection,
         input: NewAgentMessage,
         now: i64,
+        enforce_review_eligibility: bool,
     ) -> StateResult<EnqueueAgentMessageResult> {
         let message_id = input.message_id.trim();
         if message_id.is_empty() {
@@ -565,18 +566,40 @@ impl<'a> AgentMessageStore<'a> {
             });
         }
         if input.kind == "review_verdict" {
-            let still_current: bool = connection.query_row(
-                "SELECT EXISTS (
-                   SELECT 1 FROM action_jobs
-                   WHERE id = ?1 AND superseded_at IS NULL
-                 )",
-                params![input.correlation_id.trim()],
-                |row| row.get(0),
-            )?;
-            if !still_current {
+            let job_state: Option<(String, String, Option<i64>, i64)> = connection
+                .query_row(
+                    "SELECT job_kind, status, superseded_at, agent_handoff_ready
+                     FROM action_jobs
+                     WHERE id = ?1",
+                    params![input.correlation_id.trim()],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                )
+                .optional()?;
+            let Some((job_kind, job_status, superseded_at, handoff_ready)) = job_state else {
+                return Err(StateError::InvalidInput(
+                    "Review job was not found before its handoff was enqueued".to_string(),
+                ));
+            };
+            if superseded_at.is_some() {
                 return Err(StateError::InvalidInput(
                     "Review job was superseded before its handoff was enqueued".to_string(),
                 ));
+            }
+            if enforce_review_eligibility {
+                if job_kind != "pull_request_review"
+                    || !matches!(job_status.as_str(), "completed" | "failed")
+                {
+                    return Err(StateError::InvalidInput(
+                        "Review job must reach a terminal status before its handoff is enqueued"
+                            .to_string(),
+                    ));
+                }
+                if handoff_ready != 1 {
+                    return Err(StateError::InvalidInput(
+                        "Review verdict comment must be published before its handoff is enqueued"
+                            .to_string(),
+                    ));
+                }
             }
         }
 
