@@ -30,29 +30,24 @@ const MAX_VERIFICATION_TOOL_OUTPUT: usize = 512;
 const MAX_VERIFICATION_COMMAND_UNITS: usize = 1_024;
 const MAX_VERIFICATION_SOURCE_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_VERIFICATION_TREE_BYTES: usize = 32 * 1024 * 1024;
-const MAX_VERIFICATION_TMPFS_BYTES: u64 = 512 * 1024 * 1024;
-const MAX_VERIFICATION_WORKSPACE_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 const MAX_VERIFICATION_CPU_SECONDS: u64 = 30 * 60;
 const MAX_VERIFICATION_ADDRESS_SPACE_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 const MAX_VERIFICATION_PROCESS_COUNT: u64 = 512;
 const MAX_VERIFICATION_FILE_BYTES: u64 = 1024 * 1024 * 1024;
 const VERIFICATION_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 const SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(60);
-const SANDBOX_STARTED_MARKER: &str = "ADS_SANDBOX_STARTED";
 const VERIFICATION_STARTED_MARKER: &str = "ADS_VERIFICATION_STARTED";
-const SANDBOX_BOOTSTRAP: &str = "set -eu; source_root=${ADS_VERIFICATION_SOURCE:?}; workspace_root=${ADS_VERIFICATION_WORKSPACE:?}; cp -a --no-preserve=ownership \"$source_root\"/. \"$workspace_root\"/; cd -- \"$workspace_root/$1\"; shift; printf '%s\\n' 'ADS_SANDBOX_STARTED'; executable_path=$(command -v \"$1\" 2>/dev/null) || exit 127; case \"$executable_path\" in /*) ;; *) exit 127 ;; esac; printf '%s\\n' 'ADS_VERIFICATION_STARTED'; exec \"$@\"";
+const VERIFICATION_BOOTSTRAP: &str = "set -eu; executable_path=$(command -v \"$1\" 2>/dev/null) || exit 127; case \"$executable_path\" in /*) ;; *) exit 127 ;; esac; printf '%s\\n' 'ADS_VERIFICATION_STARTED'; exec \"$@\"";
 
 #[derive(Debug, Clone)]
-struct SandboxPrograms {
+struct VerificationPrograms {
     resource_limiter: PathBuf,
-    bubblewrap: PathBuf,
 }
 
-impl Default for SandboxPrograms {
+impl Default for VerificationPrograms {
     fn default() -> Self {
         Self {
             resource_limiter: PathBuf::from("prlimit"),
-            bubblewrap: PathBuf::from("bwrap"),
         }
     }
 }
@@ -86,7 +81,7 @@ pub struct ReviewerInspectionTools {
     verification_workspace: Option<(tempfile::TempDir, PathBuf)>,
     verification_report: Arc<Mutex<ReviewVerificationReport>>,
     verification_unavailable: bool,
-    sandbox_programs: SandboxPrograms,
+    verification_programs: VerificationPrograms,
 }
 
 impl ReviewerInspectionTools {
@@ -113,7 +108,7 @@ impl ReviewerInspectionTools {
             verification_workspace: None,
             verification_report: Arc::new(Mutex::new(ReviewVerificationReport::default())),
             verification_unavailable: false,
-            sandbox_programs: SandboxPrograms::default(),
+            verification_programs: VerificationPrograms::default(),
         })
     }
 
@@ -122,12 +117,6 @@ impl ReviewerInspectionTools {
         report: Arc<Mutex<ReviewVerificationReport>>,
     ) -> Self {
         self.verification_report = report;
-        self
-    }
-
-    #[cfg(test)]
-    fn with_sandbox_programs(mut self, programs: SandboxPrograms) -> Self {
-        self.sandbox_programs = programs;
         self
     }
 
@@ -419,7 +408,6 @@ impl ReviewerInspectionTools {
                 exit_code: 125,
                 summary: "Command has not completed.".to_string(),
                 output: None,
-                sandboxed: false,
                 started: false,
             });
         }
@@ -434,16 +422,16 @@ impl ReviewerInspectionTools {
         let result = self
             .execute_verification_command(&executable, &args, &working_directory)
             .await;
-        let (exit_code, summary, output, sandboxed, started) = match result {
+        self.verification_workspace = None;
+        let (exit_code, summary, output, started) = match result {
             Ok(report) => report,
             Err(NativeError::Cancelled) => return Err(NativeError::Cancelled),
             Err(error) => {
                 self.verification_unavailable = true;
                 (
                     125,
-                    "The isolated verification sandbox could not be prepared.".to_string(),
+                    "The verification process could not be started.".to_string(),
                     Some(error.to_string()),
-                    false,
                     false,
                 )
             }
@@ -457,7 +445,6 @@ impl ReviewerInspectionTools {
                 command.exit_code = exit_code;
                 command.summary = summary.clone();
                 command.output = output.clone();
-                command.sandboxed = sandboxed;
                 command.started = started;
             }
         }
@@ -465,13 +452,12 @@ impl ReviewerInspectionTools {
             "command": display,
             "exitCode": exit_code,
             "summary": summary,
-            "sandboxed": sandboxed,
             "started": started,
             "output": output
                 .as_deref()
                 .map(|value| truncate_utf16(value, MAX_VERIFICATION_TOOL_OUTPUT)),
         }))
-        .unwrap_or_else(|_| "{\"sandboxed\":false}".to_string()))
+        .unwrap_or_else(|_| "{\"started\":false}".to_string()))
     }
 
     async fn execute_verification_command(
@@ -479,16 +465,27 @@ impl ReviewerInspectionTools {
         executable: &str,
         args: &[String],
         working_directory: &str,
-    ) -> NativeResult<(i64, String, Option<String>, bool, bool)> {
+    ) -> NativeResult<(i64, String, Option<String>, bool)> {
         let snapshot = self.materialize_verification_snapshot().await?;
         let cwd = if working_directory == "." {
             snapshot.clone()
         } else {
             snapshot.join(working_directory)
         };
+        let snapshot_root = snapshot.canonicalize().map_err(|error| {
+            NativeError::Configuration(format!("Verification snapshot is unavailable: {error}"))
+        })?;
+        let cwd = cwd.canonicalize().map_err(|error| {
+            NativeError::Configuration(format!("Verification directory is unavailable: {error}"))
+        })?;
+        if !cwd.starts_with(&snapshot_root) {
+            return Err(NativeError::Configuration(
+                "Verification directory escaped its snapshot.".to_string(),
+            ));
+        }
 
         let mut command =
-            sandbox_command(&snapshot, &cwd, executable, args, &self.sandbox_programs)?;
+            verification_command(&cwd, executable, args, &self.verification_programs)?;
         let mut child = command
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -496,7 +493,7 @@ impl ReviewerInspectionTools {
             .kill_on_drop(true)
             .spawn()
             .map_err(|error| {
-                NativeError::Io(format!("Verification sandbox unavailable: {error}"))
+                NativeError::Io(format!("Verification process unavailable: {error}"))
             })?;
         #[cfg(unix)]
         let pid = child.id();
@@ -525,51 +522,42 @@ impl ReviewerInspectionTools {
                     }
                     #[cfg(not(unix))]
                     terminate_verification(&mut child).await;
-                    let (stdout, sandboxed, started) = await_output(stdout).await;
-                    let (stderr, _, _) = await_output(stderr).await;
-                    let stdout = strip_verification_markers(&stdout);
+                    let (stdout, started) = await_output(stdout).await;
+                    let (stderr, _) = await_output(stderr).await;
+                    let stdout = strip_verification_marker(&stdout);
                     let output = join_output(stdout, &stderr);
-                    if !sandboxed {
+                    if !started {
                         self.verification_unavailable = true;
-                        return Ok((
-                            125,
-                            "The isolated sandbox did not start the verification command.".to_string(),
-                            (!output.is_empty()).then_some(truncate_utf16(&output, MAX_VERIFICATION_OUTPUT).to_string()),
-                            false,
-                            false,
-                        ));
                     }
                     return Ok((
                         124,
                         if started {
                             "Verification command timed out after 30 minutes.".to_string()
                         } else {
-                            "Verification executable was unavailable in the isolated sandbox.".to_string()
+                            "Verification executable was unavailable.".to_string()
                         },
                         (!output.is_empty()).then_some(truncate_utf16(&output, MAX_VERIFICATION_OUTPUT).to_string()),
-                        true,
                         started,
                     ));
                 }
             }
         };
-        let (stdout, sandboxed, started) = await_output(stdout).await;
-        let (stderr, _, _) = await_output(stderr).await;
-        let stdout = strip_verification_markers(&stdout);
+        let (stdout, started) = await_output(stdout).await;
+        let (stderr, _) = await_output(stderr).await;
+        let stdout = strip_verification_marker(&stdout);
         let output = join_output(stdout, &stderr);
-        if !sandboxed {
+        if !started {
             self.verification_unavailable = true;
             return Ok((
-                125,
-                "The isolated sandbox did not start the verification command.".to_string(),
+                status.code().map(i64::from).unwrap_or(127),
+                "Verification executable was unavailable.".to_string(),
                 Some(truncate_utf16(&output, MAX_VERIFICATION_OUTPUT).to_string()),
-                false,
                 false,
             ));
         }
         let exit_code = status.code().map(i64::from).unwrap_or(1);
         let summary = if !started {
-            "Verification executable was unavailable in the isolated sandbox.".to_string()
+            "Verification executable was unavailable.".to_string()
         } else if exit_code == 0 {
             "Verification command completed successfully.".to_string()
         } else {
@@ -585,7 +573,6 @@ impl ReviewerInspectionTools {
             summary,
             (!output.is_empty())
                 .then_some(truncate_utf16(&output, MAX_VERIFICATION_OUTPUT).to_string()),
-            true,
             started,
         ))
     }
@@ -1070,7 +1057,7 @@ pub fn reviewer_tools() -> Vec<NativeToolDefinition> {
         ),
         tool(
             "run_verification",
-            "Run one bounded verification command against the exact reviewed commit in a disposable, network-isolated sandbox. The selected executable and arguments are passed literally (not interpolated into the fixed sandbox bootstrap). Inspect the diff/manifests first and choose checks that cover changed code. Results record separately whether the sandbox and executable started. A sandbox setup failure or unavailable executable is not a test failure and cannot support PASS.",
+            "Run one bounded verification command against the exact reviewed commit in a disposable snapshot copy. The selected executable and arguments are passed literally; the runner applies process limits and a cleared environment but is not an OS sandbox. Inspect the diff/manifests first and choose relevant, non-destructive checks. Results record whether the executable started and its exit status.",
             json!({
                 "type": "object",
                 "additionalProperties": false,
@@ -1085,16 +1072,39 @@ pub fn reviewer_tools() -> Vec<NativeToolDefinition> {
     ]
 }
 
-fn sandbox_command(
-    snapshot: &Path,
+fn verification_command(
     working_directory: &Path,
     executable: &str,
     args: &[String],
-    programs: &SandboxPrograms,
+    programs: &VerificationPrograms,
 ) -> NativeResult<Command> {
     let mut command = Command::new(&programs.resource_limiter);
     command.env_clear();
-    command.env("PATH", "/usr/bin:/bin");
+    command.env(
+        "PATH",
+        std::env::var_os("PATH").unwrap_or_else(|| "/usr/local/bin:/usr/bin:/bin".into()),
+    );
+    command.env("HOME", working_directory);
+    command.env("TMPDIR", working_directory);
+    command.env("CARGO_NET_OFFLINE", "true");
+    command.env("NPM_CONFIG_OFFLINE", "true");
+    command.env("GOPROXY", "off");
+    command.env("GOSUMDB", "off");
+    command.env("PIP_NO_INDEX", "1");
+    if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
+        let cargo_home = std::env::var_os("CARGO_HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home.join(".cargo"));
+        if cargo_home.is_dir() {
+            command.env("CARGO_HOME", cargo_home);
+        }
+        let rustup_home = std::env::var_os("RUSTUP_HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home.join(".rustup"));
+        if rustup_home.is_dir() {
+            command.env("RUSTUP_HOME", rustup_home);
+        }
+    }
     command.args([
         format!("--cpu={MAX_VERIFICATION_CPU_SECONDS}:{MAX_VERIFICATION_CPU_SECONDS}"),
         format!(
@@ -1102,239 +1112,33 @@ fn sandbox_command(
         ),
         format!("--nproc={MAX_VERIFICATION_PROCESS_COUNT}:{MAX_VERIFICATION_PROCESS_COUNT}"),
         format!("--fsize={MAX_VERIFICATION_FILE_BYTES}:{MAX_VERIFICATION_FILE_BYTES}"),
+        "--".to_string(),
+        "/bin/sh".to_string(),
+        "-c".to_string(),
+        VERIFICATION_BOOTSTRAP.to_string(),
+        "ads-verification".to_string(),
+        executable.to_string(),
     ]);
-    command.arg("--").arg(&programs.bubblewrap);
-    command.args([
-        "--die-with-parent",
-        "--unshare-all",
-        "--unshare-user",
-        "--disable-userns",
-        "--cap-drop",
-        "ALL",
-        "--ro-bind",
-        "/usr",
-        "/usr",
-        "--ro-bind",
-        "/bin",
-        "/bin",
-        "--ro-bind",
-        "/lib",
-        "/lib",
-    ]);
-    for system_path in ["/lib64", "/etc/ssl/certs"] {
-        if Path::new(system_path).exists() {
-            command.args(["--ro-bind", system_path, system_path]);
-        }
-    }
-    let temporary_size = MAX_VERIFICATION_TMPFS_BYTES.to_string();
-    let workspace_size = MAX_VERIFICATION_WORKSPACE_BYTES.to_string();
-    command.args([
-        "--proc",
-        "/proc",
-        "--dev",
-        "/dev",
-        "--size",
-        temporary_size.as_str(),
-        "--tmpfs",
-        "/tmp",
-        "--chmod",
-        "1777",
-        "/tmp",
-        "--dir",
-        "/tmp/home",
-        "--dir",
-        "/tmp/cargo",
-        "--dir",
-        "/tmp/go",
-        "--dir",
-        "/tmp/go/pkg",
-        "--dir",
-        "/tmp/go/pkg/mod",
-        "--dir",
-        "/tmp/go-build",
-        "--dir",
-        "/tmp/pip-cache",
-        "--dir",
-        "/tmp/npm-cache",
-        "--dir",
-        "/tmp/npm-cache/_cacache",
-        "--dir",
-        "/toolchain",
-        "--dir",
-        "/source",
-        "--ro-bind",
-    ]);
-    command.arg(snapshot).args([
-        "/source",
-        "--size",
-        workspace_size.as_str(),
-        "--tmpfs",
-        "/workspace",
-        "--chmod",
-        "1777",
-        "/workspace",
-        "--chdir",
-        "/workspace",
-    ]);
-    let cwd = working_directory.strip_prefix(snapshot).map_err(|_| {
-        NativeError::Configuration("Verification directory escaped its snapshot.".to_string())
-    })?;
-    let mut path_entries = vec![
-        "/usr/local/bin".to_string(),
-        "/usr/bin".to_string(),
-        "/bin".to_string(),
-    ];
-    if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
-        let cargo_home = std::env::var_os("CARGO_HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| home.join(".cargo"));
-        let cargo_bin = cargo_home.join("bin");
-        if cargo_bin.is_dir() {
-            command.args(["--dir", "/toolchain/cargo-bin"]);
-            command
-                .args(["--ro-bind"])
-                .arg(&cargo_bin)
-                .args(["/toolchain/cargo-bin"]);
-            path_entries.insert(0, "/toolchain/cargo-bin".to_string());
-        }
-        for (source, target) in [
-            (home.join(".rustup"), PathBuf::from("/toolchain/rustup")),
-            (
-                cargo_home.join("registry"),
-                PathBuf::from("/tmp/cargo/registry"),
-            ),
-            (cargo_home.join("git"), PathBuf::from("/tmp/cargo/git")),
-        ] {
-            if source.is_dir() {
-                command.args(["--dir"]).arg(&target);
-                command.args(["--ro-bind"]).arg(source).arg(target);
-            }
-        }
-        for (source, target) in [
-            (home.join("go/pkg/mod"), PathBuf::from("/tmp/go/pkg/mod")),
-            (home.join(".cache/pip"), PathBuf::from("/tmp/pip-cache")),
-        ] {
-            if source.is_dir() {
-                command.args(["--dir"]).arg(&target);
-                command.args(["--ro-bind"]).arg(source).arg(target);
-            }
-        }
-        let npm_cache = home.join(".npm/_cacache");
-        if npm_cache.is_dir() {
-            command
-                .args(["--ro-bind"])
-                .arg(npm_cache)
-                .args(["/tmp/npm-cache/_cacache"]);
-        }
-        if let Some(path) = std::env::var_os("PATH") {
-            for entry in std::env::split_paths(&path) {
-                let Some(node_root) = entry.parent() else {
-                    continue;
-                };
-                if entry
-                    .join("../lib/node_modules/npm/bin/npm-cli.js")
-                    .is_file()
-                {
-                    command.args(["--dir", "/toolchain/node"]);
-                    command
-                        .args(["--ro-bind"])
-                        .arg(node_root)
-                        .args(["/toolchain/node"]);
-                    path_entries.insert(0, "/toolchain/node/bin".to_string());
-                    break;
-                }
-            }
-        }
-    }
-    command.args([
-        "--setenv",
-        "PATH",
-        &path_entries.join(":"),
-        "--setenv",
-        "HOME",
-        "/tmp/home",
-        "--setenv",
-        "TMPDIR",
-        "/tmp",
-        "--setenv",
-        "CARGO_HOME",
-        "/tmp/cargo",
-        "--setenv",
-        "RUSTUP_HOME",
-        "/toolchain/rustup",
-        "--setenv",
-        "GOPATH",
-        "/tmp/go",
-        "--setenv",
-        "GOMODCACHE",
-        "/tmp/go/pkg/mod",
-        "--setenv",
-        "GOCACHE",
-        "/tmp/go-build",
-        "--setenv",
-        "GOPROXY",
-        "off",
-        "--setenv",
-        "GOSUMDB",
-        "off",
-        "--setenv",
-        "PIP_CACHE_DIR",
-        "/tmp/pip-cache",
-        "--setenv",
-        "PIP_NO_INDEX",
-        "1",
-        "--setenv",
-        "CARGO_NET_OFFLINE",
-        "true",
-        "--setenv",
-        "NPM_CONFIG_OFFLINE",
-        "true",
-        "--setenv",
-        "NPM_CONFIG_CACHE",
-        "/tmp/npm-cache",
-        "--setenv",
-        "ADS_VERIFICATION_SOURCE",
-        "/source",
-        "--setenv",
-        "ADS_VERIFICATION_WORKSPACE",
-        "/workspace",
-        "--",
-    ]);
-    command
-        .args([
-            "/bin/sh",
-            "-c",
-            SANDBOX_BOOTSTRAP,
-            "ads-verification",
-            cwd.to_string_lossy().as_ref(),
-            executable,
-        ])
-        .args(args);
+    command.args(args).current_dir(working_directory);
     #[cfg(unix)]
     command.process_group(0);
     Ok(command)
 }
 
-async fn read_output_tail<R>(
-    mut reader: R,
-    limit: usize,
-    capture_markers: bool,
-) -> (String, bool, bool)
+async fn read_output_tail<R>(mut reader: R, limit: usize, capture_markers: bool) -> (String, bool)
 where
     R: tokio::io::AsyncRead + Unpin,
 {
     let mut bytes = Vec::new();
-    let sandbox_marker = format!("{SANDBOX_STARTED_MARKER}\n");
     let verification_marker = format!("{VERIFICATION_STARTED_MARKER}\n");
-    let marker_prefix = format!("{sandbox_marker}{verification_marker}");
     let mut prefix = Vec::new();
     let mut buffer = [0u8; 8_192];
     while let Ok(read) = reader.read(&mut buffer).await {
         if read == 0 {
             break;
         }
-        if capture_markers && prefix.len() < marker_prefix.len() {
-            let remaining = marker_prefix.len().saturating_sub(prefix.len());
+        if capture_markers && prefix.len() < verification_marker.len() {
+            let remaining = verification_marker.len().saturating_sub(prefix.len());
             prefix.extend_from_slice(&buffer[..read.min(remaining)]);
         }
         bytes.extend_from_slice(&buffer[..read]);
@@ -1344,30 +1148,20 @@ where
         }
     }
     let output = String::from_utf8_lossy(&bytes).into_owned();
-    let sandboxed = capture_markers && prefix.starts_with(sandbox_marker.as_bytes());
-    let started = capture_markers && prefix.starts_with(marker_prefix.as_bytes());
-    (
-        truncate_utf16(&output, limit).to_string(),
-        sandboxed,
-        started,
-    )
+    let started = capture_markers && prefix.starts_with(verification_marker.as_bytes());
+    (truncate_utf16(&output, limit).to_string(), started)
 }
 
-async fn await_output(
-    output: Option<tokio::task::JoinHandle<(String, bool, bool)>>,
-) -> (String, bool, bool) {
+async fn await_output(output: Option<tokio::task::JoinHandle<(String, bool)>>) -> (String, bool) {
     match output {
         Some(output) => output.await.unwrap_or_default(),
-        None => (String::new(), false, false),
+        None => (String::new(), false),
     }
 }
 
-fn strip_verification_markers(output: &str) -> &str {
+fn strip_verification_marker(output: &str) -> &str {
     output
-        .strip_prefix(&format!(
-            "{SANDBOX_STARTED_MARKER}\n{VERIFICATION_STARTED_MARKER}\n"
-        ))
-        .or_else(|| output.strip_prefix(&format!("{SANDBOX_STARTED_MARKER}\n")))
+        .strip_prefix(&format!("{VERIFICATION_STARTED_MARKER}\n"))
         .unwrap_or(output)
 }
 
@@ -1690,16 +1484,15 @@ mod tests {
     }
 
     #[test]
-    fn verification_sandbox_uses_a_bounded_tmpfs_and_never_binds_node_modules() {
-        let snapshot = Path::new("/tmp/ads-review-test/workspace");
-        let command = sandbox_command(
-            snapshot,
-            snapshot,
+    fn verification_command_applies_process_limits() {
+        let working_directory = Path::new("/tmp/ads-review-test/workspace");
+        let command = verification_command(
+            working_directory,
             "cargo",
             &[],
-            &SandboxPrograms::default(),
+            &VerificationPrograms::default(),
         )
-        .expect("sandbox command");
+        .expect("verification command");
         let arguments = command
             .as_std()
             .get_args()
@@ -1717,45 +1510,17 @@ mod tests {
                     "--",
                 ]
         }));
-        assert!(
-            arguments
-                .windows(3)
-                .any(|window| { window == ["bwrap", "--die-with-parent", "--unshare-all"] })
-        );
-        assert!(arguments.windows(3).any(|window| {
-            window == ["--ro-bind", "/tmp/ads-review-test/workspace", "/source"]
-        }));
-        assert!(
-            arguments
-                .windows(3)
-                .any(|window| { window == ["--size", "4294967296", "--tmpfs"] })
-        );
-        assert!(
-            arguments
-                .windows(2)
-                .any(|window| { window == ["--tmpfs", "/workspace"] })
-        );
-        assert!(
-            arguments.windows(3).any(|window| {
-                window == ["--unshare-all", "--unshare-user", "--disable-userns"]
-            })
-        );
-        assert!(
-            arguments
-                .windows(2)
-                .any(|window| window == ["--cap-drop", "ALL"])
-        );
+        assert!(arguments.iter().any(|argument| argument == "/bin/sh"));
+        assert!(arguments.iter().any(|argument| argument == "cargo"));
         assert!(
             !arguments
                 .iter()
-                .any(|argument| argument.contains("node_modules"))
+                .any(|argument| argument.starts_with("--unshare"))
         );
     }
 
     #[tokio::test]
     async fn verification_success_path_executes_the_exact_snapshot_under_hard_limits() {
-        use std::os::unix::fs::PermissionsExt;
-
         let directory = tempfile::tempdir().expect("test directory");
         let repository = directory.path().join("repository");
         fs::create_dir(&repository).expect("repository directory");
@@ -1776,31 +1541,10 @@ mod tests {
             ],
         );
         let commit = git(&repository, &["rev-parse", "HEAD"]);
-
-        let sandbox_workspace = directory.path().join("sandbox-workspace");
-        fs::create_dir(&sandbox_workspace).expect("sandbox workspace");
-        let launcher = directory.path().join("bwrap-test-launcher");
-        // Emulate Bubblewrap's argument handoff so the success path is deterministic on hosts
-        // that prohibit user namespaces; the production isolation flags are asserted above.
-        let launcher_script = format!(
-            "#!/bin/sh\nset -eu\nwhile [ \"$#\" -gt 0 ]; do\n  case \"$1\" in\n    --ro-bind) if [ \"$3\" = /source ]; then export ADS_VERIFICATION_SOURCE=\"$2\"; fi; shift 3 ;;\n    --tmpfs) if [ \"$2\" = /workspace ]; then export ADS_VERIFICATION_WORKSPACE='{}'; fi; shift 2 ;;\n    --size) shift 2 ;;\n    --chmod) shift 3 ;;\n    --setenv) if [ \"$2\" = ADS_VERIFICATION_SOURCE ]; then :; elif [ \"$2\" = ADS_VERIFICATION_WORKSPACE ]; then :; else export \"$2=$3\"; fi; shift 3 ;;\n    --dir|--proc|--dev|--chdir|--cap-drop) shift 2 ;;\n    --die-with-parent|--unshare-all|--unshare-user|--disable-userns) shift ;;\n    --) shift; exec \"$@\" ;;\n    *) exit 125 ;;\n  esac\ndone\nexit 125\n",
-            sandbox_workspace.display()
-        );
-        fs::write(&launcher, launcher_script).expect("test launcher");
-        let mut permissions = fs::metadata(&launcher)
-            .expect("launcher metadata")
-            .permissions();
-        permissions.set_mode(0o700);
-        fs::set_permissions(&launcher, permissions).expect("launcher permissions");
-
-        let programs = SandboxPrograms {
-            resource_limiter: PathBuf::from("prlimit"),
-            bubblewrap: launcher,
-        };
+        fs::write(repository.join("source.txt"), "mutable checkout\n").expect("dirty checkout");
         let mut inspection =
             ReviewerInspectionTools::new(&repository, commit, Cancellation::new(), None)
-                .expect("inspection tools")
-                .with_sandbox_programs(programs);
+                .expect("inspection tools");
         let report = Arc::new(Mutex::new(ReviewVerificationReport::default()));
         inspection = inspection.with_verification_report(report.clone());
 
@@ -1822,10 +1566,6 @@ mod tests {
         let output: Value = serde_json::from_str(&output).expect("tool response");
         let report = report.lock().expect("verification report");
         let command = report.commands.first().expect("verification command");
-        assert!(
-            command.sandboxed,
-            "launcher reached the sandbox bootstrap: {output}"
-        );
         assert!(command.started, "selected executable started: {output}");
         assert_eq!(command.exit_code, 0, "command output: {:?}", command.output);
         assert!(

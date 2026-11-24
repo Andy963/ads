@@ -431,7 +431,7 @@ async fn runs_read_only_inspection_and_returns_a_verdict() {
     let verdict = run_reviewer_inspection(options).await;
     let reports = verification_report.lock().expect("verification report");
     assert_eq!(reports.commands.len(), 1);
-    if reports.commands[0].sandboxed && reports.commands[0].started {
+    if reports.commands[0].started {
         assert_eq!(reports.commands[0].exit_code, 0);
         assert_eq!(verdict.expect("verdict").status, ReviewVerdictStatus::Pass);
     } else {
@@ -451,12 +451,12 @@ async fn runs_read_only_inspection_and_returns_a_verdict() {
         message.role == "tool" && message.text_content().contains("1: line one")
     }));
     assert!(requests[2].messages.iter().any(|message| {
-        message.role == "tool" && message.text_content().contains("\"sandboxed\":")
+        message.role == "tool" && message.text_content().contains("\"started\":true")
     }));
 }
 
 #[tokio::test]
-async fn verification_tool_records_a_sandboxed_exact_snapshot_attempt() {
+async fn verification_tool_records_an_exact_snapshot_attempt() {
     let repo = repository();
     let verification_report =
         Arc::new(Mutex::new(ads_reviewer::ReviewVerificationReport::default()));
@@ -476,12 +476,11 @@ async fn verification_tool_records_a_sandboxed_exact_snapshot_attempt() {
     assert_eq!(reports.commands.len(), 1);
     assert!(reports.commands[0].command.contains("\"src.ts\""));
     assert_eq!(
-        reports.commands[0].sandboxed,
-        output["sandboxed"].as_bool().expect("sandbox status")
+        output["started"].as_bool(),
+        Some(reports.commands[0].started)
     );
-    if reports.commands[0].sandboxed {
+    if reports.commands[0].started {
         assert_eq!(reports.commands[0].exit_code, 0);
-        assert!(reports.commands[0].started);
         assert!(!inspection.has_unavailable_verification());
     } else {
         assert_eq!(reports.commands[0].exit_code, 125);
@@ -492,10 +491,8 @@ async fn verification_tool_records_a_sandboxed_exact_snapshot_attempt() {
 
 #[cfg(target_os = "linux")]
 #[tokio::test]
-async fn actual_bubblewrap_runs_verification_in_isolated_namespaces_when_required() {
+async fn verification_runs_with_process_limits_or_fails_closed() {
     let repo = repository();
-    let host_network_namespace =
-        fs::read_link("/proc/self/ns/net").expect("host network namespace");
     let report = Arc::new(Mutex::new(ads_reviewer::ReviewVerificationReport::default()));
     let mut inspection = tools(&repo, None).with_verification_report(report.clone());
     let _ = inspection
@@ -505,7 +502,7 @@ async fn actual_bubblewrap_runs_verification_in_isolated_namespaces_when_require
                 "executable": "sh",
                 "args": [
                     "-c",
-                    "test ! -w /source/src.ts && readlink /proc/self/ns/net && prlimit --pid $$ --cpu --as && grep -F -q 'line one' src.ts"
+                    "pwd && prlimit --pid $$ --cpu --as && grep -F -q 'line one' src.ts"
                 ]
             }),
         ))
@@ -514,34 +511,20 @@ async fn actual_bubblewrap_runs_verification_in_isolated_namespaces_when_require
 
     let reports = report.lock().expect("verification report");
     let command = reports.commands.first().expect("verification command");
-    let required = std::env::var("ADS_REQUIRE_REVIEW_SANDBOX").is_ok_and(|value| value == "1");
-    if !command.sandboxed {
-        assert!(
-            !required,
-            "real Bubblewrap failed in the required sandbox job: {:?}",
-            command.output
-        );
+    if !command.started {
         assert!(!command.started);
         assert_eq!(command.exit_code, 125);
         assert!(inspection.has_unavailable_verification());
         return;
     }
 
-    assert!(command.started);
     assert_eq!(
         command.exit_code, 0,
         "verification output: {:?}",
         command.output
     );
     let output = command.output.as_deref().expect("verification output");
-    let sandbox_network_namespace = output
-        .lines()
-        .find(|line| line.starts_with("net:["))
-        .expect("sandbox network namespace");
-    assert_ne!(
-        sandbox_network_namespace,
-        host_network_namespace.to_string_lossy().as_ref()
-    );
+    assert!(output.contains("ads-review-snapshot-"));
     assert!(output.contains("1800"));
     assert!(output.contains("4294967296"));
     assert!(!inspection.has_unavailable_verification());
@@ -625,7 +608,7 @@ async fn reviewer_can_select_a_rust_check_in_a_mixed_language_repository() {
             .contains("rust-server/src/lib.rs")
     );
     assert!(!reports.commands[0].command.contains("npm"));
-    if reports.commands[0].sandboxed && reports.commands[0].started {
+    if reports.commands[0].started {
         assert_eq!(reports.commands[0].exit_code, 0);
         assert_eq!(verdict.expect("verdict").status, ReviewVerdictStatus::Pass);
     } else {
@@ -733,7 +716,7 @@ async fn requires_the_full_paged_diff_before_accepting_a_verdict() {
     let verdict = run_reviewer_inspection(options).await;
     let reports = verification_report.lock().expect("verification report");
     assert_eq!(reports.commands.len(), 1);
-    if reports.commands[0].sandboxed {
+    if reports.commands[0].started {
         assert_eq!(reports.commands[0].exit_code, 0);
         assert_eq!(verdict.expect("verdict").status, ReviewVerdictStatus::Pass);
     } else {

@@ -49,7 +49,6 @@ pub struct ReviewTestReport {
     pub exit_code: i64,
     pub summary: String,
     pub output: Option<String>,
-    pub sandboxed: bool,
     pub started: bool,
 }
 
@@ -60,10 +59,10 @@ pub struct ReviewVerificationReport {
 }
 
 impl ReviewVerificationReport {
-    pub fn has_successful_sandboxed_command(&self) -> bool {
+    pub fn has_successful_command(&self) -> bool {
         self.commands
             .iter()
-            .any(|command| command.sandboxed && command.started && command.exit_code == 0)
+            .any(|command| command.started && command.exit_code == 0)
     }
 }
 

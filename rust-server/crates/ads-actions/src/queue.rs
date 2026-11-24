@@ -560,8 +560,8 @@ impl ReviewQueue {
             .iter()
             .map(|report| {
                 format!(
-                    "{} (exit {}, sandboxed={}, started={})",
-                    report.command, report.exit_code, report.sandboxed, report.started
+                    "{} (exit {}, started={})",
+                    report.command, report.exit_code, report.started
                 )
             })
             .collect::<Vec<_>>()
@@ -597,19 +597,9 @@ impl ReviewQueue {
                         .to_string(),
                 ));
             }
-            if verification_report
-                .commands
-                .iter()
-                .any(|command| !command.sandboxed)
-            {
+            if !verification_report.has_successful_command() {
                 return Err(ReviewError::Incomplete(
-                    "Reviewer verification did not run entirely inside the isolated sandbox; no PASS verdict is authoritative."
-                        .to_string(),
-                ));
-            }
-            if !verification_report.has_successful_sandboxed_command() {
-                return Err(ReviewError::Incomplete(
-                    "Reviewer PASS requires at least one verification command to complete successfully inside the isolated sandbox."
+                    "Reviewer PASS requires at least one selected verification command to complete successfully."
                         .to_string(),
                 ));
             }

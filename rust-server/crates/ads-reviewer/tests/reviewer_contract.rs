@@ -231,7 +231,6 @@ fn builds_the_detached_review_prompt_with_issue_adr_report_and_diff() {
                 exit_code: 1,
                 summary: "1 failing".to_string(),
                 output: Some("failure output".to_string()),
-                sandboxed: true,
                 started: true,
             }],
         }),

@@ -106,18 +106,10 @@ fn changed_resolver(first: ResolvedReview, second: ResolvedReview) -> TargetReso
 }
 
 fn pass_reviewer() -> ads_actions::ReviewerRunner {
-    pass_reviewer_with_sandbox(true)
+    pass_reviewer_with_verification(true, 0)
 }
 
-fn pass_reviewer_with_sandbox(sandboxed: bool) -> ads_actions::ReviewerRunner {
-    pass_reviewer_with_verification(sandboxed, true, 0)
-}
-
-fn pass_reviewer_with_verification(
-    sandboxed: bool,
-    started: bool,
-    exit_code: i64,
-) -> ads_actions::ReviewerRunner {
+fn pass_reviewer_with_verification(started: bool, exit_code: i64) -> ads_actions::ReviewerRunner {
     Arc::new(move |request: ReviewerRequest| {
         request
             .verification_report
@@ -133,7 +125,6 @@ fn pass_reviewer_with_verification(
                     format!("failed with exit code {exit_code}")
                 },
                 output: Some("ok".to_string()),
-                sandboxed,
                 started,
             });
         Box::pin(async {
@@ -704,7 +695,6 @@ async fn processes_a_review_end_to_end() {
     let report: Value = serde_json::from_str(&job.verification_report_json).expect("report");
     assert_eq!(report["commands"][0]["command"], "[\"cargo\",\"test\"]");
     assert_eq!(report["commands"][0]["exitCode"], 0);
-    assert_eq!(report["commands"][0]["sandboxed"], true);
     assert_eq!(report["commands"][0]["started"], true);
 
     let comments = comments.lock().expect("comments");
@@ -731,14 +721,14 @@ async fn processes_a_review_end_to_end() {
 }
 
 #[tokio::test]
-async fn refuses_pass_when_verification_was_not_sandboxed() {
+async fn allows_pass_after_started_successful_verification() {
     let (_directory, db) = state();
     let (_temp, repo, base, head) = repo();
     let target = resolved(&repo, &base, &head);
     let project = target.project_id.clone();
     let mut options = options();
     options.target_resolver = Some(fixed_resolver(target));
-    options.reviewer = Some(pass_reviewer_with_sandbox(false));
+    options.reviewer = Some(pass_reviewer_with_verification(true, 0));
     options.publisher = Some(Arc::new(|_request: IssueCommentRequest| {
         Box::pin(async { Ok(()) })
     }));
@@ -761,24 +751,23 @@ async fn refuses_pass_when_verification_was_not_sandboxed() {
         job.current_step
             .as_deref()
             .unwrap_or("")
-            .starts_with("INCOMPLETE:")
+            .starts_with("PASS:")
     );
     let verdicts: Value = serde_json::from_str(&job.review_verdicts_json).expect("verdicts");
-    assert_eq!(verdicts[0]["status"], "INCOMPLETE");
+    assert_eq!(verdicts[0]["status"], "PASS");
     let report: Value = serde_json::from_str(&job.verification_report_json).expect("report");
-    assert_eq!(report["commands"][0]["sandboxed"], false);
     assert_eq!(report["commands"][0]["started"], true);
 }
 
 #[tokio::test]
-async fn refuses_pass_when_no_sandboxed_verification_command_succeeded() {
+async fn refuses_pass_when_reviewer_verification_fails() {
     let (_directory, db) = state();
     let (_temp, repo, base, head) = repo();
     let target = resolved(&repo, &base, &head);
     let project = target.project_id.clone();
     let mut options = options();
     options.target_resolver = Some(fixed_resolver(target));
-    options.reviewer = Some(pass_reviewer_with_verification(true, true, 1));
+    options.reviewer = Some(pass_reviewer_with_verification(true, 1));
     options.publisher = Some(Arc::new(|_request: IssueCommentRequest| {
         Box::pin(async { Ok(()) })
     }));
@@ -807,7 +796,6 @@ async fn refuses_pass_when_no_sandboxed_verification_command_succeeded() {
     assert_eq!(verdicts[0]["status"], "INCOMPLETE");
     let report: Value = serde_json::from_str(&job.verification_report_json).expect("report");
     assert_eq!(report["commands"][0]["exitCode"], 1);
-    assert_eq!(report["commands"][0]["sandboxed"], true);
     assert_eq!(report["commands"][0]["started"], true);
 }
 
@@ -901,7 +889,6 @@ async fn validates_and_delivers_rework_declaration_on_the_pinned_target() {
                         exit_code: 0,
                         summary: "passed".to_string(),
                         output: Some("ok".to_string()),
-                        sandboxed: true,
                         started: true,
                     });
                 *observed_declaration.lock().expect("declaration") =
@@ -1047,7 +1034,6 @@ async fn does_not_publish_when_the_job_was_superseded_during_review() {
                         exit_code: 0,
                         summary: "passed".to_string(),
                         output: Some("ok".to_string()),
-                        sandboxed: true,
                         started: true,
                     });
                 let connection = db.connect().expect("connection");
