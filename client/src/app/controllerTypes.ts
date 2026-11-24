@@ -158,6 +158,7 @@ export type ChatItem = {
     messageId: string;
     status: "pending" | "running" | "delivered" | "failed" | "superseded" | "unknown";
     transitionRevision?: number;
+    attempts?: number;
     fromLane?: string;
     fromRole?: string;
     toLane?: string;
@@ -171,6 +172,11 @@ export type ChatItem = {
     correlationId?: string;
     lastError?: string;
   };
+};
+
+export type PendingAgentHandoffItem = NonNullable<ChatItem["agentHandoff"]> & {
+  content: string;
+  ts?: number;
 };
 
 export type ExecutePreviewState = {
@@ -268,6 +274,7 @@ export type ProjectRuntime = {
   streamSnapshotRevisions?: Map<string, number>;
   pendingImages: Ref<IncomingImage[]>;
   queuedPrompts: Ref<QueuedPrompt[]>;
+  pendingAgentHandoffs: Ref<PendingAgentHandoffItem[]>;
   composerDraft: Ref<string>;
   resumableSessions: Ref<ResumableSession[]>;
   resumableSessionsBusy: Ref<boolean>;

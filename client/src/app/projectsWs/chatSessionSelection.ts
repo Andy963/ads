@@ -61,6 +61,7 @@ export function clearPreviousSessionInputs(ctx: ChatActions & Pick<AppContext, "
   // Clear while the runtime still names the OLD session: queue watchers and
   // clearPendingPrompt persist synchronously using that identity.
   rt.queuedPrompts.value = [];
+  if (rt.pendingAgentHandoffs) rt.pendingAgentHandoffs.value = [];
   rt.pendingAckClientMessageId = null;
   ctx.clearPendingPrompt(rt);
   rt.promptReconciliationPending = false;

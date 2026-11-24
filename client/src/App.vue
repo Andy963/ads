@@ -167,6 +167,7 @@ const {
   setActiveChatLane,
   acopilotMessages,
   acopilotQueuedPrompts,
+  acopilotPendingAgentHandoffs,
   acopilotPendingImages,
   acopilotReady,
   acopilotBusy,
@@ -1992,6 +1993,7 @@ const acopilotOperationalError = computed(() => loggedIn.value
                 :latest-prompt-key="acopilotChatKey"
                 :voice-input-active="activeWorkspaceTab === 'acopilot' && loggedIn && !settingsOpen && !mobileDrawerOpen"
                 :queued-prompts="acopilotQueuedPrompts"
+                :pending-agent-handoffs="acopilotPendingAgentHandoffs"
                 :pending-images="acopilotPendingImages"
                 :connected="acopilotReady"
                 :busy="acopilotBusy"

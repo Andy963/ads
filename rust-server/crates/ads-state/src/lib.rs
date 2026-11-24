@@ -38,8 +38,10 @@ pub use action_job_store::{
     update_action_job_status,
 };
 pub use agent_message_store::{
-    AgentMessageRecord, AgentMessageStatus, AgentMessageStore, EnqueueAgentMessageResult,
-    NewAgentMessage, ensure_agent_message_tables,
+    AGENT_HANDOFF_SCHEMA_VERSION, AgentHandoff, AgentHandoffPayload, AgentMessageRecord,
+    AgentMessageStatus, AgentMessageStore, EnqueueAgentMessageResult, NewAgentMessage,
+    REVIEW_VERDICT_COMMENT_MARKER, REVIEW_VERDICT_HANDOFF_KIND, ReviewVerdictCommentLocator,
+    ReviewVerdictHandoff, ReviewVerdictStatus, ensure_agent_message_tables,
 };
 pub use attachment_store::{AttachmentStore, CreateImageAttachment};
 pub use auth_store::{

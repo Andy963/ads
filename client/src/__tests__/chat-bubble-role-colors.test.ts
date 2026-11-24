@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { mount } from "@vue/test-utils";
 
 import MainChatMessageList from "../components/MainChatMessageList.vue";
+import MainChatComposerPanel from "../components/MainChatComposerPanel.vue";
 
 function messageListProps(messages: unknown[]) {
   return {
@@ -155,6 +156,36 @@ describe("chat bubble role colors and geometry contract", () => {
     expect(wrapper.emitted("retryAgentHandoff")?.[0]).toEqual([
       "review-verdict:job-failed",
     ]);
+    wrapper.unmount();
+  });
+
+  it("renders unstarted pending agent handoffs in the composer inbox slot", () => {
+    const wrapper = mount(MainChatComposerPanel, {
+      props: {
+        queuedPrompts: [],
+        pendingAgentHandoffs: [{
+          messageId: "review-verdict:job-pending",
+          status: "pending",
+          issueId: 676,
+          issueTitle: "Formalize durable agent handoff boundaries",
+          issueUrl: "https://github.com/Andy963/ads/issues/676",
+          prNumber: 688,
+          headSha: "abcdef1234567890",
+          content: "Verdict: PASS on PR #688 at head abcdef123456 (job job-pending).",
+        }],
+        pendingImages: [],
+        connected: true,
+        busy: true,
+      },
+    });
+
+    const inbox = wrapper.get('[data-testid="pending-agent-handoff-inbox"]');
+    expect(inbox.text()).toContain("Reviewer");
+    expect(inbox.text()).toContain("Acopilot");
+    expect(inbox.text()).toContain("等待执行");
+    expect(inbox.text()).toContain("Issue #676 · PR #688");
+    expect(inbox.text()).toContain("head abcdef123456");
+    expect(inbox.text()).toContain("Verdict: PASS on PR #688");
     wrapper.unmount();
   });
 });

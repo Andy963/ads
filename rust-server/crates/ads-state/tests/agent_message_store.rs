@@ -525,3 +525,67 @@ fn no_pr_reviews_on_different_branches_do_not_supersede_each_other() {
         AgentMessageStatus::Pending
     );
 }
+
+#[test]
+fn visible_lane_listing_excludes_unstarted_superseded_and_orders_chronologically() {
+    let directory = tempdir().expect("temp dir");
+    let db = StateDb::open(directory.path().join("state.db")).expect("state db");
+    let connection = db.connect().expect("connection");
+    let store = AgentMessageStore::new(&connection).expect("store");
+    seed_review_job(&connection, "review-verdict:job-a", 100);
+    seed_review_job(&connection, "review-verdict:job-b", 200);
+    seed_review_job(&connection, "review-verdict:job-c", 300);
+
+    store
+        .enqueue(message("review-verdict:job-a", "head-a", 100), 100)
+        .expect("enqueue a");
+    store
+        .enqueue(message("review-verdict:job-b", "head-b", 200), 200)
+        .expect("enqueue b");
+    store
+        .claim("review-verdict:job-b", "worker-1", 10_000, 210)
+        .expect("claim b")
+        .expect("claimed b");
+    store
+        .mark_failed("review-verdict:job-b", "worker-1", "boom", 220)
+        .expect("fail b")
+        .expect("failed b");
+    store
+        .enqueue(message("review-verdict:job-c", "head-c", 300), 300)
+        .expect("enqueue c");
+
+    let visible = store
+        .list_visible_for_lane("user-1", "project-1", "acopilot", 1, 100)
+        .expect("visible");
+    let ids: Vec<&str> = visible.iter().map(|row| row.message_id.as_str()).collect();
+    assert_eq!(ids, vec!["review-verdict:job-b", "review-verdict:job-c"]);
+    assert_eq!(visible[0].status, AgentMessageStatus::Superseded);
+    assert_eq!(visible[0].attempts, 1);
+    assert_eq!(visible[1].status, AgentMessageStatus::Pending);
+}
+
+#[test]
+fn legacy_pre_rendered_record_reconstructs_typed_review_handoff() {
+    let directory = tempdir().expect("temp dir");
+    let db = StateDb::open(directory.path().join("state.db")).expect("state db");
+    let connection = db.connect().expect("connection");
+    let store = AgentMessageStore::new(&connection).expect("store");
+    seed_review_job(&connection, "review-verdict:job-legacy", 100);
+
+    let mut legacy = message("review-verdict:job-legacy", "head-legacy", 100);
+    legacy.correlation_id = "job-legacy".to_string();
+    seed_review_job(&connection, "job-legacy", 100);
+    legacy.payload = payload(
+        "Reviewer -> Acopilot handoff for Issue #7.\nStatus: REJECT.\nBase SHA: base.\nHead SHA: head-legacy.",
+    );
+    let inserted = store.enqueue(legacy, 100).expect("enqueue legacy");
+    let handoff = inserted.message.to_handoff().expect("typed handoff");
+    match handoff.payload {
+        ads_state::AgentHandoffPayload::ReviewVerdict(verdict) => {
+            assert_eq!(verdict.status, ads_state::ReviewVerdictStatus::Reject);
+            assert_eq!(verdict.issue_id, 7);
+            assert_eq!(verdict.pr_number, Some(12));
+            assert_eq!(verdict.verdict_comment.job_id, "job-legacy");
+        }
+    }
+}

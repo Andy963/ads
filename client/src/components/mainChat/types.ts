@@ -32,6 +32,7 @@ export type AgentHandoff = {
   messageId: string;
   status: "pending" | "running" | "delivered" | "failed" | "superseded" | "unknown";
   transitionRevision?: number;
+  attempts?: number;
   fromLane?: string;
   fromRole?: string;
   toLane?: string;
@@ -44,6 +45,11 @@ export type AgentHandoff = {
   headSha?: string;
   correlationId?: string;
   lastError?: string;
+};
+
+export type PendingAgentHandoff = AgentHandoff & {
+  content: string;
+  ts?: number;
 };
 
 export type RenderMessage = ChatMessage & {

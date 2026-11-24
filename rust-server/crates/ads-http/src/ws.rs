@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use ads_contract::sync::SyncEventRow;
 use ads_contract::ws::HistoryEntry;
+use ads_runtime::LaneTurn;
 use ads_state::{
     AppendSyncEvent, CancelPromptInput, DEFAULT_HISTORY_MAX_ENTRIES_PER_SESSION,
     DEFAULT_HISTORY_MAX_TEXT_LENGTH, EnqueuePromptInput, HistoryStore, PromptQueueCancelReason,
@@ -1651,13 +1652,21 @@ pub(crate) fn emit_prompt_queue_snapshot(state: &AppState, fallback: &PromptQueu
 }
 
 pub(crate) fn emit_prompt_event(state: &AppState, entry: &PromptQueueEntry, payload: Value) {
-    emit_prompt_event_with(state.auth.db(), &state.ws, entry, payload);
+    let turn = LaneTurn::from_prompt_entry(entry);
+    emit_lane_turn_event_with(
+        state.auth.db(),
+        &state.ws,
+        &turn,
+        Some(prompt_queue_event_revision(entry)),
+        payload,
+    );
 }
 
-pub(crate) fn emit_prompt_event_with(
+pub(crate) fn emit_lane_turn_event_with(
     db: &ads_state::StateDb,
     ws: &WebSocketHub,
-    entry: &PromptQueueEntry,
+    turn: &LaneTurn,
+    prompt_queue_revision: Option<i64>,
     payload: Value,
 ) {
     let mut framed = project_command_frame(payload);
@@ -1669,18 +1678,18 @@ pub(crate) fn emit_prompt_event_with(
         .unwrap_or("")
         .to_string();
     if event_type == "delta" {
-        attach_delta_snapshot(db, ws, entry, &mut framed);
+        attach_delta_snapshot(db, ws, &turn.lane_namespace, &turn.history_key, &mut framed);
     } else if event_type == "command" || event_type == "phase_complete" {
-        ws.delta_coalescer(&entry.lane_namespace, &entry.history_key)
+        ws.delta_coalescer(&turn.lane_namespace, &turn.history_key)
             .finish_phase(db);
     } else if event_type == "result" || event_type == "error" {
-        ws.delta_coalescer(&entry.lane_namespace, &entry.history_key)
+        ws.delta_coalescer(&turn.lane_namespace, &turn.history_key)
             .finish(db);
-        ws.command_coalescer(&entry.lane_namespace, &entry.history_key)
+        ws.command_coalescer(&turn.lane_namespace, &turn.history_key)
             .finish(db);
     }
     if event_type == "command" {
-        attach_command_snapshot(db, ws, entry, &mut framed);
+        attach_command_snapshot(db, ws, &turn.lane_namespace, &turn.history_key, &mut framed);
     }
     if !event_type.is_empty()
         && !ads_state::TRANSIENT_SYNC_EVENT_TYPES.contains(&event_type.as_str())
@@ -1703,11 +1712,11 @@ pub(crate) fn emit_prompt_event_with(
                 store.append_coalesced(
                     &mut connection,
                     AppendSyncEvent {
-                        namespace: &entry.lane_namespace,
-                        lane_key: &entry.history_key,
+                        namespace: &turn.lane_namespace,
+                        lane_key: &turn.history_key,
                         event_type: &event_type,
-                        event_id: Some(&format!("prompt_queue:{}", entry.client_message_id)),
-                        revision: Some(prompt_queue_event_revision(entry)),
+                        event_id: Some(&format!("prompt_queue:{}", turn.client_message_id)),
+                        revision: prompt_queue_revision,
                         payload: &framed,
                         ts: Some(ts),
                         run_id: None,
@@ -1717,8 +1726,8 @@ pub(crate) fn emit_prompt_event_with(
                 store.append(
                     &mut connection,
                     AppendSyncEvent {
-                        namespace: &entry.lane_namespace,
-                        lane_key: &entry.history_key,
+                        namespace: &turn.lane_namespace,
+                        lane_key: &turn.history_key,
                         event_type: &event_type,
                         event_id: explicit_event_id.as_deref(),
                         revision: None,
@@ -1745,11 +1754,11 @@ pub(crate) fn emit_prompt_event_with(
         }
     }
     ws.broadcast_lane_frame(
-        &entry.auth_user_id,
-        &entry.session_id,
-        &entry.chat_session_id,
-        &entry.logical_history_key,
-        entry.lane_generation,
+        &turn.auth_user_id,
+        &turn.session_id,
+        &turn.chat_session_id,
+        &turn.logical_history_key,
+        turn.lane_generation,
         &framed,
     );
 }
@@ -1913,7 +1922,8 @@ fn prompt_queue_cancelled_payload(
 fn attach_command_snapshot(
     db: &ads_state::StateDb,
     ws: &WebSocketHub,
-    entry: &PromptQueueEntry,
+    lane_namespace: &str,
+    history_key: &str,
     framed: &mut Value,
 ) {
     let Some(record) = framed.as_object_mut() else {
@@ -1925,7 +1935,7 @@ fn attach_command_snapshot(
     let command = record.get("command").cloned().unwrap_or(Value::Null);
     let ts = record.get("ts").and_then(Value::as_i64).unwrap_or(0);
     let position = ws
-        .command_coalescer(&entry.lane_namespace, &entry.history_key)
+        .command_coalescer(lane_namespace, history_key)
         .record(db, ts, &command);
     let Some(position) = position else {
         return;
@@ -1943,7 +1953,8 @@ fn attach_command_snapshot(
 fn attach_delta_snapshot(
     db: &ads_state::StateDb,
     ws: &WebSocketHub,
-    entry: &PromptQueueEntry,
+    lane_namespace: &str,
+    history_key: &str,
     framed: &mut Value,
 ) {
     let Some(record) = framed.as_object_mut() else {
@@ -1967,7 +1978,7 @@ fn attach_delta_snapshot(
         record.get("clientMessageId").and_then(Value::as_str),
         record.get("assistantItemId").and_then(Value::as_str),
     );
-    let coalescer = ws.delta_coalescer(&entry.lane_namespace, &entry.history_key);
+    let coalescer = ws.delta_coalescer(lane_namespace, history_key);
     let position = coalescer.append_delta(db, &delta, ts, Some(identity));
     if let Some(position) = position {
         record.insert("streamId".to_string(), json!(position.stream_id));
@@ -1979,7 +1990,7 @@ fn attach_delta_snapshot(
         .ok()
         .and_then(|connection| {
             SyncEventStore::default()
-                .get_latest_seq(&connection, &entry.lane_namespace, &entry.history_key)
+                .get_latest_seq(&connection, lane_namespace, history_key)
                 .ok()
         })
         .unwrap_or(0);

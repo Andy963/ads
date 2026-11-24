@@ -1082,6 +1082,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       Boolean(String(rt.activeThreadId.value ?? "").trim()) ||
       Boolean(String(rt.pendingAckClientMessageId ?? "").trim()) ||
       rt.queuedPrompts.value.length > 0 ||
+      (rt.pendingAgentHandoffs?.value.length ?? 0) > 0 ||
       rt.turnInFlight ||
       rt.busy.value;
 
@@ -1092,6 +1093,9 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     rt.awaitingBootstrapHistory = false;
     rt.pendingAckClientMessageId = null;
     rt.queuedPrompts.value = [];
+    if (rt.pendingAgentHandoffs) {
+      rt.pendingAgentHandoffs.value = [];
+    }
     clearStreamTracking();
     resetTurnPatchSummary();
     clearPendingPrompt(rt);
@@ -1126,6 +1130,35 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       const entries = type === "agent_message_snapshot"
         ? (Array.isArray((msg as Record<string, unknown>).entries) ? (msg as Record<string, unknown>).entries as unknown[] : [])
         : [msg];
+      const snapshotPendingIds = new Set<string>();
+      const removePendingHandoff = (id: string): void => {
+        const pendingRef = rt.pendingAgentHandoffs;
+        if (!pendingRef) return;
+        if (pendingRef.value.some((item) => item.messageId === id)) {
+          pendingRef.value = pendingRef.value.filter((item) => item.messageId !== id);
+        }
+      };
+      const insertHandoffChronologically = (card: ChatItem): void => {
+        const cardTs = Number(card.ts ?? 0);
+        if (!Number.isFinite(cardTs) || cardTs <= 0) {
+          pushMessageBeforeLive(card, rt);
+          return;
+        }
+        const existing = rt.messages.value;
+        const insertIndex = existing.findIndex((message) => {
+          const messageTs = Number(message.ts ?? 0);
+          return Number.isFinite(messageTs) && messageTs > cardTs;
+        });
+        if (insertIndex < 0) {
+          pushMessageBeforeLive(card, rt);
+          return;
+        }
+        rt.messages.value = [
+          ...existing.slice(0, insertIndex),
+          card,
+          ...existing.slice(insertIndex),
+        ];
+      };
       for (const entry of entries) {
         if (!isRecord(entry)) continue;
         const messageId = String(entry.messageId ?? "").trim();
@@ -1136,41 +1169,86 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
           : "unknown";
         const issueId = Number(entry.issueId);
         const prNumber = Number(entry.prNumber);
+        const attemptsRaw = Number(entry.attempts);
         const content = String(entry.text ?? "").trim() || `Reviewer → Acopilot handoff ${messageId}`;
         const transitionRevision = Number(entry.transitionRevision);
+        const createdAt = Number(entry.createdAt);
+        const updatedAt = Number(entry.updatedAt);
+        const cardTs = (Number.isFinite(createdAt) && createdAt > 0 ? createdAt : (Number.isFinite(updatedAt) && updatedAt > 0 ? updatedAt : Date.now()));
+        const agentHandoff: NonNullable<ChatItem["agentHandoff"]> = {
+          messageId,
+          status,
+          ...(Number.isSafeInteger(transitionRevision) && transitionRevision > 0 ? { transitionRevision } : {}),
+          ...(Number.isSafeInteger(attemptsRaw) && attemptsRaw >= 0 ? { attempts: attemptsRaw } : {}),
+          fromLane: String(entry.fromLane ?? "actions"),
+          fromRole: String(entry.fromRole ?? "reviewer"),
+          toLane: String(entry.toLane ?? "acopilot"),
+          toRole: String(entry.toRole ?? "acopilot"),
+          ...(Number.isSafeInteger(issueId) && issueId > 0 ? { issueId } : {}),
+          ...(String(entry.issueTitle ?? "").trim() ? { issueTitle: String(entry.issueTitle).trim() } : {}),
+          ...(String(entry.issueUrl ?? "").trim() ? { issueUrl: String(entry.issueUrl).trim() } : {}),
+          ...(Number.isSafeInteger(prNumber) && prNumber > 0 ? { prNumber } : {}),
+          ...(String(entry.baseSha ?? "").trim() ? { baseSha: String(entry.baseSha).trim() } : {}),
+          ...(String(entry.headSha ?? "").trim() ? { headSha: String(entry.headSha).trim() } : {}),
+          ...(String(entry.correlationId ?? "").trim() ? { correlationId: String(entry.correlationId).trim() } : {}),
+          ...(String(entry.lastError ?? "").trim() ? { lastError: String(entry.lastError).trim() } : {}),
+        };
         const card: ChatItem = {
           id: messageId,
           role: "system",
           kind: "agent_handoff",
           content,
-          ts: Number(entry.updatedAt) || Date.now(),
-          agentHandoff: {
-            messageId,
-            status,
-            ...(Number.isSafeInteger(transitionRevision) && transitionRevision > 0 ? { transitionRevision } : {}),
-            fromLane: String(entry.fromLane ?? "actions"),
-            fromRole: String(entry.fromRole ?? "reviewer"),
-            toLane: String(entry.toLane ?? "acopilot"),
-            toRole: String(entry.toRole ?? "acopilot"),
-            ...(Number.isSafeInteger(issueId) && issueId > 0 ? { issueId } : {}),
-            ...(String(entry.issueTitle ?? "").trim() ? { issueTitle: String(entry.issueTitle).trim() } : {}),
-            ...(String(entry.issueUrl ?? "").trim() ? { issueUrl: String(entry.issueUrl).trim() } : {}),
-            ...(Number.isSafeInteger(prNumber) && prNumber > 0 ? { prNumber } : {}),
-            ...(String(entry.baseSha ?? "").trim() ? { baseSha: String(entry.baseSha).trim() } : {}),
-            ...(String(entry.headSha ?? "").trim() ? { headSha: String(entry.headSha).trim() } : {}),
-            ...(String(entry.correlationId ?? "").trim() ? { correlationId: String(entry.correlationId).trim() } : {}),
-            ...(String(entry.lastError ?? "").trim() ? { lastError: String(entry.lastError).trim() } : {}),
-          },
+          ts: cardTs,
+          agentHandoff,
         };
         const existingIndex = rt.messages.value.findIndex((message) => message.id === messageId);
         if (existingIndex >= 0) {
+          removePendingHandoff(messageId);
           const currentRevision = Number(rt.messages.value[existingIndex]?.agentHandoff?.transitionRevision ?? 0);
           const incomingRevision = Number(card.agentHandoff?.transitionRevision ?? 0);
           if (incomingRevision >= currentRevision) {
-            rt.messages.value = rt.messages.value.map((message, index) => index === existingIndex ? card : message);
+            const preservedTs = rt.messages.value[existingIndex]?.ts;
+            const nextCard = preservedTs ? { ...card, ts: preservedTs } : card;
+            rt.messages.value = rt.messages.value.map((message, index) => index === existingIndex ? nextCard : message);
           }
+        } else if (status === "pending") {
+          snapshotPendingIds.add(messageId);
+          const pendingRef = rt.pendingAgentHandoffs;
+          if (pendingRef) {
+            const pendingItem = { ...agentHandoff, content, ts: cardTs };
+            const pendingIndex = pendingRef.value.findIndex((item) => item.messageId === messageId);
+            if (pendingIndex >= 0) {
+              const currentRevision = Number(pendingRef.value[pendingIndex]?.transitionRevision ?? 0);
+              const incomingRevision = Number(agentHandoff.transitionRevision ?? 0);
+              if (incomingRevision >= currentRevision) {
+                pendingRef.value = pendingRef.value.map((item, index) =>
+                  index === pendingIndex ? pendingItem : item,
+                );
+              }
+            } else {
+              pendingRef.value = [...pendingRef.value, pendingItem];
+            }
+          }
+        } else if (status === "superseded") {
+          removePendingHandoff(messageId);
         } else {
-          pushMessageBeforeLive(card, rt);
+          removePendingHandoff(messageId);
+          if (type === "agent_message_snapshot" && status !== "running") {
+            insertHandoffChronologically(card);
+          } else {
+            pushMessageBeforeLive(card, rt);
+          }
+        }
+      }
+      if (type === "agent_message_snapshot") {
+        const pendingRef = rt.pendingAgentHandoffs;
+        if (pendingRef) {
+          const nextPending = pendingRef.value.filter((item) =>
+            snapshotPendingIds.has(item.messageId),
+          );
+          if (nextPending.length !== pendingRef.value.length) {
+            pendingRef.value = nextPending;
+          }
         }
       }
       return;

@@ -3,21 +3,24 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use ads_runtime::{PromptQueueRunner, PromptQueueService, PromptRunContext};
+use ads_runtime::{
+    LaneTurn, LaneTurnKey, LaneTurnKind, PromptQueueRunner, PromptQueueService, PromptRunContext,
+};
 use ads_state::{
-    AgentMessageRecord, AgentMessageStore, EnqueueAgentMessageResult, NewAgentMessage,
-    PromptQueueEntry, PromptQueueLane, PromptQueueStatus, StateDb, WEB_ACOPILOT_NAMESPACE,
-    get_lane_generation, history_key_for_generation, logical_history_key,
+    AgentHandoff, AgentHandoffPayload, AgentMessageRecord, AgentMessageStore,
+    EnqueueAgentMessageResult, NewAgentMessage, PromptQueueLane, REVIEW_VERDICT_COMMENT_MARKER,
+    REVIEW_VERDICT_HANDOFF_KIND, ReviewVerdictCommentLocator, ReviewVerdictHandoff,
+    ReviewVerdictStatus, StateDb, WEB_ACOPILOT_NAMESPACE, get_lane_generation,
+    history_key_for_generation, logical_history_key,
 };
 use rusqlite::params;
-use serde_json::{Map, Value, json};
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use tokio::process::Command;
 
-use crate::ws::{WebSocketHub, emit_prompt_event_with};
+use crate::ws::{WebSocketHub, emit_lane_turn_event_with};
 
 const ACOPILOT_CHAT_SESSION_ID: &str = "acopilot";
-const REVIEW_VERDICT_KIND: &str = "review_verdict";
 const AGENT_MESSAGE_EVENT: &str = "agent_message";
 const LANE_TURN_LEASE_MS: i64 = 60_000;
 const LANE_TURN_RENEW_MS: Duration = Duration::from_secs(20);
@@ -71,32 +74,27 @@ pub fn enqueue_review_verdict_message(
     let force_superseded = current_generation != generation;
     let history_key = history_key_for_generation(&logical_key, generation);
     let message_id = format!("review-verdict:{job_id}");
-    let text = review_verdict_prompt(&input);
-    let payload = Map::from_iter([
-        ("text".to_string(), json!(text)),
-        ("origin".to_string(), json!("agent")),
-        ("agentId".to_string(), json!("codex")),
-        (
-            "reviewStatus".to_string(),
-            json!(input.status.trim().to_uppercase()),
-        ),
-        ("issueId".to_string(), json!(input.issue_id)),
-        ("issueUrl".to_string(), json!(input.issue_url)),
-        ("prNumber".to_string(), json!(input.pr_number)),
-        ("baseSha".to_string(), json!(input.base_sha)),
-        ("headSha".to_string(), json!(input.head_sha)),
-        ("jobId".to_string(), json!(job_id)),
-        (
-            "verdictComment".to_string(),
-            json!({
-                "marker": "ads:review-verdict",
-                "issueId": input.issue_id,
-                "jobId": job_id,
-                "baseSha": input.base_sha,
-                "headSha": input.head_sha,
-            }),
-        ),
-    ]);
+    let verdict_status =
+        ReviewVerdictStatus::parse(input.status).unwrap_or(ReviewVerdictStatus::Error);
+    let structured_handoff = ReviewVerdictHandoff {
+        status: verdict_status,
+        issue_id: input.issue_id,
+        issue_title: input.issue_title.trim().to_string(),
+        issue_url: input.issue_url.map(str::to_string),
+        pr_number: input.pr_number,
+        branch: input.branch.map(str::to_string),
+        base_sha: input.base_sha.map(str::to_string),
+        head_sha: input.head_sha.map(str::to_string),
+        job_id: job_id.to_string(),
+        verdict_comment: ReviewVerdictCommentLocator {
+            marker: REVIEW_VERDICT_COMMENT_MARKER.to_string(),
+            issue_id: input.issue_id,
+            job_id: job_id.to_string(),
+            base_sha: input.base_sha.map(str::to_string),
+            head_sha: input.head_sha.map(str::to_string),
+        },
+    };
+    let payload = structured_handoff.to_payload_map();
     let now = ads_contract::time::now_unix_millis();
     let store = AgentMessageStore::new(&connection).map_err(|error| error.to_string())?;
     let result = store
@@ -121,7 +119,7 @@ pub fn enqueue_review_verdict_message(
                 from_role: "reviewer".to_string(),
                 to_lane: "acopilot".to_string(),
                 to_role: "acopilot".to_string(),
-                kind: REVIEW_VERDICT_KIND.to_string(),
+                kind: REVIEW_VERDICT_HANDOFF_KIND.to_string(),
                 correlation_id: job_id.to_string(),
                 issue_id: Some(input.issue_id),
                 issue_title: input.issue_title.trim().to_string(),
@@ -143,7 +141,7 @@ pub fn enqueue_review_verdict_message(
             publish_agent_message_event(db, hub, &superseded);
         }
     }
-    if !result.duplicate {
+    if !result.duplicate && !result.message.is_unstarted_superseded() {
         publish_agent_message_event(db, hub, &result.message);
     }
     Ok(result)
@@ -208,7 +206,7 @@ pub fn agent_message_snapshots(
         return Vec::new();
     };
     store
-        .list_for_lane(auth_user_id, project_id, "acopilot", lane_generation, 100)
+        .list_visible_for_lane(auth_user_id, project_id, "acopilot", lane_generation, 100)
         .unwrap_or_default()
         .into_iter()
         .map(|message| agent_message_event_payload(&message))
@@ -428,7 +426,7 @@ pub struct AgentMessageService {
     runner: Arc<dyn PromptQueueRunner>,
     worker_id: String,
     stopped: AtomicBool,
-    active: Mutex<HashMap<String, PromptQueueEntry>>,
+    active: Mutex<HashMap<String, LaneTurn>>,
 }
 
 impl AgentMessageService {
@@ -521,8 +519,8 @@ impl AgentMessageService {
             .values()
             .cloned()
             .collect::<Vec<_>>();
-        for entry in active {
-            self.runner.abort_run(&entry);
+        for turn in active {
+            self.runner.abort_lane_turn(&turn);
         }
     }
 
@@ -543,14 +541,14 @@ impl AgentMessageService {
             .lock()
             .expect("agent message active lock")
             .values()
-            .filter(|entry| entry_matches_lane(entry, lane))
+            .filter(|turn| turn.matches_lane(lane))
             .cloned()
             .collect::<Vec<_>>();
         let now = ads_contract::time::now_unix_millis();
-        for entry in &active {
+        for turn in &active {
             if let Ok(Some(updated)) = self.with_store(|store| {
                 store.mark_failed(
-                    &entry.client_message_id,
+                    &turn.client_message_id,
                     &self.worker_id,
                     "Agent message turn interrupted by user",
                     now,
@@ -558,7 +556,7 @@ impl AgentMessageService {
             }) {
                 publish_agent_message_event(&self.db, &self.hub, &updated);
             }
-            self.runner.abort_run(entry);
+            self.runner.abort_lane_turn(turn);
         }
         active.len()
     }
@@ -569,17 +567,17 @@ impl AgentMessageService {
             .lock()
             .expect("agent message active lock")
             .values()
-            .filter(|entry| entry_matches_lane(entry, lane))
+            .filter(|turn| turn.matches_lane(lane))
             .cloned()
             .collect::<Vec<_>>();
         let now = ads_contract::time::now_unix_millis();
-        for entry in &active {
+        for turn in &active {
             if let Ok(Some(updated)) = self.with_store(|store| {
-                store.mark_running_superseded(&entry.client_message_id, &self.worker_id, now)
+                store.mark_running_superseded(&turn.client_message_id, &self.worker_id, now)
             }) {
                 publish_agent_message_event(&self.db, &self.hub, &updated);
             }
-            self.runner.abort_run(entry);
+            self.runner.abort_lane_turn(turn);
         }
         active.len()
     }
@@ -621,13 +619,13 @@ impl AgentMessageService {
             .values()
             .cloned()
             .collect::<Vec<_>>();
-        for entry in active {
+        for turn in active {
             let still_running = self
-                .with_store(|store| store.is_current_running(&entry.client_message_id))
+                .with_store(|store| store.is_current_running(&turn.client_message_id))
                 .ok()
                 .unwrap_or(false);
             if !still_running {
-                self.runner.abort_run(&entry);
+                self.runner.abort_lane_turn(&turn);
             }
         }
     }
@@ -684,22 +682,22 @@ impl AgentMessageService {
             self.prompt_queue.release_reserved_lane(&lane);
             return;
         };
-        let entry = synthetic_turn_entry(&claimed);
+        let turn = build_handoff_lane_turn(&claimed);
         self.active
             .lock()
             .expect("agent message active lock")
-            .insert(claimed.message_id.clone(), entry.clone());
+            .insert(claimed.message_id.clone(), turn.clone());
         publish_agent_message_event(&self.db, &self.hub, &claimed);
         let service = Arc::clone(self);
         tokio::spawn(async move {
-            service.run_claimed(claimed, entry, lane).await;
+            service.run_claimed(claimed, turn, lane).await;
         });
     }
 
     async fn run_claimed(
         self: Arc<Self>,
         message: AgentMessageRecord,
-        entry: PromptQueueEntry,
+        turn: LaneTurn,
         lane: PromptQueueLane,
     ) {
         let current_generation = match self.execution_is_current(&message) {
@@ -744,12 +742,12 @@ impl AgentMessageService {
         let lease_lost = Arc::new(AtomicBool::new(false));
         let heartbeat = self.spawn_heartbeat(
             message.message_id.clone(),
-            entry.clone(),
+            turn.clone(),
             Arc::clone(&lease_lost),
         );
         let db = self.db.clone();
         let hub = Arc::clone(&self.hub);
-        let event_entry = entry.clone();
+        let event_turn = turn.clone();
         let context = PromptRunContext::new(Arc::new(move |payload| {
             if payload.get("type").and_then(Value::as_str) == Some("error") {
                 return;
@@ -758,12 +756,12 @@ impl AgentMessageService {
                 && payload
                     .get("clientMessageId")
                     .and_then(Value::as_str)
-                    .is_some_and(|id| id == event_entry.client_message_id);
+                    .is_some_and(|id| id == event_turn.client_message_id);
             if !is_user_echo {
-                emit_prompt_event_with(&db, &hub, &event_entry, payload);
+                emit_lane_turn_event_with(&db, &hub, &event_turn, None, payload);
             }
         }));
-        let outcome = match self.runner.reconcile_before_run(&entry).await {
+        let outcome = match self.runner.reconcile_lane_turn(&turn).await {
             Ok(Some(outcome)) => Ok(outcome),
             Ok(None) => {
                 if lease_lost.load(Ordering::SeqCst) || !self.prompt_queue.is_owner() {
@@ -790,7 +788,7 @@ impl AgentMessageService {
                     self.prompt_queue.release_reserved_lane(&lane);
                     return;
                 }
-                self.runner.run_prompt(entry, context).await
+                self.runner.run_lane_turn(turn, context).await
             }
             Err(error) => Err(error),
         };
@@ -861,7 +859,7 @@ impl AgentMessageService {
     fn spawn_heartbeat(
         &self,
         message_id: String,
-        entry: PromptQueueEntry,
+        turn: LaneTurn,
         lease_lost: Arc<AtomicBool>,
     ) -> tokio::task::JoinHandle<()> {
         let db = self.db.clone();
@@ -875,18 +873,18 @@ impl AgentMessageService {
                 ticker.tick().await;
                 if !prompt_queue.is_owner() {
                     lease_lost.store(true, Ordering::SeqCst);
-                    runner.abort_run(&entry);
+                    runner.abort_lane_turn(&turn);
                     return;
                 }
                 let now = ads_contract::time::now_unix_millis();
                 let Ok(connection) = db.connect() else {
                     lease_lost.store(true, Ordering::SeqCst);
-                    runner.abort_run(&entry);
+                    runner.abort_lane_turn(&turn);
                     return;
                 };
                 let Ok(store) = AgentMessageStore::new(&connection) else {
                     lease_lost.store(true, Ordering::SeqCst);
-                    runner.abort_run(&entry);
+                    runner.abort_lane_turn(&turn);
                     return;
                 };
                 if !store
@@ -894,7 +892,7 @@ impl AgentMessageService {
                     .unwrap_or(false)
                 {
                     lease_lost.store(true, Ordering::SeqCst);
-                    runner.abort_run(&entry);
+                    runner.abort_lane_turn(&turn);
                     return;
                 }
             }
@@ -946,23 +944,30 @@ fn prompt_lane(message: &AgentMessageRecord) -> PromptQueueLane {
     }
 }
 
-fn entry_matches_lane(entry: &PromptQueueEntry, lane: &PromptQueueLane) -> bool {
-    entry.auth_user_id == lane.auth_user_id
-        && entry.session_id == lane.session_id
-        && entry.chat_session_id == lane.chat_session_id
-        && entry.logical_history_key == lane.logical_history_key
-        && entry.lane_namespace == lane.lane_namespace
-        && entry.lane_generation == lane.lane_generation
-}
-
-fn synthetic_turn_entry(message: &AgentMessageRecord) -> PromptQueueEntry {
+fn build_handoff_lane_turn(message: &AgentMessageRecord) -> LaneTurn {
     let mut payload = message.payload.clone();
     payload.insert("origin".to_string(), json!("agent"));
     if !payload.contains_key("agentId") {
         payload.insert("agentId".to_string(), json!("codex"));
     }
-    PromptQueueEntry {
-        id: -message.id,
+    let (prompt_text, display_text) = if let Some(handoff) = message.to_handoff() {
+        (
+            render_handoff_model_prompt(&handoff),
+            project_handoff_summary(&handoff),
+        )
+    } else {
+        let fallback = message
+            .payload
+            .get("text")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        (fallback.clone(), fallback)
+    };
+    payload.insert("text".to_string(), json!(prompt_text));
+    LaneTurn {
+        key: LaneTurnKey::AgentHandoff(message.message_id.clone()),
+        kind: LaneTurnKind::AgentHandoff,
         client_message_id: message.message_id.clone(),
         auth_user_id: message.auth_user_id.clone(),
         user_id: message.user_id,
@@ -974,19 +979,23 @@ fn synthetic_turn_entry(message: &AgentMessageRecord) -> PromptQueueEntry {
         lane_generation: message.lane_generation,
         workspace_root: message.workspace_root.clone(),
         payload,
-        payload_hash: String::new(),
-        status: PromptQueueStatus::Running,
-        position: 1,
-        attempts: message.attempts,
-        last_error: None,
+        history_display_text: Some(display_text),
         created_at: message.created_at,
-        updated_at: message.updated_at,
-        started_at: message.claimed_at,
-        completed_at: None,
     }
 }
 
 fn agent_message_event_payload(message: &AgentMessageRecord) -> Value {
+    let projected_text = message
+        .to_handoff()
+        .map(|handoff| project_handoff_summary(&handoff))
+        .unwrap_or_else(|| {
+            message
+                .payload
+                .get("text")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string()
+        });
     json!({
         "type": AGENT_MESSAGE_EVENT,
         "eventId": format!("agent_message:{}", message.message_id),
@@ -1009,46 +1018,93 @@ fn agent_message_event_payload(message: &AgentMessageRecord) -> Value {
         "transitionRevision": message.transition_revision,
         "attempts": message.attempts,
         "lastError": message.last_error,
-        "text": message.payload.get("text").and_then(Value::as_str).unwrap_or(""),
+        "text": projected_text,
         "sourceCreatedAt": message.source_created_at,
         "createdAt": message.created_at,
         "updatedAt": message.updated_at,
     })
 }
 
-fn review_verdict_prompt(input: &ReviewVerdictMessage<'_>) -> String {
-    let status = input.status.trim().to_uppercase();
-    let pr_label = input
+pub fn project_handoff_summary(handoff: &AgentHandoff) -> String {
+    match &handoff.payload {
+        AgentHandoffPayload::ReviewVerdict(verdict) => project_review_verdict_summary(verdict),
+    }
+}
+
+fn project_review_verdict_summary(verdict: &ReviewVerdictHandoff) -> String {
+    let pr_label = verdict
+        .pr_number
+        .filter(|number| *number > 0)
+        .map(|number| format!("PR #{number}"))
+        .unwrap_or_else(|| "the current PR".to_string());
+    let head = verdict
+        .head_sha
+        .as_deref()
+        .filter(|sha| !sha.is_empty())
+        .map(|sha| format!(" at head {}", &sha[..sha.len().min(12)]))
+        .unwrap_or_default();
+    let guidance = match verdict.status {
+        ReviewVerdictStatus::Pass => "Review passed; waiting for delivery authorization.",
+        ReviewVerdictStatus::Reject => {
+            "Review rejected; Acopilot will repair and re-dispatch review."
+        }
+        ReviewVerdictStatus::Incomplete => {
+            "Review incomplete; restore preconditions and re-dispatch review."
+        }
+        ReviewVerdictStatus::Error => {
+            "Review encountered an operational error; inspect Actions and retry."
+        }
+    };
+    format!(
+        "Verdict: {} on {pr_label}{head} (job {}).\n{guidance}",
+        verdict.status.as_str(),
+        verdict.job_id.trim()
+    )
+}
+
+pub fn render_handoff_model_prompt(handoff: &AgentHandoff) -> String {
+    match &handoff.payload {
+        AgentHandoffPayload::ReviewVerdict(verdict) => render_review_verdict_model_prompt(verdict),
+    }
+}
+
+fn render_review_verdict_model_prompt(verdict: &ReviewVerdictHandoff) -> String {
+    let status = verdict.status.as_str();
+    let pr_label = verdict
         .pr_number
         .filter(|number| *number > 0)
         .map(|number| format!("PR #{number}"))
         .unwrap_or_else(|| "the current pull request".to_string());
-    let target = if input.issue_title.trim().is_empty() {
-        format!("Issue #{}", input.issue_id)
+    let target = if verdict.issue_title.trim().is_empty() {
+        format!("Issue #{}", verdict.issue_id)
     } else {
-        format!("Issue #{} ({})", input.issue_id, input.issue_title.trim())
+        format!("Issue #{} ({})", verdict.issue_id, verdict.issue_title.trim())
     };
-    let head = input
+    let head = verdict
         .head_sha
+        .as_deref()
+        .filter(|sha| !sha.is_empty())
         .map(|sha| format!(" at head {}", &sha[..sha.len().min(12)]))
         .unwrap_or_default();
-    let issue_url = input.issue_url.unwrap_or("not recorded");
-    let base_sha = input.base_sha.unwrap_or("not recorded");
-    let head_sha = input.head_sha.unwrap_or("not recorded");
-    let next = match status.as_str() {
-        "PASS" => "Ask the user for delivery authorization.",
-        "REJECT" => {
+    let issue_url = verdict.issue_url.as_deref().unwrap_or("not recorded");
+    let base_sha = verdict.base_sha.as_deref().unwrap_or("not recorded");
+    let head_sha = verdict.head_sha.as_deref().unwrap_or("not recorded");
+    let next = match verdict.status {
+        ReviewVerdictStatus::Pass => "Ask the user for delivery authorization.",
+        ReviewVerdictStatus::Reject => {
             "Classify the defect family; record root cause, governing invariant, audited affected scope, changed behavior, regression cases, verification evidence, and residual risks. Complete the repair on the current Issue branch, push the new head, then call review_action with a rework declaration tied to this rejected job and its Issue, PR, base, rejected head, and new head."
         }
-        "INCOMPLETE" => "Restore the reported precondition, then call review_action again.",
-        "ERROR" => {
+        ReviewVerdictStatus::Incomplete => {
+            "Restore the reported precondition, then call review_action again."
+        }
+        ReviewVerdictStatus::Error => {
             "Inspect the Actions lane for the operational error, fix the environment, then call review_action again."
         }
-        _ => "Read the verdict comment and determine the correct next action.",
     };
     format!(
-        "Reviewer -> Acopilot handoff for {target} on {pr_label}{head}.\nStatus: {status}.\nIssue URL: {issue_url}.\nBase SHA: {base_sha}.\nHead SHA: {head_sha}.\nAuthoritative comment: newest Issue comment marked ads:review-verdict for job {}.\nRead only that comment when its base and head match the values above. Ignore older-head verdicts.\n{next}",
-        input.job_id.trim()
+        "Reviewer -> Acopilot handoff for {target} on {pr_label}{head}.\nStatus: {status}.\nIssue URL: {issue_url}.\nBase SHA: {base_sha}.\nHead SHA: {head_sha}.\nAuthoritative comment: newest Issue comment marked {} for job {}.\nRead only that comment when its base and head match the values above. Ignore older-head verdicts.\n{next}",
+        verdict.verdict_comment.marker,
+        verdict.verdict_comment.job_id.trim()
     )
 }
 
@@ -1077,11 +1133,11 @@ mod tests {
     use std::time::Duration;
 
     use ads_runtime::{
-        PromptQueueFuture, PromptQueueRunOutcome, PromptQueueRunner, PromptQueueService,
-        PromptQueueServiceOptions, PromptRunContext,
+        LaneTurn, LaneTurnKey, LaneTurnKind, PromptQueueFuture, PromptQueueRunOutcome,
+        PromptQueueRunner, PromptQueueService, PromptQueueServiceOptions, PromptRunContext,
     };
     use ads_state::{
-        AgentMessageStatus, PromptQueueEntry, StateDb, StateResult, bump_lane_generation,
+        AgentMessageStatus, StateDb, StateResult, bump_lane_generation,
     };
     use tempfile::tempdir;
 
@@ -1090,18 +1146,18 @@ mod tests {
     #[derive(Default)]
     struct FakeRunner {
         calls: AtomicUsize,
-        prompts: Mutex<Vec<PromptQueueEntry>>,
+        turns: Mutex<Vec<LaneTurn>>,
     }
 
     impl PromptQueueRunner for FakeRunner {
-        fn run_prompt<'a>(
+        fn run_lane_turn<'a>(
             &'a self,
-            entry: PromptQueueEntry,
+            turn: LaneTurn,
             _context: PromptRunContext,
         ) -> PromptQueueFuture<'a, StateResult<PromptQueueRunOutcome>> {
             Box::pin(async move {
                 self.calls.fetch_add(1, Ordering::SeqCst);
-                self.prompts.lock().expect("prompts").push(entry);
+                self.turns.lock().expect("turns").push(turn);
                 Ok(PromptQueueRunOutcome::success())
             })
         }
@@ -1216,27 +1272,33 @@ mod tests {
             ("INCOMPLETE", "Restore the reported precondition"),
             ("ERROR", "fix the environment"),
         ] {
-            let prompt = review_verdict_prompt(&ReviewVerdictMessage {
-                auth_user_id: "user-1",
-                project_id: "project-1",
-                workspace_root: "/repo",
+            let verdict = ReviewVerdictHandoff {
+                status: ReviewVerdictStatus::parse(status).expect("status"),
                 issue_id: 7,
-                issue_title: "Review handoff",
-                issue_url: Some("https://github.com/example/issues/7"),
+                issue_title: "Review handoff".to_string(),
+                issue_url: Some("https://github.com/example/issues/7".to_string()),
                 pr_number: Some(12),
-                branch: Some("codex/issue-7"),
-                base_sha: Some("base"),
-                head_sha: Some("head"),
-                status,
-                job_id: "job-1",
-                source_created_at: 1,
-                lane_generation: 1,
-            });
+                branch: Some("codex/issue-7".to_string()),
+                base_sha: Some("base".to_string()),
+                head_sha: Some("head".to_string()),
+                job_id: "job-1".to_string(),
+                verdict_comment: ReviewVerdictCommentLocator {
+                    marker: REVIEW_VERDICT_COMMENT_MARKER.to_string(),
+                    issue_id: 7,
+                    job_id: "job-1".to_string(),
+                    base_sha: Some("base".to_string()),
+                    head_sha: Some("head".to_string()),
+                },
+            };
+            let prompt = render_review_verdict_model_prompt(&verdict);
             assert!(prompt.contains(expected), "status={status} prompt={prompt}");
             assert!(prompt.contains("Issue URL: https://github.com/example/issues/7."));
             assert!(prompt.contains("Base SHA: base."));
             assert!(prompt.contains("Head SHA: head."));
             assert!(prompt.contains("job job-1"));
+            let summary = project_review_verdict_summary(&verdict);
+            assert!(summary.contains(status), "status={status} summary={summary}");
+            assert!(!summary.contains("Read only that comment"));
         }
     }
 
@@ -1292,6 +1354,19 @@ mod tests {
             .expect("message")
             .expect("message exists");
         assert_eq!(message.status, AgentMessageStatus::Superseded);
+        assert_eq!(message.attempts, 0);
+        let replay = ads_state::SyncEventStore::default()
+            .read_after(
+                &connection,
+                WEB_ACOPILOT_NAMESPACE,
+                "user-1::project-1::acopilot",
+                None,
+                None,
+            )
+            .expect("replay")
+            .events;
+        assert!(replay.is_empty());
+        assert!(agent_message_snapshots(&db, "user-1", "project-1", 1).is_empty());
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -1397,12 +1472,27 @@ mod tests {
 
         assert_eq!(runner.calls.load(Ordering::SeqCst), 1);
         {
-            let prompts = runner.prompts.lock().expect("prompts");
-            assert_eq!(prompts.len(), 1);
+            let turns = runner.turns.lock().expect("turns");
+            assert_eq!(turns.len(), 1);
             assert_eq!(
-                prompts[0].payload.get("origin").and_then(Value::as_str),
+                turns[0].key,
+                LaneTurnKey::AgentHandoff("review-verdict:job-1".to_string())
+            );
+            assert_eq!(turns[0].kind, LaneTurnKind::AgentHandoff);
+            assert_eq!(
+                turns[0].payload.get("origin").and_then(Value::as_str),
                 Some("agent")
             );
+            let dispatched_prompt = turns[0]
+                .payload
+                .get("text")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            assert!(dispatched_prompt.contains("Ask the user for delivery authorization."));
+            assert!(dispatched_prompt.contains("ads:review-verdict"));
+            let history_display = turns[0].history_display_text.as_deref().unwrap_or("");
+            assert!(history_display.contains("Verdict: PASS"));
+            assert!(!history_display.contains("Read only that comment"));
         }
         let connection = db.connect().expect("connection");
         let prompt_count: i64 = connection
@@ -1415,6 +1505,10 @@ mod tests {
             .expect("message")
             .expect("message exists");
         assert_eq!(message.status, AgentMessageStatus::Delivered);
+        assert!(
+            message.payload.get("text").is_none(),
+            "persisted handoff payload must remain structured without pre-rendered prompt text"
+        );
         assert_eq!(
             message.payload["issueUrl"],
             "https://github.com/example/issues/7"
@@ -1442,6 +1536,18 @@ mod tests {
         let snapshots = agent_message_snapshots(&db, "user-1", "project-1", 1);
         assert_eq!(snapshots.len(), 1);
         assert_eq!(snapshots[0]["status"], "delivered");
+        assert!(
+            snapshots[0]["text"]
+                .as_str()
+                .unwrap_or("")
+                .contains("Verdict: PASS")
+        );
+        assert!(
+            !snapshots[0]["text"]
+                .as_str()
+                .unwrap_or("")
+                .contains("Read only that comment")
+        );
 
         service.stop();
         prompt_queue.stop().await;
@@ -1453,9 +1559,9 @@ mod tests {
     }
 
     impl PromptQueueRunner for SupersedingRunner {
-        fn reconcile_before_run<'a>(
+        fn reconcile_lane_turn<'a>(
             &'a self,
-            _entry: &'a PromptQueueEntry,
+            _turn: &'a LaneTurn,
         ) -> PromptQueueFuture<'a, StateResult<Option<PromptQueueRunOutcome>>> {
             Box::pin(async move {
                 let connection = self.db.connect().expect("connection");
@@ -1469,9 +1575,9 @@ mod tests {
             })
         }
 
-        fn run_prompt<'a>(
+        fn run_lane_turn<'a>(
             &'a self,
-            _entry: PromptQueueEntry,
+            _turn: LaneTurn,
             _context: PromptRunContext,
         ) -> PromptQueueFuture<'a, StateResult<PromptQueueRunOutcome>> {
             Box::pin(async move {
@@ -1660,12 +1766,12 @@ mod tests {
                 .expect("claimed");
         }
 
-        let entry = synthetic_turn_entry(&enqueued.message);
+        let turn = build_handoff_lane_turn(&enqueued.message);
         service
             .active
             .lock()
             .expect("active")
-            .insert(enqueued.message.message_id.clone(), entry);
+            .insert(enqueued.message.message_id.clone(), turn);
 
         let aborted = service.abort_lane(&lane);
         assert_eq!(aborted, 1);
@@ -1780,12 +1886,12 @@ mod tests {
                 .expect("claimed");
         }
 
-        let entry = synthetic_turn_entry(&enqueued.message);
+        let turn = build_handoff_lane_turn(&enqueued.message);
         service
             .active
             .lock()
             .expect("active")
-            .insert(enqueued.message.message_id.clone(), entry);
+            .insert(enqueued.message.message_id.clone(), turn);
 
         let superseded = service.supersede_lane(&lane);
         assert_eq!(superseded, 1);
@@ -1799,5 +1905,116 @@ mod tests {
         assert_eq!(message.status, AgentMessageStatus::Superseded);
 
         prompt_queue.stop().await;
+    }
+
+    #[test]
+    fn snapshots_omit_unstarted_superseded_handoffs_and_preserve_chronological_order() {
+        let directory = tempdir().expect("temp dir");
+        let db = StateDb::open(directory.path().join("state.db")).expect("state db");
+        let hub = WebSocketHub::new(crate::WebSocketConfig::default());
+        let connection = db.connect().expect("connection");
+        for (job_id, created_at) in [("job-1", 10), ("job-2", 20), ("job-3", 30)] {
+            connection
+                .execute(
+                    "INSERT INTO action_jobs
+                       (id, project_id, job_kind, issue_title, status, created_at, updated_at,
+                        requires_agent_handoff)
+                     VALUES (?1, 'project-1', 'pull_request_review',
+                             'Review handoff', 'completed', ?2, ?2, 1)",
+                    params![job_id, created_at],
+                )
+                .expect("review job");
+        }
+        drop(connection);
+
+        enqueue_review_verdict_message(
+            &db,
+            &hub,
+            ReviewVerdictMessage {
+                auth_user_id: "user-1",
+                project_id: "project-1",
+                workspace_root: "/repo",
+                issue_id: 686,
+                issue_title: "Branch badge",
+                issue_url: Some("https://github.com/Andy963/ads/issues/686"),
+                pr_number: Some(687),
+                branch: Some("codex/issue-686"),
+                base_sha: Some("base"),
+                head_sha: Some("head-1"),
+                status: "INCOMPLETE",
+                job_id: "job-1",
+                source_created_at: 10,
+                lane_generation: 1,
+            },
+        )
+        .expect("enqueue job-1");
+
+        enqueue_review_verdict_message(
+            &db,
+            &hub,
+            ReviewVerdictMessage {
+                auth_user_id: "user-1",
+                project_id: "project-1",
+                workspace_root: "/repo",
+                issue_id: 686,
+                issue_title: "Branch badge",
+                issue_url: Some("https://github.com/Andy963/ads/issues/686"),
+                pr_number: Some(687),
+                branch: Some("codex/issue-686"),
+                base_sha: Some("base"),
+                head_sha: Some("head-2"),
+                status: "INCOMPLETE",
+                job_id: "job-2",
+                source_created_at: 20,
+                lane_generation: 1,
+            },
+        )
+        .expect("enqueue job-2");
+
+        {
+            let connection = db.connect().expect("connection");
+            let store = AgentMessageStore::new(&connection).expect("store");
+            store
+                .claim("review-verdict:job-2", "worker-1", 10_000, 100)
+                .expect("claim job-2")
+                .expect("claimed job-2");
+            store
+                .mark_failed("review-verdict:job-2", "worker-1", "timeout", 200)
+                .expect("fail job-2")
+                .expect("failed job-2");
+        }
+
+        enqueue_review_verdict_message(
+            &db,
+            &hub,
+            ReviewVerdictMessage {
+                auth_user_id: "user-1",
+                project_id: "project-1",
+                workspace_root: "/repo",
+                issue_id: 686,
+                issue_title: "Branch badge",
+                issue_url: Some("https://github.com/Andy963/ads/issues/686"),
+                pr_number: Some(687),
+                branch: Some("codex/issue-686"),
+                base_sha: Some("base"),
+                head_sha: Some("head-3"),
+                status: "PASS",
+                job_id: "job-3",
+                source_created_at: 30,
+                lane_generation: 1,
+            },
+        )
+        .expect("enqueue job-3");
+
+        let snapshots = agent_message_snapshots(&db, "user-1", "project-1", 1);
+        let ids: Vec<&str> = snapshots
+            .iter()
+            .filter_map(|entry| entry["messageId"].as_str())
+            .collect();
+        assert_eq!(ids, vec!["review-verdict:job-2", "review-verdict:job-3"]);
+        assert_eq!(snapshots[0]["status"], "superseded");
+        assert_eq!(snapshots[0]["attempts"], 1);
+        assert_eq!(snapshots[1]["status"], "pending");
+        assert_eq!(snapshots[1]["attempts"], 0);
     }
 }

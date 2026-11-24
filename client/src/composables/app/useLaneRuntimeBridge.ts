@@ -4,7 +4,7 @@ import { computed, onBeforeUnmount, ref, watch, type Ref } from "vue";
 // needs four parent hops to reach the repo root. A type-only import is erased
 // at build time, so a wrong depth here would not fail build or vitest.
 import type { CanonicalLaneId } from "../../../../ts-server/shared/terminology.js";
-import type { QueuedPrompt } from "../../app/controllerTypes.js";
+import type { PendingAgentHandoffItem, QueuedPrompt } from "../../app/controllerTypes.js";
 
 export type ChatLane = CanonicalLaneId;
 
@@ -18,6 +18,7 @@ type ResumableSessionsHiddenShape = { singleTurn: number; duplicates: number; fo
 type RuntimeShape = {
   messages: Ref<unknown[]>;
   queuedPrompts: Ref<QueuedPrompt[]>;
+  pendingAgentHandoffs?: Ref<PendingAgentHandoffItem[]>;
   pendingImages: Ref<unknown[]>;
   connected: Ref<boolean>;
   ws?: unknown;
@@ -184,6 +185,9 @@ export function useLaneRuntimeBridge(params: {
   const acopilotQueuedPrompts = computed(() =>
     mapQueuedPrompts(acopilotRuntime.value.queuedPrompts.value),
   );
+  const acopilotPendingAgentHandoffs = computed(
+    () => acopilotRuntime.value.pendingAgentHandoffs?.value ?? [],
+  );
   const acopilotPendingImages = computed(() => acopilotRuntime.value.pendingImages.value);
   const acopilotConnected = computed(() => acopilotRuntime.value.connected.value);
   const acopilotReady = computed(() => runtimeIsReady(acopilotRuntime.value));
@@ -326,6 +330,7 @@ export function useLaneRuntimeBridge(params: {
     setActiveChatLane,
     acopilotMessages,
     acopilotQueuedPrompts,
+    acopilotPendingAgentHandoffs,
     acopilotPendingImages,
     acopilotConnected,
     acopilotReady,

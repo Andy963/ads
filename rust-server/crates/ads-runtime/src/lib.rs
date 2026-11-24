@@ -11,7 +11,8 @@ use ads_state::{
     PromptQueueStatus, PromptQueueStore, ReconcilePromptIdentitiesInput, StateDb, StateError,
     StateResult,
 };
-use serde_json::Value;
+use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
 use thiserror::Error;
 use tokio::task::JoinHandle;
 
@@ -63,21 +64,128 @@ impl PromptQueueRunOutcome {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum LaneTurnKey {
+    PromptQueue(i64),
+    AgentHandoff(String),
+    Scheduler(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LaneTurnKind {
+    UserPrompt,
+    AgentHandoff,
+    Scheduler,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LaneTurn {
+    pub key: LaneTurnKey,
+    pub kind: LaneTurnKind,
+    pub client_message_id: String,
+    pub auth_user_id: String,
+    pub user_id: i64,
+    pub session_id: String,
+    pub chat_session_id: String,
+    pub history_key: String,
+    pub logical_history_key: String,
+    pub lane_namespace: String,
+    pub lane_generation: i64,
+    pub workspace_root: String,
+    pub payload: Map<String, Value>,
+    pub history_display_text: Option<String>,
+    pub created_at: i64,
+}
+
+impl LaneTurn {
+    pub fn from_prompt_entry(entry: &PromptQueueEntry) -> Self {
+        let kind = match entry.payload.get("origin").and_then(Value::as_str) {
+            Some("agent") => LaneTurnKind::AgentHandoff,
+            _ => LaneTurnKind::UserPrompt,
+        };
+        Self {
+            key: LaneTurnKey::PromptQueue(entry.id),
+            kind,
+            client_message_id: entry.client_message_id.clone(),
+            auth_user_id: entry.auth_user_id.clone(),
+            user_id: entry.user_id,
+            session_id: entry.session_id.clone(),
+            chat_session_id: entry.chat_session_id.clone(),
+            history_key: entry.history_key.clone(),
+            logical_history_key: entry.logical_history_key.clone(),
+            lane_namespace: entry.lane_namespace.clone(),
+            lane_generation: entry.lane_generation,
+            workspace_root: entry.workspace_root.clone(),
+            payload: entry.payload.clone(),
+            history_display_text: None,
+            created_at: entry.created_at,
+        }
+    }
+
+    pub fn lane(&self) -> PromptQueueLane {
+        PromptQueueLane {
+            auth_user_id: self.auth_user_id.clone(),
+            session_id: self.session_id.clone(),
+            chat_session_id: self.chat_session_id.clone(),
+            history_key: self.history_key.clone(),
+            logical_history_key: self.logical_history_key.clone(),
+            lane_namespace: self.lane_namespace.clone(),
+            lane_generation: self.lane_generation,
+        }
+    }
+
+    pub fn matches_lane(&self, lane: &PromptQueueLane) -> bool {
+        self.auth_user_id == lane.auth_user_id
+            && self.session_id == lane.session_id
+            && self.chat_session_id == lane.chat_session_id
+            && self.logical_history_key == lane.logical_history_key
+            && self.lane_namespace == lane.lane_namespace
+            && self.lane_generation == lane.lane_generation
+    }
+}
+
+impl From<PromptQueueEntry> for LaneTurn {
+    fn from(entry: PromptQueueEntry) -> Self {
+        Self::from_prompt_entry(&entry)
+    }
+}
+
 pub trait PromptQueueRunner: Send + Sync {
-    fn reconcile_before_run<'a>(
+    fn reconcile_lane_turn<'a>(
         &'a self,
-        _entry: &'a PromptQueueEntry,
+        _turn: &'a LaneTurn,
     ) -> PromptQueueFuture<'a, StateResult<Option<PromptQueueRunOutcome>>> {
         Box::pin(async { Ok(None) })
+    }
+
+    fn run_lane_turn<'a>(
+        &'a self,
+        turn: LaneTurn,
+        context: PromptRunContext,
+    ) -> PromptQueueFuture<'a, StateResult<PromptQueueRunOutcome>>;
+
+    fn abort_lane_turn(&self, _turn: &LaneTurn) {}
+
+    fn reconcile_before_run<'a>(
+        &'a self,
+        entry: &'a PromptQueueEntry,
+    ) -> PromptQueueFuture<'a, StateResult<Option<PromptQueueRunOutcome>>> {
+        let turn = LaneTurn::from_prompt_entry(entry);
+        Box::pin(async move { self.reconcile_lane_turn(&turn).await })
     }
 
     fn run_prompt<'a>(
         &'a self,
         entry: PromptQueueEntry,
         context: PromptRunContext,
-    ) -> PromptQueueFuture<'a, StateResult<PromptQueueRunOutcome>>;
+    ) -> PromptQueueFuture<'a, StateResult<PromptQueueRunOutcome>> {
+        self.run_lane_turn(LaneTurn::from(entry), context)
+    }
 
-    fn abort_run(&self, _entry: &PromptQueueEntry) {}
+    fn abort_run(&self, entry: &PromptQueueEntry) {
+        self.abort_lane_turn(&LaneTurn::from_prompt_entry(entry));
+    }
 }
 
 #[derive(Debug, Error)]
