@@ -134,6 +134,35 @@ pub struct ReviewQueueAck {
     pub note: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[serde(deny_unknown_fields)]
+pub struct ReworkDeclaration {
+    pub prior_job_id: String,
+    pub issue_id: i64,
+    pub pr_number: i64,
+    pub base_sha: String,
+    pub rejected_head_sha: String,
+    pub new_head_sha: String,
+    pub root_cause: String,
+    pub invariant: String,
+    pub audited_scope: Vec<String>,
+    pub changed_behavior: String,
+    pub regression_cases: Vec<String>,
+    pub verification_evidence: Vec<String>,
+    pub residual_risks: Vec<String>,
+}
+
+impl ReworkDeclaration {
+    pub(crate) fn targets_same_rejection(&self, other: &Self) -> bool {
+        self.prior_job_id == other.prior_job_id
+            && self.issue_id == other.issue_id
+            && self.pr_number == other.pr_number
+            && self.base_sha == other.base_sha
+            && self.rejected_head_sha == other.rejected_head_sha
+    }
+}
+
 pub type TargetResolver = Arc<
     dyn Fn(ResolveReviewRequest) -> BoxFuture<Result<ResolvedReview, ReviewError>> + Send + Sync,
 >;

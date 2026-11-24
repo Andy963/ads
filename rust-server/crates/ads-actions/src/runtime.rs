@@ -28,7 +28,7 @@ pub fn review_action_tools_factory(queue: Arc<ReviewQueue>) -> ActionToolsFactor
             .get("origin")
             .and_then(serde_json::Value::as_str)
             == Some("system");
-        Some(ActionTools::new(move || {
+        Some(ActionTools::new_with_arguments(move |arguments| {
             let queue = Arc::clone(&queue);
             let project_id = project_id.clone();
             let auth_user_id = auth_user_id.clone();
@@ -37,6 +37,7 @@ pub fn review_action_tools_factory(queue: Arc<ReviewQueue>) -> ActionToolsFactor
             async move {
                 let repo_path = resolve_repo_root(Path::new(&workspace_root)).await;
                 let branch = current_branch(&repo_path).await;
+                let current_head_sha = git_stdout(&repo_path, &["rev-parse", "HEAD"]).await;
                 let canonical = canonical_project_id(&project_id, Some(&repo_path));
                 let ack = queue
                     .dispatch(
@@ -49,6 +50,8 @@ pub fn review_action_tools_factory(queue: Arc<ReviewQueue>) -> ActionToolsFactor
                             lane_generation,
                             chat_session_id: Some(chat_session_id),
                             automatic,
+                            rework_declaration: arguments.get("rework").cloned(),
+                            current_head_sha,
                         },
                         now_ms(),
                     )

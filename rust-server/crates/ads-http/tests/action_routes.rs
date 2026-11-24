@@ -76,6 +76,8 @@ fn test_app() -> TestApp {
                 pr_url: "https://example.test/pr/12".to_string(),
                 auth_user_id: "user-1".to_string(),
                 chat_session_id: "main".to_string(),
+                rework_declaration_json: None,
+                rework_root_job_id: None,
             },
             1_700_000_000_000,
         )

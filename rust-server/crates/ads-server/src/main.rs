@@ -58,17 +58,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         AgentRuntimeBackend::Native => (native_runner.clone(), native_runner.clone()),
         AgentRuntimeBackend::CodexAppServer => {
             let factory: CodexActionToolsFactory = Arc::new(move |entry| {
-                native_action_tools(entry).map(|tools: ActionTools| {
-                    AgentActionTools::new(move || {
-                        let tools = tools.clone();
-                        async move {
-                            tools
-                                .review_action()
-                                .await
-                                .map_err(|error| error.to_string())
-                        }
-                    })
-                })
+                native_action_tools(entry)
+                    .map(|tools: ActionTools| AgentActionTools::from_native(tools))
             });
             let mut prompt_options =
                 CodexAppServerPromptRunnerOptions::new(state_db.clone(), SpawnOptions::default());

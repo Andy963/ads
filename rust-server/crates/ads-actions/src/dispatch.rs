@@ -8,7 +8,7 @@ use ads_state::{
 use rusqlite::{Connection, OptionalExtension, params};
 use uuid::Uuid;
 
-use crate::types::{ReviewError, ReviewQueueAck};
+use crate::types::{ReviewError, ReviewQueueAck, ReworkDeclaration};
 
 pub const REVIEW_QUEUE_NOTE: &str = "Review runs in the Actions lane. The verdict is published as a structured comment on the backing Issue and the Acopilot lane is woken when it is ready.";
 
@@ -22,6 +22,8 @@ pub struct ReviewDispatchRequest {
     pub lane_generation: i64,
     pub chat_session_id: Option<String>,
     pub automatic: bool,
+    pub rework_declaration: Option<serde_json::Value>,
+    pub current_head_sha: Option<String>,
 }
 
 const AUTOMATIC_REVIEW_FAILURE_WINDOW_MS: i64 = 15 * 60 * 1000;
@@ -97,6 +99,113 @@ pub fn dispatch_review_job(
         return Ok(review_queue_ack(job));
     }
 
+    let latest_review = jobs
+        .iter()
+        .filter(|job| {
+            job.job_kind == ActionJobKind::PullRequestReview
+                && job.branch.as_deref().unwrap_or("") == branch
+                && (pr_number == 0 || job.pr_number == Some(pr_number))
+                && job.superseded_at.is_none()
+        })
+        .max_by(|left, right| {
+            (left.created_at, left.id.as_str()).cmp(&(right.created_at, right.id.as_str()))
+        });
+    let inherited_declaration = latest_review
+        .filter(|job| is_operational_review_outcome(job))
+        .and_then(|job| job.rework_declaration_json.as_deref())
+        .map(serde_json::from_str::<ReworkDeclaration>)
+        .transpose()?;
+    let declaration_prior = if let Some(declaration) = inherited_declaration.as_ref() {
+        jobs.iter().find(|job| {
+            job.id == declaration.prior_job_id
+                && job.job_kind == ActionJobKind::PullRequestReview
+                && job.branch.as_deref().unwrap_or("") == branch
+                && (pr_number == 0 || job.pr_number == Some(pr_number))
+                && (job.superseded_at.is_none()
+                    || latest_review.is_some_and(|latest| {
+                        latest.rework_root_job_id.as_deref()
+                            == Some(declaration.prior_job_id.as_str())
+                    }))
+                && (job.rework_root_job_id.as_deref() == Some(declaration.prior_job_id.as_str())
+                    || (job.id == declaration.prior_job_id && job.rework_root_job_id.is_none()))
+                && job.status == ActionJobStatus::Completed
+                && job
+                    .current_step
+                    .as_deref()
+                    .is_some_and(|step| step.starts_with("REJECT:"))
+                && serde_json::from_str::<Vec<ads_reviewer::ReviewVerdict>>(
+                    &job.review_verdicts_json,
+                )
+                .is_ok_and(|verdicts| {
+                    verdicts
+                        .iter()
+                        .any(|verdict| verdict.status == ads_reviewer::ReviewVerdictStatus::Reject)
+                })
+        })
+    } else {
+        latest_review.filter(|job| {
+            job.status == ActionJobStatus::Completed
+                && job
+                    .current_step
+                    .as_deref()
+                    .is_some_and(|step| step.starts_with("REJECT:"))
+                && serde_json::from_str::<Vec<ads_reviewer::ReviewVerdict>>(
+                    &job.review_verdicts_json,
+                )
+                .is_ok_and(|verdicts| {
+                    verdicts
+                        .iter()
+                        .any(|verdict| verdict.status == ads_reviewer::ReviewVerdictStatus::Reject)
+                })
+        })
+    };
+    let provided_declaration = request
+        .rework_declaration
+        .as_ref()
+        .map(|value| serde_json::from_value::<ReworkDeclaration>(value.clone()))
+        .transpose()?;
+    let selected_declaration = match (provided_declaration, inherited_declaration) {
+        (Some(provided), Some(inherited)) if !provided.targets_same_rejection(&inherited) => {
+            return Err(ReviewError::Conflict(
+                "An operational retry must preserve the original REJECT job, Issue, PR, base, and rejected head. Provide an updated complete declaration for the current head."
+                    .to_string(),
+            ));
+        }
+        (Some(provided), _) => Some(provided),
+        (None, Some(inherited)) => Some(inherited),
+        (None, None) => None,
+    };
+    let rework_declaration = match (declaration_prior, selected_declaration) {
+        (None, None) => None,
+        (Some(_), None) => {
+            return Err(ReviewError::Conflict(
+                "A complete rework declaration is required before redispatch after REJECT."
+                    .to_string(),
+            ));
+        }
+        (None, Some(_)) => {
+            return Err(ReviewError::Conflict(
+                "A rework declaration is only valid after a REJECT verdict.".to_string(),
+            ));
+        }
+        (Some(prior), Some(declaration)) => {
+            let target_pr_number = if pr_number > 0 {
+                pr_number
+            } else {
+                declaration.pr_number
+            };
+            validate_rework_declaration(
+                &declaration,
+                prior,
+                &project_id,
+                target_pr_number,
+                &branch,
+                request.current_head_sha.as_deref(),
+            )?;
+            Some(serde_json::to_string(&declaration)?)
+        }
+    };
+
     if request.automatic && !branch.is_empty() {
         let cutoff = now - AUTOMATIC_REVIEW_FAILURE_WINDOW_MS;
         let consecutive_failures = jobs
@@ -116,8 +225,14 @@ pub fn dispatch_review_job(
         }
     }
 
+    let rework_root_job_id = rework_declaration
+        .as_deref()
+        .map(serde_json::from_str::<ReworkDeclaration>)
+        .transpose()?
+        .map(|declaration| declaration.prior_job_id);
+    let transaction = connection.unchecked_transaction()?;
     let job = create_action_job(
-        &connection,
+        &transaction,
         CreateActionJob {
             id: Uuid::new_v4().to_string(),
             project_id,
@@ -136,6 +251,8 @@ pub fn dispatch_review_job(
             pr_url: String::new(),
             auth_user_id: auth_user_id.clone(),
             chat_session_id,
+            rework_declaration_json: rework_declaration,
+            rework_root_job_id,
         },
         now,
     )?;
@@ -154,7 +271,7 @@ pub fn dispatch_review_job(
         )
     };
     update_action_job_status(
-        &connection,
+        &transaction,
         &job.id,
         ActionJobStatus::Queued,
         ActionJobStatusUpdate {
@@ -164,10 +281,63 @@ pub fn dispatch_review_job(
         now,
         false,
     )?;
-    let job = ads_state::get_action_job(&connection, &job.id)?.ok_or_else(|| {
+    let job = ads_state::get_action_job(&transaction, &job.id)?.ok_or_else(|| {
         ReviewError::Other("Failed to read back dispatched review job.".to_string())
     })?;
+    transaction.commit()?;
     Ok(review_queue_ack(job))
+}
+
+pub(crate) fn is_operational_review_outcome(job: &ActionJobRecord) -> bool {
+    job.status == ActionJobStatus::Failed
+        || (job.status == ActionJobStatus::Completed
+            && job
+                .current_step
+                .as_deref()
+                .is_some_and(|step| step.starts_with("INCOMPLETE:") || step.starts_with("ERROR:")))
+}
+
+fn validate_rework_declaration(
+    declaration: &ReworkDeclaration,
+    prior: &ActionJobRecord,
+    project_id: &str,
+    pr_number: i64,
+    branch: &str,
+    current_head_sha: Option<&str>,
+) -> Result<(), ReviewError> {
+    let nonempty = |value: &str| !value.trim().is_empty();
+    let valid = declaration.prior_job_id == prior.id
+        && declaration.issue_id == prior.issue_id.unwrap_or_default()
+        && declaration.pr_number == prior.pr_number.unwrap_or_default()
+        && declaration.pr_number == pr_number
+        && declaration.base_sha == prior.base_sha.as_deref().unwrap_or_default()
+        && declaration.rejected_head_sha == prior.head_sha.as_deref().unwrap_or_default()
+        && current_head_sha == Some(declaration.new_head_sha.as_str())
+        && declaration.new_head_sha != declaration.rejected_head_sha
+        && prior.project_id == project_id
+        && prior.branch.as_deref().unwrap_or("") == branch
+        && nonempty(&declaration.root_cause)
+        && nonempty(&declaration.invariant)
+        && !declaration.audited_scope.is_empty()
+        && declaration.audited_scope.iter().all(|item| nonempty(item))
+        && nonempty(&declaration.changed_behavior)
+        && !declaration.regression_cases.is_empty()
+        && declaration
+            .regression_cases
+            .iter()
+            .all(|item| nonempty(item))
+        && !declaration.verification_evidence.is_empty()
+        && declaration
+            .verification_evidence
+            .iter()
+            .all(|item| nonempty(item))
+        && declaration.residual_risks.iter().all(|item| nonempty(item));
+    if !valid {
+        return Err(ReviewError::Conflict(
+            "The rework declaration is incomplete, stale, or belongs to a different Issue, PR, branch, base, or rejected head. Provide a complete declaration for the latest REJECT job.".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 pub(crate) fn resolve_actions_lane(

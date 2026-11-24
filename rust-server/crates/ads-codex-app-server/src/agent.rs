@@ -6,6 +6,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
+use ads_native::ActionTools;
 use serde::Serialize;
 use serde_json::{Value, json};
 use thiserror::Error;
@@ -16,7 +17,50 @@ use crate::{CodexAppServerClient, RpcError, SpawnOptions, Subscription};
 
 const CODEX_AGENT_ID: &str = "codex";
 const DEFAULT_REASONING_EFFORT: &str = "high";
-const REVIEW_ACTION_DESCRIPTION: &str = "Enqueue a read-only Reviewer job for the current Issue-backed pull request and return immediately. The verdict is published as a comment on the backing Issue (marker: ads:review-verdict) and the Acopilot lane is woken to read it.";
+const REVIEW_ACTION_DESCRIPTION: &str = "Enqueue a read-only Reviewer job for the current Issue-backed pull request and return immediately. After REJECT, include the complete rework declaration. The verdict is published as a comment on the backing Issue (marker: ads:review-verdict) and the Acopilot lane is woken to read it.";
+
+fn review_action_input_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "rework": {
+                "type": "object",
+                "properties": {
+                    "prior_job_id": {"type": "string"},
+                    "issue_id": {"type": "integer"},
+                    "pr_number": {"type": "integer"},
+                    "base_sha": {"type": "string"},
+                    "rejected_head_sha": {"type": "string"},
+                    "new_head_sha": {"type": "string"},
+                    "root_cause": {"type": "string"},
+                    "invariant": {"type": "string"},
+                    "audited_scope": {"type": "array", "items": {"type": "string"}},
+                    "changed_behavior": {"type": "string"},
+                    "regression_cases": {"type": "array", "items": {"type": "string"}},
+                    "verification_evidence": {"type": "array", "items": {"type": "string"}},
+                    "residual_risks": {"type": "array", "items": {"type": "string"}}
+                },
+                "required": [
+                    "prior_job_id",
+                    "issue_id",
+                    "pr_number",
+                    "base_sha",
+                    "rejected_head_sha",
+                    "new_head_sha",
+                    "root_cause",
+                    "invariant",
+                    "audited_scope",
+                    "changed_behavior",
+                    "regression_cases",
+                    "verification_evidence",
+                    "residual_risks"
+                ],
+                "additionalProperties": false
+            }
+        },
+        "additionalProperties": false
+    })
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SandboxMode {
@@ -177,7 +221,7 @@ pub type ActionToolFuture = Pin<Box<dyn Future<Output = Result<Value, String>> +
 
 #[derive(Clone)]
 pub struct AgentActionTools {
-    review_action: Arc<dyn Fn() -> ActionToolFuture + Send + Sync>,
+    review_action: Arc<dyn Fn(Value) -> ActionToolFuture + Send + Sync>,
 }
 
 impl AgentActionTools {
@@ -187,12 +231,34 @@ impl AgentActionTools {
         Fut: Future<Output = Result<Value, String>> + Send + 'static,
     {
         Self {
-            review_action: Arc::new(move || Box::pin(review_action())),
+            review_action: Arc::new(move |_| Box::pin(review_action())),
         }
     }
 
-    async fn review_action(&self) -> Result<Value, String> {
-        (self.review_action)().await
+    pub fn new_with_arguments<F, Fut>(review_action: F) -> Self
+    where
+        F: Fn(Value) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<Value, String>> + Send + 'static,
+    {
+        Self {
+            review_action: Arc::new(move |arguments| Box::pin(review_action(arguments))),
+        }
+    }
+
+    pub fn from_native(tools: ActionTools) -> Self {
+        Self::new_with_arguments(move |arguments| {
+            let tools = tools.clone();
+            async move {
+                tools
+                    .review_action_with_arguments(arguments)
+                    .await
+                    .map_err(|error| error.to_string())
+            }
+        })
+    }
+
+    async fn review_action(&self, arguments: Value) -> Result<Value, String> {
+        (self.review_action)(arguments).await
     }
 }
 
@@ -1141,6 +1207,9 @@ impl CodexAppServerAgent {
         if tool != "review_action" {
             return failure_builtin_response("Unknown ADS built-in tool.");
         }
+        if !arguments.is_object() {
+            return failure_builtin_response("review_action arguments must be an object.");
+        }
         if let Some(previous) = completed
             .lock()
             .expect("builtin call cache lock")
@@ -1155,17 +1224,12 @@ impl CodexAppServerAgent {
                 )
             };
         }
-        if !arguments.as_object().is_some_and(serde_json::Map::is_empty) {
-            return failure_builtin_response(
-                "Reviewer tools accept an empty argument object only.",
-            );
-        }
         let Some(action_tools) = action_tools else {
             return failure_builtin_response(
                 "review_action is unavailable without an authenticated Acopilot project context.",
             );
         };
-        let response = match action_tools.review_action().await {
+        let response = match action_tools.review_action(arguments.clone()).await {
             Ok(result) => builtin_response(&tool, &result),
             Err(error) => failure_builtin_response(&error),
         };
@@ -1611,11 +1675,7 @@ impl CodexAppServerAgent {
                     "type": "function",
                     "name": "review_action",
                     "description": REVIEW_ACTION_DESCRIPTION,
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {},
-                        "additionalProperties": false
-                    },
+                    "inputSchema": review_action_input_schema(),
                     "deferLoading": false
                 }),
             );

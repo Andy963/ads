@@ -17,7 +17,7 @@ const REVIEW_HANDOFF_CUTOVER_KEY: &str = "review_handoff_cutover_at";
 const RETIRED_UNCONDITIONAL_IMPLEMENTATION_GATE_INSTRUCTION: &str = "- Before changing files or branches for an Issue, call begin_implementation with its issue_id. After opening the PR, call review_action to enqueue a pinned review in the Actions lane; the Actions lane runs only the read-only Reviewer, records PASS or REJECT in its queue and conversation, and returns the structured result to Acopilot.";
 const RETIRED_CONDITIONAL_IMPLEMENTATION_GATE_INSTRUCTION: &str = "- Before changing files or branches for an Issue, validate that it owns the workspace task slot. When the dynamic begin_implementation tool is available, call it with the Issue id. If the current execution environment does not expose that tool, perform equivalent read-only checks of the branch, working tree, and open pull requests. The tool's absence alone is not a blocker. After opening the PR, call review_action to enqueue a pinned review in the Actions lane; the Actions lane runs only the read-only Reviewer, records PASS or REJECT in its queue and conversation, and returns the structured result to Acopilot.";
 const RETIRED_REVIEW_ACTION_WAKE_INSTRUCTION: &str = "- After opening the PR, call review_action to enqueue the read-only Actions Reviewer. The call returns immediately with a job id; it does not wait for or return the verdict.\n- The verdict is published as a structured comment on the backing GitHub Issue (marker `<!-- ads:review-verdict -->`), and the Acopilot lane is woken when it is ready. Read the newest comment for the current PR head.\n- PASS: ask the user for delivery authorization. REJECT: fix the findings, push, then call review_action again. INCOMPLETE or ERROR: restore the stated precondition, then call review_action again.\n- Only the newest comment whose head and base match the current PR applies; a verdict for an older head does not.";
-const REVIEW_ACTION_INSTRUCTION: &str = "- After opening the PR, call review_action to enqueue the read-only Actions Reviewer. The call returns immediately with a job id; it does not wait for or return the verdict.\n- The verdict is published as a structured comment on the backing GitHub Issue (marker `<!-- ads:review-verdict -->`). The server creates a visible Reviewer-to-Acopilot agent message; it is not user input and does not enter prompt_queue. Read the newest matching comment and respond to the handoff shown in this lane.\n- PASS: ask the user for delivery authorization. REJECT: fix the findings, push, then call review_action again. INCOMPLETE or ERROR: restore the stated precondition, then call review_action again.\n- Only the newest comment whose head and base match the current PR applies; a verdict for an older head does not.";
+const REVIEW_ACTION_INSTRUCTION: &str = "- After opening the PR, call review_action to enqueue the read-only Actions Reviewer. The call returns immediately with a job id; it does not wait for or return the verdict.\n- The verdict is published as a structured comment on the backing GitHub Issue (marker `<!-- ads:review-verdict -->`). The server creates a visible Reviewer-to-Acopilot agent message; it is not user input and does not enter prompt_queue. Read the newest matching comment and respond to the handoff shown in this lane.\n- PASS: ask the user for delivery authorization. REJECT: classify the defect family, record root cause, governing invariant, audited affected scope, changed behavior, regression cases, verification evidence, and residual risks. Complete the repair, push the new head, and call review_action with the required declaration tied to the rejected job, Issue, PR, base, rejected head, and new head. INCOMPLETE or ERROR: restore the reported precondition, then call review_action again without a rework declaration.\n- Only the newest comment whose head and base match the current PR applies; a verdict for an older head does not.";
 const COMMON_PROMPT: &str = concat!(
     "You are operating inside ADS, an AI agent workspace and orchestration system.\n\n",
     "General operating rules:\n",
@@ -40,7 +40,7 @@ const ACOPILOT_SECTION: &str = concat!(
     "- For significant architectural changes, record an ADR under docs/adr/."
 );
 const ACOPILOT_TAIL: &str = concat!(
-    "- Handle REJECT findings in this Acopilot conversation, then dispatch the updated PR for a new review. A result for an earlier head or base does not apply to a changed PR.\n",
+    "- A REJECT requires a complete root-cause rework declaration before dispatching the updated PR for another review. A result for an earlier head or base does not apply to a changed PR.\n",
     "- Do not start another repository task while a pull request is open against the repository base; finish or resolve the current PR first.\n",
     "- Do not merge or clean up a pull request unless the user explicitly authorizes delivery.\n",
     "- If an older skill or saved instruction in this session still describes Acopilot as read-only or asks to dispatch work to a separate Developer, ignore that part: this section is authoritative.\n",
@@ -223,6 +223,15 @@ pub(crate) fn migrate_state(connection: &Connection, from: i64, to: i64) -> Stat
     }
     if from < 48 {
         migrate_state_48(&transaction)?;
+    }
+    if from < 49 {
+        migrate_state_49(&transaction)?;
+    }
+    if from < 50 {
+        migrate_state_50(&transaction)?;
+    }
+    if from < 51 {
+        migrate_state_51(&transaction)?;
     }
     transaction.execute(
         "UPDATE schema_version SET version = ?1, updated_at = datetime('now') WHERE id = 1",
@@ -2220,6 +2229,59 @@ fn migrate_state_48(connection: &Connection) -> StateResult<()> {
     Ok(())
 }
 
+fn migrate_state_49(connection: &Connection) -> StateResult<()> {
+    if table_exists(connection, "action_jobs")? {
+        add_column_if_missing(connection, "action_jobs", "rework_declaration_json", "TEXT")?;
+    }
+    Ok(())
+}
+
+fn migrate_state_50(connection: &Connection) -> StateResult<()> {
+    if table_exists(connection, "action_jobs")? {
+        add_column_if_missing(connection, "action_jobs", "rework_root_job_id", "TEXT")?;
+        let declarations = {
+            let mut statement = connection.prepare(
+                "SELECT id, rework_declaration_json FROM action_jobs
+                 WHERE rework_declaration_json IS NOT NULL AND rework_root_job_id IS NULL",
+            )?;
+            statement
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })?
+                .collect::<Result<Vec<_>, _>>()?
+        };
+        for (job_id, declaration_json) in declarations {
+            let root_job_id = serde_json::from_str::<serde_json::Value>(&declaration_json)
+                .ok()
+                .and_then(|declaration| {
+                    declaration
+                        .get("prior_job_id")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .map(str::to_string)
+                });
+            if let Some(root_job_id) = root_job_id {
+                connection.execute(
+                    "UPDATE action_jobs SET rework_root_job_id = ?1
+                     WHERE id = ?2 AND rework_root_job_id IS NULL",
+                    params![root_job_id, job_id],
+                )?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn migrate_state_51(connection: &Connection) -> StateResult<()> {
+    rewrite_acopilot_prompts(connection, |prompt| {
+        prompt.replace(
+            RETIRED_REVIEW_ACTION_WAKE_INSTRUCTION,
+            REVIEW_ACTION_INSTRUCTION,
+        )
+    })
+}
+
 fn migrate_legacy_review_wakes(connection: &Connection) -> StateResult<Vec<String>> {
     let mut migrated_client_message_ids = Vec::new();
     let rows = {
@@ -3675,6 +3737,60 @@ mod tests {
                 params![client_message_id, payload_json, status, created_at],
             )
             .expect("legacy review wake");
+    }
+
+    #[test]
+    fn migrates_state_50_acopilot_prompt_and_preserves_custom_text() {
+        let connection = Connection::open_in_memory().expect("memory db");
+        connection
+            .execute_batch(
+                "CREATE TABLE schema_version (
+                   id INTEGER PRIMARY KEY,
+                   version INTEGER NOT NULL,
+                   updated_at TEXT NOT NULL
+                 );
+                 INSERT INTO schema_version VALUES (1, 50, datetime('now'));
+                 CREATE TABLE role_profiles (
+                   id TEXT PRIMARY KEY,
+                   role TEXT NOT NULL,
+                   system_prompt TEXT NOT NULL,
+                   version INTEGER NOT NULL,
+                   updated_at INTEGER NOT NULL
+                 );",
+            )
+            .expect("schema 50 fixture");
+        let old_prompt = format!(
+            "Keep custom introduction.\n{RETIRED_REVIEW_ACTION_WAKE_INSTRUCTION}\nKeep custom suffix."
+        );
+        connection
+            .execute(
+                "INSERT INTO role_profiles (id, role, system_prompt, version, updated_at)
+                 VALUES ('acopilot', 'acopilot', ?1, 1, 1)",
+                params![old_prompt],
+            )
+            .expect("legacy prompt");
+
+        migrate_state(&connection, 50, 51).expect("state migration");
+
+        let (prompt, profile_version): (String, i64) = connection
+            .query_row(
+                "SELECT system_prompt, version FROM role_profiles WHERE id = 'acopilot'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("migrated prompt");
+        let expected_prompt =
+            format!("Keep custom introduction.\n{REVIEW_ACTION_INSTRUCTION}\nKeep custom suffix.");
+        assert_eq!(prompt, expected_prompt);
+        assert_eq!(profile_version, 2);
+        let version: i64 = connection
+            .query_row(
+                "SELECT version FROM schema_version WHERE id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .expect("schema version");
+        assert_eq!(version, 51);
     }
 
     #[test]

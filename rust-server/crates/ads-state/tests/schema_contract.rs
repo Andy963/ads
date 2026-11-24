@@ -42,6 +42,104 @@ fn opens_state_database_at_the_contract_version() {
 }
 
 #[test]
+fn migrates_state_48_to_51_with_rework_lineage_columns() {
+    let directory = tempdir().expect("temp dir");
+    let path = directory.path().join("state.db");
+    StateDb::open(&path).expect("state db");
+    let connection = Connection::open(&path).expect("connection");
+    connection
+        .execute_batch(
+            "ALTER TABLE action_jobs DROP COLUMN rework_declaration_json;
+             ALTER TABLE action_jobs DROP COLUMN rework_root_job_id;
+             UPDATE schema_version SET version = 48 WHERE id = 1;",
+        )
+        .expect("version 48 fixture");
+    drop(connection);
+
+    let db = StateDb::open(&path).expect("migrated state db");
+    let connection = db.connect().expect("connection");
+    let version: i64 = connection
+        .query_row(
+            "SELECT version FROM schema_version WHERE id = 1",
+            [],
+            |row| row.get(0),
+        )
+        .expect("version");
+    let column_count: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('action_jobs')
+             WHERE name = 'rework_declaration_json'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("rework declaration column");
+    assert_eq!(version, STATE_SCHEMA_VERSION);
+    assert_eq!(column_count, 1);
+    let root_column_count: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('action_jobs')
+             WHERE name = 'rework_root_job_id'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("rework root column");
+    assert_eq!(root_column_count, 1);
+}
+
+#[test]
+fn migrates_state_49_to_51_backfilling_rework_root_lineage() {
+    let directory = tempdir().expect("temp dir");
+    let path = directory.path().join("state.db");
+    StateDb::open(&path).expect("state db");
+    let connection = Connection::open(&path).expect("connection");
+    connection
+        .execute_batch(
+            r#"INSERT INTO action_jobs (
+               id, project_id, job_kind, issue_id, issue_title, status, branch,
+               base_sha, head_sha, current_step, pr_number, superseded_at, created_at, updated_at
+             ) VALUES (
+               'reject-job', 'project-1', 'pull_request_review', 7, 'Issue 7', 'completed',
+               'codex/issue-7', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+               'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 'REJECT: defect', 12, 100, 1, 1
+             );
+             INSERT INTO action_jobs (
+               id, project_id, job_kind, issue_id, issue_title, status, branch,
+               base_sha, head_sha, current_step, pr_number, rework_declaration_json,
+               created_at, updated_at
+             ) VALUES (
+               'retry-job', 'project-1', 'pull_request_review', 7, 'Issue 7', 'completed',
+               'codex/issue-7', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+               'cccccccccccccccccccccccccccccccccccccccc', 'INCOMPLETE: upstream', 12,
+               '{"prior_job_id":"reject-job","issue_id":7,"pr_number":12,"base_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","rejected_head_sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","new_head_sha":"cccccccccccccccccccccccccccccccccccccccc","root_cause":"root cause","invariant":"invariant","audited_scope":["source"],"changed_behavior":"behavior","regression_cases":["regression"],"verification_evidence":["tests pass"],"residual_risks":[]}',
+               2, 2
+             );
+             ALTER TABLE action_jobs DROP COLUMN rework_root_job_id;
+             UPDATE schema_version SET version = 49 WHERE id = 1;"#,
+        )
+        .expect("schema 49 persisted review state");
+    drop(connection);
+
+    let db = StateDb::open(&path).expect("migrated state db");
+    let connection = db.connect().expect("connection");
+    let root_job_id: String = connection
+        .query_row(
+            "SELECT rework_root_job_id FROM action_jobs WHERE id = 'retry-job'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("backfilled rework root");
+    let rejected_job_superseded_at: i64 = connection
+        .query_row(
+            "SELECT superseded_at FROM action_jobs WHERE id = 'reject-job'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("superseded reject job");
+    assert_eq!(root_job_id, "reject-job");
+    assert_eq!(rejected_job_superseded_at, 100);
+}
+
+#[test]
 fn opens_workspace_database_at_the_contract_version() {
     let directory = tempdir().expect("temp dir");
     let path = directory.path().join("workspace.db");
@@ -331,10 +429,71 @@ fn checked_in_state_contract_matches_the_runtime_version() {
         "checked-in state contract must match STATE_SCHEMA_VERSION"
     );
     let manifest = include_str!("../../../contracts/sqlite/manifest.json");
+    let manifest_value: serde_json::Value = serde_json::from_str(manifest).expect("manifest json");
     assert!(
         manifest.contains(&format!("\"schema_version\": {STATE_SCHEMA_VERSION}")),
         "checked-in manifest must match STATE_SCHEMA_VERSION"
     );
+    assert_eq!(
+        manifest_value["state"]["schema_version"].as_i64(),
+        Some(STATE_SCHEMA_VERSION)
+    );
+    assert_eq!(
+        manifest_value["state_migration_count"].as_i64().unwrap()
+            + manifest_value["rust_state_contract_migration_count"]
+                .as_i64()
+                .unwrap(),
+        STATE_SCHEMA_VERSION
+    );
+    assert!(
+        manifest.contains("\"rust_state_contract_migration_count\": 9"),
+        "checked-in manifest must record the Rust-only state contract migrations"
+    );
+    assert!(contract_sql.contains("rework_declaration_json TEXT"));
+    assert!(contract_sql.contains("rework_root_job_id TEXT"));
+
+    let contract_connection = Connection::open_in_memory().expect("contract database");
+    contract_connection
+        .execute_batch(contract_sql)
+        .expect("execute checked-in SQLite contract");
+    for table in ["action_jobs", "agent_messages"] {
+        let columns = |connection: &Connection| {
+            let mut statement = connection
+                .prepare(&format!("PRAGMA table_info({table})"))
+                .expect("table info statement");
+            statement
+                .query_map([], |row| row.get::<_, String>(1))
+                .expect("table info rows")
+                .collect::<Result<Vec<_>, _>>()
+                .expect("table columns")
+        };
+        assert_eq!(
+            columns(&connection),
+            columns(&contract_connection),
+            "{table} columns"
+        );
+    }
+    for (object_type, manifest_field) in [
+        ("table", "tables"),
+        ("index", "indexes"),
+        ("trigger", "triggers"),
+        ("view", "views"),
+    ] {
+        let contract_count: i64 = contract_connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = ?1 AND sql IS NOT NULL
+                   AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '%_fts_%'",
+                params![object_type],
+                |row| row.get(0),
+            )
+            .expect("contract object count");
+        assert_eq!(
+            manifest_value["state"][manifest_field].as_i64(),
+            Some(contract_count),
+            "{object_type} manifest count"
+        );
+    }
 }
 
 #[test]
