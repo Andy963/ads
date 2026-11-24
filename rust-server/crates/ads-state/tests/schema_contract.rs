@@ -446,17 +446,18 @@ fn checked_in_state_contract_matches_the_runtime_version() {
         STATE_SCHEMA_VERSION
     );
     assert!(
-        manifest.contains("\"rust_state_contract_migration_count\": 9"),
+        manifest.contains("\"rust_state_contract_migration_count\": 10"),
         "checked-in manifest must record the Rust-only state contract migrations"
     );
     assert!(contract_sql.contains("rework_declaration_json TEXT"));
     assert!(contract_sql.contains("rework_root_job_id TEXT"));
+    assert!(contract_sql.contains("CREATE TABLE project_notes"));
 
     let contract_connection = Connection::open_in_memory().expect("contract database");
     contract_connection
         .execute_batch(contract_sql)
         .expect("execute checked-in SQLite contract");
-    for table in ["action_jobs", "agent_messages"] {
+    for table in ["action_jobs", "agent_messages", "project_notes"] {
         let columns = |connection: &Connection| {
             let mut statement = connection
                 .prepare(&format!("PRAGMA table_info({table})"))

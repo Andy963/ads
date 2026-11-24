@@ -233,6 +233,9 @@ pub(crate) fn migrate_state(connection: &Connection, from: i64, to: i64) -> Stat
     if from < 51 {
         migrate_state_51(&transaction)?;
     }
+    if from < 52 {
+        migrate_state_52(&transaction)?;
+    }
     transaction.execute(
         "UPDATE schema_version SET version = ?1, updated_at = datetime('now') WHERE id = 1",
         params![to],
@@ -2282,6 +2285,9 @@ fn migrate_state_51(connection: &Connection) -> StateResult<()> {
     })
 }
 
+fn migrate_state_52(connection: &Connection) -> StateResult<()> {
+    crate::ensure_project_notes_table(connection)
+}
 fn migrate_legacy_review_wakes(connection: &Connection) -> StateResult<Vec<String>> {
     let mut migrated_client_message_ids = Vec::new();
     let rows = {

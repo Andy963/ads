@@ -16,6 +16,7 @@ import { lazyComponent } from "./lib/asyncComponent";
 const DraggableModal = lazyComponent(() => import("./components/DraggableModal.vue"));
 const ModelManager = lazyComponent(() => import("./components/ModelManager.vue"));
 const SessionResumePicker = lazyComponent(() => import("./components/SessionResumePicker.vue"));
+const NotesDrawer = lazyComponent(() => import("./components/NotesDrawer.vue"));
 
 import { createAppController } from "./app/controller";
 import { useLaneRuntimeBridge, type ChatLane } from "./composables/app/useLaneRuntimeBridge";
@@ -130,11 +131,13 @@ const {
 } = createAppController();
 
 const settingsOpen = ref(false);
+const notesOpen = ref(false);
 
 type MobileDrawerSection = "projects" | "settings";
 type MobileContextActionId =
   | "resume"
   | "new-session"
+  | "notes"
   | "create-model"
   | "refresh-models";
 type MobileContextAction = {
@@ -410,6 +413,11 @@ const mobileContextActions = computed<MobileContextAction[]>(() => {
       label: "新建会话",
       disabled: activeLaneBusy.value || activeLaneNewSessionBlocked.value,
     },
+    {
+      id: "notes",
+      label: "闪念",
+      disabled: false,
+    },
   ];
 });
 
@@ -577,6 +585,11 @@ function handleMobileContextAction(actionId: MobileContextActionId): void {
   if (actionId === "new-session") {
     closeMobileDrawer();
     handleLaneNewSession();
+    return;
+  }
+  if (actionId === "notes") {
+    closeMobileDrawer();
+    openNotes();
     return;
   }
   if (actionId === "create-model") {
@@ -1457,6 +1470,33 @@ function closeSettings(): void {
   settingsOpen.value = false;
 }
 
+function openNotes(): void {
+  if (!loggedIn.value) return;
+  notesOpen.value = true;
+}
+
+function closeNotes(): void {
+  notesOpen.value = false;
+}
+
+async function handlePromoteNote(note: { projectId: string; content: string }): Promise<void> {
+  notesOpen.value = false;
+  const targetProjectId = String(note.projectId ?? "").trim();
+  if (
+    targetProjectId &&
+    targetProjectId !== activeProjectId.value &&
+    projects.value.some((project) => project.id === targetProjectId)
+  ) {
+    selectProject(targetProjectId);
+    await nextTick();
+  }
+  selectWorkspaceTab("acopilot");
+  await nextTick();
+  startNewAcopilotSession();
+  await nextTick();
+  acopilotComposerDraft.value = note.content;
+}
+
 async function onSettingsChanged(): Promise<void> {
   try {
     await loadModels();
@@ -1641,6 +1681,17 @@ const acopilotOperationalError = computed(() => loggedIn.value
       </div>
       <div class="right">
         <div v-if="!isMobile && activeWorkspaceView !== 'prs'" class="laneSessionActions">
+          <button
+            v-if="loggedIn"
+            class="laneTabIconBtn"
+            type="button"
+            title="闪念 (Notes)"
+            aria-label="闪念 (Notes)"
+            data-testid="lane-quick-notes"
+            @click.stop="openNotes"
+          >
+            <el-icon :size="15" aria-hidden="true"><Document /></el-icon>
+          </button>
           <button
             v-if="activeLaneHasResume && loggedIn"
             class="laneTabIconBtn"
@@ -2166,6 +2217,16 @@ const acopilotOperationalError = computed(() => loggedIn.value
         @refresh="refreshResumableSessions"
         @load-more="loadMoreResumableSessions"
         @resume="resumeSelectedSession"
+      />
+    </DraggableModal>
+
+    <DraggableModal v-if="notesOpen" card-variant="large" @close="closeNotes">
+      <NotesDrawer
+        :api="api"
+        :project-id="activeProjectId"
+        :projects="projects"
+        @close="closeNotes"
+        @promote="handlePromoteNote($event)"
       />
     </DraggableModal>
 

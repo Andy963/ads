@@ -392,8 +392,10 @@ describe("mobile navigation behavior", () => {
     const menu = wrapper.find('[data-testid="mobile-context-menu"]');
     const actions = menu.findAll("button.mobileContextAction");
     expect(menu.attributes("aria-label")).toBe("项目操作");
-    expect(actions).toHaveLength(2);
-    expect(actions.every((action) => (action.element as HTMLButtonElement).disabled)).toBe(true);
+    expect(actions).toHaveLength(3);
+    expect((menu.find('[data-testid="mobile-context-action-resume"]').element as HTMLButtonElement).disabled).toBe(true);
+    expect((menu.find('[data-testid="mobile-context-action-new-session"]').element as HTMLButtonElement).disabled).toBe(true);
+    expect((menu.find('[data-testid="mobile-context-action-notes"]').element as HTMLButtonElement).disabled).toBe(false);
 
     acopilotRuntime.busy.value = false;
     acopilotRuntime.connected.value = false;

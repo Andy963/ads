@@ -7,8 +7,8 @@ use ads_runtime::{
     LaneTurn, LaneTurnKey, LaneTurnKind, PromptQueueRunner, PromptQueueService, PromptRunContext,
 };
 use ads_state::{
-    AgentHandoff, AgentHandoffPayload, AgentMessageRecord, AgentMessageStore,
-    CONVERSATION_SERVICE, DEFAULT_HISTORY_MAX_ENTRIES_PER_SESSION, DEFAULT_HISTORY_MAX_TEXT_LENGTH,
+    AgentHandoff, AgentHandoffPayload, AgentMessageRecord, AgentMessageStore, CONVERSATION_SERVICE,
+    DEFAULT_HISTORY_MAX_ENTRIES_PER_SESSION, DEFAULT_HISTORY_MAX_TEXT_LENGTH,
     EnqueueAgentMessageResult, HistoryStore, NewAgentMessage, PromptQueueLane,
     REVIEW_VERDICT_COMMENT_MARKER, REVIEW_VERDICT_HANDOFF_KIND, ROLE_ACOPILOT,
     ReviewVerdictCommentLocator, ReviewVerdictHandoff, ReviewVerdictStatus, StateDb,
@@ -151,11 +151,7 @@ pub fn enqueue_review_verdict_message(
     Ok(result)
 }
 
-fn publish_superseded_transition(
-    db: &StateDb,
-    hub: &WebSocketHub,
-    message: &AgentMessageRecord,
-) {
+fn publish_superseded_transition(db: &StateDb, hub: &WebSocketHub, message: &AgentMessageRecord) {
     if message.is_unstarted_superseded() {
         broadcast_agent_message_snapshot(db, hub, message);
     } else {
@@ -1232,7 +1228,11 @@ fn render_review_verdict_model_prompt(verdict: &ReviewVerdictHandoff) -> String 
     let target = if verdict.issue_title.trim().is_empty() {
         format!("Issue #{}", verdict.issue_id)
     } else {
-        format!("Issue #{} ({})", verdict.issue_id, verdict.issue_title.trim())
+        format!(
+            "Issue #{} ({})",
+            verdict.issue_id,
+            verdict.issue_title.trim()
+        )
     };
     let head = verdict
         .head_sha
@@ -1290,9 +1290,7 @@ mod tests {
         LaneTurn, LaneTurnKey, LaneTurnKind, PromptQueueFuture, PromptQueueRunOutcome,
         PromptQueueRunner, PromptQueueService, PromptQueueServiceOptions, PromptRunContext,
     };
-    use ads_state::{
-        AgentMessageStatus, StateDb, StateResult, bump_lane_generation,
-    };
+    use ads_state::{AgentMessageStatus, StateDb, StateResult, bump_lane_generation};
     use tempfile::tempdir;
 
     use super::*;
@@ -1451,7 +1449,10 @@ mod tests {
             assert!(prompt.contains("Head SHA: head."));
             assert!(prompt.contains("job job-1"));
             let summary = project_review_verdict_summary(&verdict);
-            assert!(summary.contains(status), "status={status} summary={summary}");
+            assert!(
+                summary.contains(status),
+                "status={status} summary={summary}"
+            );
             assert!(!summary.contains("Read only that comment"));
         }
     }
@@ -2399,7 +2400,8 @@ mod tests {
     }
 
     #[test]
-    fn handoff_lane_turn_resolves_active_lane_then_role_then_conversation_default_and_re_resolves_on_retry() {
+    fn handoff_lane_turn_resolves_active_lane_then_role_then_conversation_default_and_re_resolves_on_retry()
+     {
         use ads_contract::models::ModelConfig;
         use ads_contract::ws::HistoryEntry;
         use ads_state::{
@@ -2564,7 +2566,10 @@ mod tests {
         {
             let connection = db.connect().expect("connection");
             connection
-                .execute("UPDATE role_profiles SET model_id = '' WHERE role = 'acopilot'", [])
+                .execute(
+                    "UPDATE role_profiles SET model_id = '' WHERE role = 'acopilot'",
+                    [],
+                )
                 .expect("clear role model");
         }
         let turn_service = build_handoff_lane_turn(&db, &enqueued.message);

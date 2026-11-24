@@ -361,12 +361,10 @@ fn reconcile_provider_models_prunes_obsolete_preserves_other_providers_and_clean
             .is_some()
     );
 
-    let conversation = get_model_service(&connection, ads_state::CONVERSATION_SERVICE).expect("service");
+    let conversation =
+        get_model_service(&connection, ads_state::CONVERSATION_SERVICE).expect("service");
     assert_eq!(conversation.model_ids, vec!["model-kept"]);
-    assert_eq!(
-        conversation.default_model_id.as_deref(),
-        Some("model-kept")
-    );
+    assert_eq!(conversation.default_model_id.as_deref(), Some("model-kept"));
     let role_model: String = connection
         .query_row(
             "SELECT model_id FROM role_profiles WHERE role = 'acopilot'",

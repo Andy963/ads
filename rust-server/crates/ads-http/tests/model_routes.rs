@@ -542,8 +542,8 @@ async fn provider_routes_store_credentials_without_echoing_them() {
 
 #[tokio::test]
 async fn provider_model_sync_prunes_missing_upstream_models_and_cleans_references() {
-    use std::sync::{Arc, Mutex};
     use axum::routing::get;
+    use std::sync::{Arc, Mutex};
     use tokio::net::TcpListener;
 
     let upstream_models = Arc::new(Mutex::new(vec![
@@ -587,7 +587,10 @@ async fn provider_model_sync_prunes_missing_upstream_models_and_cleans_reference
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{provider_a}");
-    let provider_a_id = provider_a["id"].as_str().expect("provider a id").to_string();
+    let provider_a_id = provider_a["id"]
+        .as_str()
+        .expect("provider a id")
+        .to_string();
 
     let (status, provider_b) = send(
         &app.router,
@@ -602,7 +605,10 @@ async fn provider_model_sync_prunes_missing_upstream_models_and_cleans_reference
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{provider_b}");
-    let provider_b_id = provider_b["id"].as_str().expect("provider b id").to_string();
+    let provider_b_id = provider_b["id"]
+        .as_str()
+        .expect("provider b id")
+        .to_string();
 
     let (status, other_model) = send(
         &app.router,
@@ -619,7 +625,10 @@ async fn provider_model_sync_prunes_missing_upstream_models_and_cleans_reference
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{other_model}");
-    let other_model_id = other_model["id"].as_str().expect("other model id").to_string();
+    let other_model_id = other_model["id"]
+        .as_str()
+        .expect("other model id")
+        .to_string();
 
     // First sync discovers model-keep and model-obsolete.
     let (status, first_sync) = send(
@@ -636,16 +645,14 @@ async fn provider_model_sync_prunes_missing_upstream_models_and_cleans_reference
     let keep_id = first_models
         .iter()
         .find(|m| m["modelId"] == "model-keep")
-        .expect("keep")
-        ["id"]
+        .expect("keep")["id"]
         .as_str()
         .expect("keep id")
         .to_string();
     let obsolete_id = first_models
         .iter()
         .find(|m| m["modelId"] == "model-obsolete")
-        .expect("obsolete")
-        ["id"]
+        .expect("obsolete")["id"]
         .as_str()
         .expect("obsolete id")
         .to_string();
@@ -684,10 +691,8 @@ async fn provider_model_sync_prunes_missing_upstream_models_and_cleans_reference
     assert_eq!(status, StatusCode::OK);
 
     // Upstream removes model-obsolete and adds model-added.
-    *upstream_models.lock().expect("upstream models") = vec![
-        "model-keep".to_string(),
-        "model-added".to_string(),
-    ];
+    *upstream_models.lock().expect("upstream models") =
+        vec!["model-keep".to_string(), "model-added".to_string()];
 
     let (status, second_sync) = send(
         &app.router,
