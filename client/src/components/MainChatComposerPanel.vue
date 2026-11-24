@@ -371,6 +371,30 @@ function attachFromActionMenu(): void {
   triggerFileInput();
 }
 
+const modelSelectorsRef = ref<InstanceType<typeof MainChatModelSelectors> | null>(null);
+
+const canChangeModel = computed(() => {
+  if (props.inputLocked || !props.connected || props.busy) return false;
+  return Boolean(modelSelectorsRef.value?.compatibleModelOptions?.length);
+});
+
+const modelActionSummary = computed(() => {
+  if (!props.connected) return "未连接";
+  const label = modelSelectorsRef.value?.capsuleLabel;
+  if (!label || label === "No models") return "无可用模型";
+  return label;
+});
+
+function openModelPickerFromActionMenu(): void {
+  releaseActionMenuSelection();
+  closeActionMenu();
+  modelSelectorsRef.value?.openPicker();
+}
+
+function onModelPickerClose(): void {
+  actionMenuTrigger.value?.focus({ preventScroll: true });
+}
+
 async function restoreFromActionMenu(): Promise<void> {
   releaseActionMenuSelection();
   closeActionMenu();
@@ -576,8 +600,9 @@ onBeforeUnmount(() => {
         :disabled="inputLocked"
         @change="onFileInputChange"
       />
-      <div class="composerMetadataRow" data-testid="composer-model-controls">
+      <div class="composerHiddenModelSelectors" aria-hidden="true">
         <MainChatModelSelectors
+          ref="modelSelectorsRef"
           :connected="connected"
           :busy="busy"
           :input-locked="inputLocked"
@@ -589,6 +614,7 @@ onBeforeUnmount(() => {
           @switch-agent="emit('switchAgent', $event)"
           @set-model="emit('setModel', $event)"
           @set-reasoning-effort="emit('setReasoningEffort', $event)"
+          @picker-close="onModelPickerClose"
         />
       </div>
       <div
@@ -796,6 +822,20 @@ onBeforeUnmount(() => {
           >
             <span class="actionSheetIcon" aria-hidden="true">↺</span>
             <span>恢复上一条输入</span>
+          </button>
+          <button
+            class="actionSheetItem actionSheetItem--model"
+            type="button"
+            role="menuitem"
+            data-testid="action-model-settings"
+            :disabled="!canChangeModel"
+            @click="openModelPickerFromActionMenu"
+          >
+            <span class="actionSheetIcon" aria-hidden="true">⚙️</span>
+            <span class="actionSheetContent">
+              <span class="actionSheetTitle">Model & reasoning</span>
+              <small class="actionSheetDetail" data-testid="action-model-summary">{{ modelActionSummary }}</small>
+            </span>
           </button>
         </div>
       </Teleport>
@@ -1085,6 +1125,15 @@ onBeforeUnmount(() => {
   pointer-events: none;
 }
 
+.composerHiddenModelSelectors {
+  position: absolute;
+  width: 0;
+  height: 0;
+  overflow: hidden;
+  opacity: 0;
+  pointer-events: none;
+}
+
 .composerMainRow {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
@@ -1353,6 +1402,29 @@ onBeforeUnmount(() => {
   font-size: 11px;
   font-weight: 900;
   letter-spacing: -1px;
+}
+
+.actionSheetContent {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.actionSheetTitle {
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1.3;
+  color: var(--text);
+}
+
+.actionSheetDetail {
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.3;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .voiceIndicator {
