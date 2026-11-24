@@ -4,7 +4,7 @@ use std::str::FromStr;
 use rusqlite::types::{FromSql, FromSqlError, FromSqlResult, ToSql, ToSqlOutput, ValueRef};
 use rusqlite::{Connection, OptionalExtension, Row, params};
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value};
+use serde_json::{Map, Value, json};
 
 use crate::{StateError, StateResult};
 
@@ -161,6 +161,307 @@ pub struct AgentMessageRecord {
     pub delivered_at: Option<i64>,
 }
 
+pub const REVIEW_VERDICT_HANDOFF_KIND: &str = "review_verdict";
+pub const REVIEW_VERDICT_COMMENT_MARKER: &str = "ads:review-verdict";
+pub const AGENT_HANDOFF_SCHEMA_VERSION: i64 = 2;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "UPPERCASE")]
+pub enum ReviewVerdictStatus {
+    Pass,
+    Reject,
+    Incomplete,
+    Error,
+}
+
+impl ReviewVerdictStatus {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_uppercase().as_str() {
+            "PASS" => Some(Self::Pass),
+            "REJECT" => Some(Self::Reject),
+            "INCOMPLETE" => Some(Self::Incomplete),
+            "ERROR" => Some(Self::Error),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Pass => "PASS",
+            Self::Reject => "REJECT",
+            Self::Incomplete => "INCOMPLETE",
+            Self::Error => "ERROR",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewVerdictCommentLocator {
+    pub marker: String,
+    pub issue_id: i64,
+    pub job_id: String,
+    pub base_sha: Option<String>,
+    pub head_sha: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewVerdictHandoff {
+    pub status: ReviewVerdictStatus,
+    pub issue_id: i64,
+    pub issue_title: String,
+    pub issue_url: Option<String>,
+    pub pr_number: Option<i64>,
+    pub branch: Option<String>,
+    pub base_sha: Option<String>,
+    pub head_sha: Option<String>,
+    pub job_id: String,
+    pub verdict_comment: ReviewVerdictCommentLocator,
+}
+
+impl ReviewVerdictHandoff {
+    pub fn to_payload_map(&self) -> Map<String, Value> {
+        Map::from_iter([
+            (
+                "schemaVersion".to_string(),
+                json!(AGENT_HANDOFF_SCHEMA_VERSION),
+            ),
+            ("origin".to_string(), json!("agent")),
+            ("agentId".to_string(), json!("codex")),
+            ("reviewStatus".to_string(), json!(self.status.as_str())),
+            ("issueId".to_string(), json!(self.issue_id)),
+            ("issueTitle".to_string(), json!(self.issue_title)),
+            ("issueUrl".to_string(), json!(self.issue_url)),
+            ("prNumber".to_string(), json!(self.pr_number)),
+            ("branch".to_string(), json!(self.branch)),
+            ("baseSha".to_string(), json!(self.base_sha)),
+            ("headSha".to_string(), json!(self.head_sha)),
+            ("jobId".to_string(), json!(self.job_id)),
+            (
+                "verdictComment".to_string(),
+                json!({
+                    "marker": self.verdict_comment.marker,
+                    "issueId": self.verdict_comment.issue_id,
+                    "jobId": self.verdict_comment.job_id,
+                    "baseSha": self.verdict_comment.base_sha,
+                    "headSha": self.verdict_comment.head_sha,
+                }),
+            ),
+        ])
+    }
+
+    pub fn from_record(record: &AgentMessageRecord) -> Option<Self> {
+        if record.kind != REVIEW_VERDICT_HANDOFF_KIND {
+            return None;
+        }
+        let issue_id = record
+            .issue_id
+            .or_else(|| record.payload.get("issueId").and_then(Value::as_i64))
+            .filter(|id| *id > 0)?;
+        let job_id = if !record.correlation_id.trim().is_empty() {
+            record.correlation_id.trim().to_string()
+        } else {
+            record
+                .payload
+                .get("jobId")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())?
+                .to_string()
+        };
+        let status = record
+            .payload
+            .get("reviewStatus")
+            .and_then(Value::as_str)
+            .and_then(ReviewVerdictStatus::parse)
+            .or_else(|| {
+                record
+                    .payload
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .and_then(parse_legacy_review_status)
+            })
+            .unwrap_or(ReviewVerdictStatus::Error);
+        let issue_title = if !record.issue_title.trim().is_empty() {
+            record.issue_title.trim().to_string()
+        } else {
+            record
+                .payload
+                .get("issueTitle")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .unwrap_or("")
+                .to_string()
+        };
+        let issue_url = record.issue_url.clone().or_else(|| {
+            record
+                .payload
+                .get("issueUrl")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+        });
+        let pr_number = record
+            .pr_number
+            .or_else(|| record.payload.get("prNumber").and_then(Value::as_i64))
+            .filter(|number| *number > 0);
+        let branch = record.branch.clone().or_else(|| {
+            record
+                .payload
+                .get("branch")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+        });
+        let base_sha = record.base_sha.clone().or_else(|| {
+            record
+                .payload
+                .get("baseSha")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+        });
+        let head_sha = record.head_sha.clone().or_else(|| {
+            record
+                .payload
+                .get("headSha")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+        });
+        let marker = record
+            .payload
+            .get("verdictComment")
+            .and_then(|value| value.get("marker"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or(REVIEW_VERDICT_COMMENT_MARKER)
+            .to_string();
+        Some(Self {
+            status,
+            issue_id,
+            issue_title,
+            issue_url,
+            pr_number,
+            branch,
+            base_sha: base_sha.clone(),
+            head_sha: head_sha.clone(),
+            job_id: job_id.clone(),
+            verdict_comment: ReviewVerdictCommentLocator {
+                marker,
+                issue_id,
+                job_id,
+                base_sha,
+                head_sha,
+            },
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum AgentHandoffPayload {
+    ReviewVerdict(ReviewVerdictHandoff),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentHandoff {
+    pub id: i64,
+    pub message_id: String,
+    pub auth_user_id: String,
+    pub user_id: i64,
+    pub project_id: String,
+    pub chat_session_id: String,
+    pub history_key: String,
+    pub logical_history_key: String,
+    pub lane_namespace: String,
+    pub lane_generation: i64,
+    pub workspace_root: String,
+    pub from_lane: String,
+    pub from_role: String,
+    pub to_lane: String,
+    pub to_role: String,
+    pub correlation_id: String,
+    pub payload: AgentHandoffPayload,
+    pub status: AgentMessageStatus,
+    pub attempts: i64,
+    pub last_error: Option<String>,
+    pub source_created_at: i64,
+    pub transition_revision: i64,
+    pub created_at: i64,
+    pub updated_at: i64,
+    pub claimed_at: Option<i64>,
+    pub delivered_at: Option<i64>,
+}
+
+impl AgentHandoff {
+    pub fn from_record(record: &AgentMessageRecord) -> Option<Self> {
+        let payload = ReviewVerdictHandoff::from_record(record)
+            .map(AgentHandoffPayload::ReviewVerdict)?;
+        Some(Self {
+            id: record.id,
+            message_id: record.message_id.clone(),
+            auth_user_id: record.auth_user_id.clone(),
+            user_id: record.user_id,
+            project_id: record.project_id.clone(),
+            chat_session_id: record.chat_session_id.clone(),
+            history_key: record.history_key.clone(),
+            logical_history_key: record.logical_history_key.clone(),
+            lane_namespace: record.lane_namespace.clone(),
+            lane_generation: record.lane_generation,
+            workspace_root: record.workspace_root.clone(),
+            from_lane: record.from_lane.clone(),
+            from_role: record.from_role.clone(),
+            to_lane: record.to_lane.clone(),
+            to_role: record.to_role.clone(),
+            correlation_id: record.correlation_id.clone(),
+            payload,
+            status: record.status,
+            attempts: record.attempts,
+            last_error: record.last_error.clone(),
+            source_created_at: record.source_created_at,
+            transition_revision: record.transition_revision,
+            created_at: record.created_at,
+            updated_at: record.updated_at,
+            claimed_at: record.claimed_at,
+            delivered_at: record.delivered_at,
+        })
+    }
+
+    pub fn is_unstarted_superseded(&self) -> bool {
+        self.status == AgentMessageStatus::Superseded && self.attempts == 0
+    }
+}
+
+impl AgentMessageRecord {
+    pub fn is_unstarted_superseded(&self) -> bool {
+        self.status == AgentMessageStatus::Superseded && self.attempts == 0
+    }
+
+    pub fn to_handoff(&self) -> Option<AgentHandoff> {
+        AgentHandoff::from_record(self)
+    }
+}
+
+fn parse_legacy_review_status(text: &str) -> Option<ReviewVerdictStatus> {
+    for line in text.lines() {
+        if let Some(rest) = line.trim().strip_prefix("Status:") {
+            let token = rest.trim().trim_end_matches('.');
+            if let Some(status) = ReviewVerdictStatus::parse(token) {
+                return Some(status);
+            }
+        }
+    }
+    None
+}
+
 #[derive(Debug, Clone)]
 pub struct NewAgentMessage {
     pub message_id: String,
@@ -219,7 +520,7 @@ impl<'a> AgentMessageStore<'a> {
         now: i64,
     ) -> StateResult<EnqueueAgentMessageResult> {
         let transaction = self.connection.unchecked_transaction()?;
-        let result = self.enqueue_on(&transaction, input, now)?;
+        let result = self.enqueue_on(&transaction, input, now, true)?;
         transaction.commit()?;
         Ok(result)
     }
@@ -229,7 +530,7 @@ impl<'a> AgentMessageStore<'a> {
         input: NewAgentMessage,
         now: i64,
     ) -> StateResult<EnqueueAgentMessageResult> {
-        self.enqueue_on(self.connection, input, now)
+        self.enqueue_on(self.connection, input, now, false)
     }
 
     fn enqueue_on(
@@ -237,6 +538,7 @@ impl<'a> AgentMessageStore<'a> {
         connection: &Connection,
         input: NewAgentMessage,
         now: i64,
+        enforce_review_eligibility: bool,
     ) -> StateResult<EnqueueAgentMessageResult> {
         let message_id = input.message_id.trim();
         if message_id.is_empty() {
@@ -264,18 +566,40 @@ impl<'a> AgentMessageStore<'a> {
             });
         }
         if input.kind == "review_verdict" {
-            let still_current: bool = connection.query_row(
-                "SELECT EXISTS (
-                   SELECT 1 FROM action_jobs
-                   WHERE id = ?1 AND superseded_at IS NULL
-                 )",
-                params![input.correlation_id.trim()],
-                |row| row.get(0),
-            )?;
-            if !still_current {
+            let job_state: Option<(String, String, Option<i64>, i64)> = connection
+                .query_row(
+                    "SELECT job_kind, status, superseded_at, agent_handoff_ready
+                     FROM action_jobs
+                     WHERE id = ?1",
+                    params![input.correlation_id.trim()],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                )
+                .optional()?;
+            let Some((job_kind, job_status, superseded_at, handoff_ready)) = job_state else {
+                return Err(StateError::InvalidInput(
+                    "Review job was not found before its handoff was enqueued".to_string(),
+                ));
+            };
+            if superseded_at.is_some() {
                 return Err(StateError::InvalidInput(
                     "Review job was superseded before its handoff was enqueued".to_string(),
                 ));
+            }
+            if enforce_review_eligibility {
+                if job_kind != "pull_request_review"
+                    || !matches!(job_status.as_str(), "completed" | "failed")
+                {
+                    return Err(StateError::InvalidInput(
+                        "Review job must reach a terminal status before its handoff is enqueued"
+                            .to_string(),
+                    ));
+                }
+                if handoff_ready != 1 {
+                    return Err(StateError::InvalidInput(
+                        "Review verdict comment must be published before its handoff is enqueued"
+                            .to_string(),
+                    ));
+                }
             }
         }
 
@@ -480,6 +804,40 @@ impl<'a> AgentMessageStore<'a> {
                AND lane_generation = ?4
              ORDER BY id DESC
              LIMIT ?5",
+        )?;
+        let rows = statement.query_map(
+            params![
+                auth_user_id,
+                project_id,
+                to_lane,
+                lane_generation.max(1),
+                limit.max(1) as i64
+            ],
+            map_agent_message,
+        )?;
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
+    pub fn list_visible_for_lane(
+        &self,
+        auth_user_id: &str,
+        project_id: &str,
+        to_lane: &str,
+        lane_generation: i64,
+        limit: usize,
+    ) -> StateResult<Vec<AgentMessageRecord>> {
+        let mut statement = self.connection.prepare(
+            "SELECT * FROM (
+               SELECT * FROM agent_messages
+               WHERE auth_user_id = ?1
+                 AND project_id = ?2
+                 AND to_lane = ?3
+                 AND lane_generation = ?4
+                 AND NOT (status = 'superseded' AND attempts = 0)
+               ORDER BY id DESC
+               LIMIT ?5
+             )
+             ORDER BY id ASC",
         )?;
         let rows = statement.query_map(
             params![

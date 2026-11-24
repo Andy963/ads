@@ -59,6 +59,7 @@ export function createProjectRuntime(options: { maxLiveActivitySteps: number }):
     streamSnapshotRevisions: new Map(),
     pendingImages: ref([]),
     queuedPrompts: ref([]),
+    pendingAgentHandoffs: ref([]),
     composerDraft: ref(""),
     resumableSessions: ref([]),
     resumableSessionsBusy: ref(false),

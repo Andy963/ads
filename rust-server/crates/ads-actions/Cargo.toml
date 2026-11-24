@@ -8,6 +8,7 @@ rust-version.workspace = true
 [dependencies]
 ads-native.workspace = true
 ads-reviewer.workspace = true
+ads-runtime.workspace = true
 ads-state.workspace = true
 chrono.workspace = true
 hex.workspace = true

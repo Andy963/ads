@@ -3,18 +3,21 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
-use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use ads_contract::ws::HistoryEntry;
 use ads_runtime::scheduler::{
     ScheduleExecuteFuture, ScheduleExecutor, SchedulerExecutionInput, normalize_workspace_root,
 };
-use ads_runtime::{PromptQueueFuture, PromptQueueRunOutcome, PromptQueueRunner, PromptRunContext};
+use ads_runtime::{
+    LaneTurn, LaneTurnKey, LaneTurnKind, PromptQueueFuture, PromptQueueRunOutcome,
+    PromptQueueRunner, PromptRunContext,
+};
 use ads_state::{
     DEFAULT_HISTORY_MAX_ENTRIES_PER_SESSION, DEFAULT_HISTORY_MAX_TEXT_LENGTH, HistoryAddOutcome,
-    HistoryStore, PromptExecutionMetadata, PromptQueueEntry, PromptQueueStatus, StateDb,
-    StateError, build_client_message_history_kind, history_client_message_id,
+    HistoryStore, PromptExecutionMetadata, StateDb, StateError, build_client_message_history_kind,
+    history_client_message_id,
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use rusqlite::{OptionalExtension, params};
@@ -28,7 +31,7 @@ use crate::{
 };
 
 pub type CodexActionToolsFactory =
-    Arc<dyn Fn(&PromptQueueEntry) -> Option<AgentActionTools> + Send + Sync>;
+    Arc<dyn Fn(&LaneTurn) -> Option<AgentActionTools> + Send + Sync>;
 
 pub struct CodexAppServerPromptRunnerOptions {
     pub db: StateDb,
@@ -56,7 +59,7 @@ pub struct CodexAppServerPromptRunner {
     options: CodexAppServerPromptRunnerOptions,
     registry: Arc<CodexAppServerDaemonRegistry>,
     agents: Mutex<HashMap<String, CodexAppServerAgent>>,
-    active: Mutex<HashMap<i64, watch::Sender<bool>>>,
+    active: Mutex<HashMap<LaneTurnKey, watch::Sender<bool>>>,
 }
 
 const CODEX_THREAD_NAMESPACE: &str = "web_codex_thread";
@@ -82,7 +85,7 @@ impl CodexAppServerPromptRunner {
 
     async fn agent_for(
         &self,
-        entry: &PromptQueueEntry,
+        entry: &LaneTurn,
         model: Option<&str>,
         effort: Option<&str>,
     ) -> ads_state::StateResult<(CodexAppServerAgent, String)> {
@@ -121,9 +124,9 @@ impl CodexAppServerPromptRunner {
 }
 
 impl PromptQueueRunner for CodexAppServerPromptRunner {
-    fn run_prompt<'a>(
+    fn run_lane_turn<'a>(
         &'a self,
-        entry: PromptQueueEntry,
+        entry: LaneTurn,
         context: PromptRunContext,
     ) -> PromptQueueFuture<'a, ads_state::StateResult<PromptQueueRunOutcome>> {
         Box::pin(async move {
@@ -134,7 +137,13 @@ impl PromptQueueRunner for CodexAppServerPromptRunner {
                 return Err(StateError::InvalidInput("payload 不能为空".to_string()));
             }
             let user_text = text.unwrap_or_default();
-            let history_text = build_history_text(&user_text, images.parts.len());
+            let history_text = entry
+                .history_display_text
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+                .unwrap_or_else(|| build_history_text(&user_text, images.parts.len()));
             let PreparedImages {
                 parts: image_parts,
                 temp_files: _temp_files,
@@ -222,7 +231,10 @@ impl PromptQueueRunner for CodexAppServerPromptRunner {
                 emit_agent_event(&event_context, &streamed_assistant_text, &event);
             });
             let (abort_tx, abort_rx) = watch::channel(false);
-            self.active.lock().await.insert(entry.id, abort_tx.clone());
+            self.active
+                .lock()
+                .await
+                .insert(entry.key.clone(), abort_tx.clone());
             let mut parts = Vec::new();
             if !user_text.is_empty() {
                 parts.push(AgentInputPart::text(user_text));
@@ -259,7 +271,7 @@ impl PromptQueueRunner for CodexAppServerPromptRunner {
                 send.await
             };
             agent.off_event(event_subscription);
-            self.active.lock().await.remove(&entry.id);
+            self.active.lock().await.remove(&entry.key);
 
             match result {
                 Ok(result) => {
@@ -316,12 +328,13 @@ impl PromptQueueRunner for CodexAppServerPromptRunner {
                 Err(error) => {
                     let message = error.to_string();
                     let connection = self.options.db.connect()?;
-                    let kind =
-                        if entry.payload.get("origin").and_then(Value::as_str) == Some("agent") {
-                            format!("agent_message_error:{}", entry.client_message_id)
-                        } else {
-                            "error".to_string()
-                        };
+                    let kind = if entry.kind == LaneTurnKind::AgentHandoff
+                        || entry.payload.get("origin").and_then(Value::as_str) == Some("agent")
+                    {
+                        format!("agent_message_error:{}", entry.client_message_id)
+                    } else {
+                        "error".to_string()
+                    };
                     let _ = history.add(
                         &connection,
                         &entry.history_key,
@@ -347,12 +360,12 @@ impl PromptQueueRunner for CodexAppServerPromptRunner {
         })
     }
 
-    fn abort_run(&self, entry: &PromptQueueEntry) {
+    fn abort_lane_turn(&self, entry: &LaneTurn) {
         if let Some(sender) = self
             .active
             .try_lock()
             .ok()
-            .and_then(|active| active.get(&entry.id).cloned())
+            .and_then(|active| active.get(&entry.key).cloned())
         {
             let _ = sender.send(true);
         }
@@ -381,8 +394,6 @@ impl CodexAppServerPromptRunner {
         history_key: &str,
         prompt: &str,
     ) -> Result<String, String> {
-        static SCHEDULE_ENTRY_ID: AtomicI64 = AtomicI64::new(-1);
-
         let workspace_root = normalize_workspace_root(workspace_root);
         let owner = {
             let trimmed = owner.trim();
@@ -410,9 +421,11 @@ impl CodexAppServerPromptRunner {
                 payload.insert("model".to_string(), Value::String(model.to_string()));
             }
         }
-        let entry = PromptQueueEntry {
-            id: SCHEDULE_ENTRY_ID.fetch_sub(1, Ordering::SeqCst),
-            client_message_id: format!("scheduler:{}", uuid::Uuid::new_v4()),
+        let client_message_id = format!("scheduler:{}", uuid::Uuid::new_v4());
+        let entry = LaneTurn {
+            key: LaneTurnKey::Scheduler(client_message_id.clone()),
+            kind: LaneTurnKind::Scheduler,
+            client_message_id,
             auth_user_id: owner.to_string(),
             user_id: hash_task_id(&history_key),
             session_id: history_key.clone(),
@@ -423,15 +436,8 @@ impl CodexAppServerPromptRunner {
             lane_generation: 1,
             workspace_root,
             payload,
-            payload_hash: String::new(),
-            status: PromptQueueStatus::Running,
-            position: 0,
-            attempts: 1,
-            last_error: None,
+            history_display_text: None,
             created_at: now,
-            updated_at: now,
-            started_at: Some(now),
-            completed_at: None,
         };
 
         let output = Arc::new(StdMutex::new(String::new()));
@@ -454,7 +460,7 @@ impl CodexAppServerPromptRunner {
             },
         );
         let outcome = self
-            .run_prompt(entry, PromptRunContext::new(emit))
+            .run_lane_turn(entry, PromptRunContext::new(emit))
             .await
             .map_err(|error| error.to_string())?;
         if outcome.ok {
@@ -488,7 +494,7 @@ fn resolve_turn_idle_timeout() -> Option<Duration> {
         })
 }
 
-fn agent_key(entry: &PromptQueueEntry, model_key: &str, effort: Option<&str>) -> String {
+fn agent_key(entry: &LaneTurn, model_key: &str, effort: Option<&str>) -> String {
     format!(
         "{}::{}::{}::{}",
         entry.logical_history_key,

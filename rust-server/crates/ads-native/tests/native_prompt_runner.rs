@@ -9,7 +9,10 @@ use ads_native::{
     ActionTools, ActionToolsFactory, AdsMiddleware, CfMemClient, CfMemMiddleware, MiddlewareFuture,
     MiddlewarePipeline, ModelResolver, NativePromptRunner, NativePromptRunnerOptions, TurnContext,
 };
-use ads_runtime::{PromptQueueRunOutcome, PromptQueueRunner, PromptRunContext};
+use ads_runtime::{
+    LaneTurn, LaneTurnKey, LaneTurnKind, PromptQueueRunOutcome, PromptQueueRunner,
+    PromptRunContext,
+};
 use ads_state::{
     BeginNativeTurn, CONVERSATION_SERVICE, EnqueuePromptInput, HistoryStore, NativeTranscriptStore,
     PromptQueueLane, PromptQueueStore, StateDb, UpstreamCredentialStore, UpstreamCredentials,
@@ -936,6 +939,49 @@ async fn preserves_agent_origin_in_live_and_persisted_turn_metadata() {
     harness.drain().await;
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn handoff_lane_turn_persists_display_summary_while_sending_model_prompt() {
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let harness = Harness::start_with_wire(
+        chat_stream_router_captured(Arc::clone(&requests)),
+        "chat",
+        Arc::clone(&requests),
+    )
+    .await;
+    let mut prompt = payload("Full model prompt with ads:review-verdict directive.");
+    prompt.insert("origin".to_string(), json!("agent"));
+    let base = harness.enqueue_payload("review-verdict:job-display", prompt);
+    let mut turn = LaneTurn::from(base);
+    turn.key = LaneTurnKey::AgentHandoff("review-verdict:job-display".to_string());
+    turn.kind = LaneTurnKind::AgentHandoff;
+    turn.history_display_text = Some("Verdict: PASS on PR #687 (job-display).".to_string());
+
+    let outcome = harness
+        .runner
+        .run_lane_turn(turn, harness.context())
+        .await
+        .expect("run lane turn");
+    assert_eq!(outcome, PromptQueueRunOutcome::success());
+
+    let history_entry = harness
+        .history()
+        .into_iter()
+        .find(|entry| entry.role == "user")
+        .expect("history entry");
+    assert_eq!(
+        history_entry.text,
+        "Verdict: PASS on PR #687 (job-display)."
+    );
+    let body = {
+        let captured = requests.lock().expect("requests");
+        serde_json::to_string(&*captured).expect("serialize requests")
+    };
+    assert!(
+        body.contains("Full model prompt with ads:review-verdict directive."),
+        "upstream model request should receive the full dispatch-rendered prompt: {body}"
+    );
+    harness.drain().await;
+}
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn runs_scheduler_prompts_with_scheduler_owner_credentials() {
     let requests = Arc::new(Mutex::new(Vec::new()));

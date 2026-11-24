@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use ads_runtime::{
-    PromptQueueFuture, PromptQueueRunOutcome, PromptQueueRunner, PromptQueueService,
+    LaneTurn, PromptQueueFuture, PromptQueueRunOutcome, PromptQueueRunner, PromptQueueService,
     PromptQueueServiceOptions, PromptRunContext,
 };
 use ads_state::{
@@ -76,9 +76,9 @@ impl FakeRunner {
 }
 
 impl PromptQueueRunner for FakeRunner {
-    fn reconcile_before_run<'a>(
+    fn reconcile_lane_turn<'a>(
         &'a self,
-        _entry: &'a PromptQueueEntry,
+        _turn: &'a LaneTurn,
     ) -> PromptQueueFuture<'a, StateResult<Option<PromptQueueRunOutcome>>> {
         Box::pin(async move {
             self.reconciliations
@@ -89,16 +89,16 @@ impl PromptQueueRunner for FakeRunner {
         })
     }
 
-    fn run_prompt<'a>(
+    fn run_lane_turn<'a>(
         &'a self,
-        entry: PromptQueueEntry,
+        turn: LaneTurn,
         _context: PromptRunContext,
     ) -> PromptQueueFuture<'a, StateResult<PromptQueueRunOutcome>> {
         Box::pin(async move {
             self.calls
                 .lock()
                 .expect("calls")
-                .push(entry.client_message_id.clone());
+                .push(turn.client_message_id.clone());
             let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
             self.max_active.fetch_max(active, Ordering::SeqCst);
             if let Some(gate) = &self.gate {
@@ -118,11 +118,11 @@ impl PromptQueueRunner for FakeRunner {
         })
     }
 
-    fn abort_run(&self, entry: &PromptQueueEntry) {
+    fn abort_lane_turn(&self, turn: &LaneTurn) {
         self.aborted
             .lock()
             .expect("aborted")
-            .push(entry.client_message_id.clone());
+            .push(turn.client_message_id.clone());
         if let Some(gate) = &self.gate {
             gate.notify_waiters();
         }

@@ -53,7 +53,7 @@ pub(crate) type ReadHistory = Arc<dyn Fn(i64, usize) -> Result<String, String> +
 
 pub type ActionToolFuture = Pin<Box<dyn Future<Output = NativeResult<Value>> + Send>>;
 pub type ActionToolsFactory =
-    Arc<dyn Fn(&ads_state::PromptQueueEntry) -> Option<ActionTools> + Send + Sync>;
+    Arc<dyn Fn(&ads_runtime::LaneTurn) -> Option<ActionTools> + Send + Sync>;
 
 #[derive(Clone)]
 pub struct ActionTools {

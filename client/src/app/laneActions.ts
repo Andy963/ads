@@ -346,6 +346,7 @@ function clearRuntimeNoticeTimer(rt: Pick<ProjectRuntime, "noticeTimer">): void 
   const clearAcopilotChat = (): void => {
     const rt = activeAcopilotRuntime.value;
     rt.queuedPrompts.value = [];
+    if (rt.pendingAgentHandoffs) rt.pendingAgentHandoffs.value = [];
     clearPendingPromptReplayState(rt);
     threadReset(rt, {
       notice: "",
@@ -363,6 +364,7 @@ function clearRuntimeNoticeTimer(rt: Pick<ProjectRuntime, "noticeTimer">): void 
   const startNewAcopilotSession = (): void => {
     const rt = activeAcopilotRuntime.value;
     rt.queuedPrompts.value = [];
+    if (rt.pendingAgentHandoffs) rt.pendingAgentHandoffs.value = [];
     clearPendingPromptReplayState(rt);
     threadReset(rt, {
       notice: "",

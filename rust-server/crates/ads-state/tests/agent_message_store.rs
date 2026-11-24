@@ -47,8 +47,8 @@ fn seed_review_job(connection: &Connection, id: &str, now: i64) {
         .execute(
             "INSERT OR IGNORE INTO action_jobs
                (id, project_id, job_kind, issue_title, status, created_at, updated_at,
-                requires_agent_handoff)
-             VALUES (?1, 'project-1', 'pull_request_review', 'Issue', 'completed', ?2, ?2, 1)",
+                requires_agent_handoff, agent_handoff_ready)
+             VALUES (?1, 'project-1', 'pull_request_review', 'Issue', 'completed', ?2, ?2, 1, 1)",
             params![id, now],
         )
         .expect("review job");
@@ -524,4 +524,108 @@ fn no_pr_reviews_on_different_branches_do_not_supersede_each_other() {
             .status,
         AgentMessageStatus::Pending
     );
+}
+
+#[test]
+fn visible_lane_listing_excludes_unstarted_superseded_and_orders_chronologically() {
+    let directory = tempdir().expect("temp dir");
+    let db = StateDb::open(directory.path().join("state.db")).expect("state db");
+    let connection = db.connect().expect("connection");
+    let store = AgentMessageStore::new(&connection).expect("store");
+    seed_review_job(&connection, "review-verdict:job-a", 100);
+    seed_review_job(&connection, "review-verdict:job-b", 200);
+    seed_review_job(&connection, "review-verdict:job-c", 300);
+
+    store
+        .enqueue(message("review-verdict:job-a", "head-a", 100), 100)
+        .expect("enqueue a");
+    store
+        .enqueue(message("review-verdict:job-b", "head-b", 200), 200)
+        .expect("enqueue b");
+    store
+        .claim("review-verdict:job-b", "worker-1", 10_000, 210)
+        .expect("claim b")
+        .expect("claimed b");
+    store
+        .mark_failed("review-verdict:job-b", "worker-1", "boom", 220)
+        .expect("fail b")
+        .expect("failed b");
+    store
+        .enqueue(message("review-verdict:job-c", "head-c", 300), 300)
+        .expect("enqueue c");
+
+    let visible = store
+        .list_visible_for_lane("user-1", "project-1", "acopilot", 1, 100)
+        .expect("visible");
+    let ids: Vec<&str> = visible.iter().map(|row| row.message_id.as_str()).collect();
+    assert_eq!(ids, vec!["review-verdict:job-b", "review-verdict:job-c"]);
+    assert_eq!(visible[0].status, AgentMessageStatus::Superseded);
+    assert_eq!(visible[0].attempts, 1);
+    assert_eq!(visible[1].status, AgentMessageStatus::Pending);
+}
+
+#[test]
+fn legacy_pre_rendered_record_reconstructs_typed_review_handoff() {
+    let directory = tempdir().expect("temp dir");
+    let db = StateDb::open(directory.path().join("state.db")).expect("state db");
+    let connection = db.connect().expect("connection");
+    let store = AgentMessageStore::new(&connection).expect("store");
+    seed_review_job(&connection, "review-verdict:job-legacy", 100);
+
+    let mut legacy = message("review-verdict:job-legacy", "head-legacy", 100);
+    legacy.correlation_id = "job-legacy".to_string();
+    seed_review_job(&connection, "job-legacy", 100);
+    legacy.payload = payload(
+        "Reviewer -> Acopilot handoff for Issue #7.\nStatus: REJECT.\nBase SHA: base.\nHead SHA: head-legacy.",
+    );
+    let inserted = store.enqueue(legacy, 100).expect("enqueue legacy");
+    let handoff = inserted.message.to_handoff().expect("typed handoff");
+    match handoff.payload {
+        ads_state::AgentHandoffPayload::ReviewVerdict(verdict) => {
+            assert_eq!(verdict.status, ads_state::ReviewVerdictStatus::Reject);
+            assert_eq!(verdict.issue_id, 7);
+            assert_eq!(verdict.pr_number, Some(12));
+            assert_eq!(verdict.verdict_comment.job_id, "job-legacy");
+        }
+    }
+}
+
+#[test]
+fn enqueue_rejects_non_terminal_and_unready_review_jobs() {
+    let directory = tempdir().expect("temp dir");
+    let db = StateDb::open(directory.path().join("state.db")).expect("state db");
+    let connection = db.connect().expect("connection");
+    let store = AgentMessageStore::new(&connection).expect("store");
+
+    connection
+        .execute(
+            "INSERT INTO action_jobs
+               (id, project_id, job_kind, issue_title, status, created_at, updated_at,
+                requires_agent_handoff, agent_handoff_ready)
+             VALUES ('job-running', 'project-1', 'pull_request_review', 'Running', 'running', 10, 10, 1, 1)",
+            [],
+        )
+        .expect("running job");
+    let mut running = message("review-verdict:job-running", "head-1", 10);
+    running.correlation_id = "job-running".to_string();
+    let running_err = store
+        .enqueue(running, 10)
+        .expect_err("non-terminal review job must be rejected");
+    assert!(running_err.to_string().contains("terminal status"));
+
+    connection
+        .execute(
+            "INSERT INTO action_jobs
+               (id, project_id, job_kind, issue_title, status, created_at, updated_at,
+                requires_agent_handoff, agent_handoff_ready)
+             VALUES ('job-no-comment', 'project-1', 'pull_request_review', 'Unready', 'completed', 20, 20, 1, 0)",
+            [],
+        )
+        .expect("unready job");
+    let mut unready = message("review-verdict:job-no-comment", "head-2", 20);
+    unready.correlation_id = "job-no-comment".to_string();
+    let unready_err = store
+        .enqueue(unready, 20)
+        .expect_err("review job without published verdict comment must be rejected");
+    assert!(unready_err.to_string().contains("verdict comment"));
 }

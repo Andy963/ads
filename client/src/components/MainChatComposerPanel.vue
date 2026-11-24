@@ -5,7 +5,7 @@ import MainChatPendingImageViewer from "./MainChatPendingImageViewer.vue";
 import MainChatModelSelectors from "./MainChatModelSelectors.vue";
 import type { ModelConfig } from "../api/types";
 import { resolveComposerImagePreview } from "./mainChat/attachmentPreview";
-import type { IncomingImage, QueuedPrompt } from "./mainChat/types";
+import type { IncomingImage, PendingAgentHandoff, QueuedPrompt } from "./mainChat/types";
 import { useMainChatComposer } from "./mainChat/useComposer";
 import { useComposerActionMenu } from "./mainChat/useComposerActionMenu";
 import { createTapActivation } from "../lib/tapActivation";
@@ -33,6 +33,7 @@ const props = withDefaults(defineProps<{
   draft?: string;
   latestPromptKey?: string;
   queuedPrompts: QueuedPrompt[];
+  pendingAgentHandoffs?: PendingAgentHandoff[];
   pendingImages: IncomingImage[];
   connected: boolean;
   busy: boolean;
@@ -50,7 +51,7 @@ const props = withDefaults(defineProps<{
   connectionPhase?: "connecting" | "syncing" | "reconnecting" | "error" | null;
   connectionPhaseMessage?: string | null;
   operationalError?: string | null;
-}>(), { voiceInputActive: true });
+}>(), { voiceInputActive: true, pendingAgentHandoffs: () => [] });
 
 const emit = defineEmits<{
   (e: "update:draft", value: string): void;
@@ -68,6 +69,24 @@ const emit = defineEmits<{
 
 const canInterrupt = computed(() => props.busy && props.connected);
 const visibleQueuedPrompts = computed(() => props.queuedPrompts.filter((prompt) => prompt.origin !== "system"));
+const visiblePendingAgentHandoffs = computed(() =>
+  (props.pendingAgentHandoffs ?? []).filter((handoff) => handoff.status === "pending"),
+);
+
+function pendingHandoffTarget(handoff: PendingAgentHandoff): string {
+  const issue = handoff.issueId ? `Issue #${handoff.issueId}` : "当前 Issue";
+  const pr = handoff.prNumber ? ` · PR #${handoff.prNumber}` : "";
+  return `${issue}${pr}`;
+}
+
+function pendingHandoffIssueUrl(handoff: PendingAgentHandoff): string {
+  const value = String(handoff.issueUrl ?? "").trim();
+  return value.startsWith("https://github.com/") ? value : "";
+}
+
+function pendingHandoffShortSha(value: string | undefined): string {
+  return String(value ?? "").trim().slice(0, 12);
+}
 
 const normalizedConnectionStatusKind = computed(() => props.connectionStatusKind ?? "info");
 const latestPrompt = ref("");
@@ -513,6 +532,40 @@ onBeforeUnmount(() => {
     >
       <span class="laneStatusDot" aria-hidden="true" />
       <span class="laneStatusText">{{ operationalError }}</span>
+    </div>
+
+    <div
+      v-if="visiblePendingAgentHandoffs.length"
+      class="pendingHandoffs"
+      aria-label="待执行交付"
+      data-testid="pending-agent-handoff-inbox"
+    >
+      <div
+        v-for="handoff in visiblePendingAgentHandoffs"
+        :key="handoff.messageId"
+        class="pendingHandoffItem"
+        :data-message-id="handoff.messageId"
+        data-testid="pending-agent-handoff-item"
+      >
+        <div class="pendingHandoffHeader">
+          <span class="pendingHandoffRoute">Reviewer <span aria-hidden="true">→</span> Acopilot</span>
+          <span class="pendingHandoffStatus">等待执行</span>
+        </div>
+        <div class="pendingHandoffMetaRow">
+          <a
+            v-if="pendingHandoffIssueUrl(handoff)"
+            class="pendingHandoffTarget"
+            :href="pendingHandoffIssueUrl(handoff)"
+            target="_blank"
+            rel="noopener noreferrer"
+          >{{ pendingHandoffTarget(handoff) }}</a>
+          <span v-else class="pendingHandoffTarget">{{ pendingHandoffTarget(handoff) }}</span>
+          <span v-if="handoff.headSha" class="pendingHandoffSha">
+            head {{ pendingHandoffShortSha(handoff.headSha) }}
+          </span>
+        </div>
+        <div v-if="handoff.content" class="pendingHandoffSummary">{{ handoff.content }}</div>
+      </div>
     </div>
 
     <div v-if="visibleQueuedPrompts.length" class="queue" aria-label="排队消息">
@@ -989,6 +1042,81 @@ onBeforeUnmount(() => {
 .laneStatusText {
   min-width: 0;
   line-height: 1.35;
+  word-break: break-word;
+}
+
+.pendingHandoffs {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 180px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+}
+
+.pendingHandoffItem {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 12px;
+  border-radius: var(--radius);
+  border: 1px solid rgba(99, 102, 241, 0.32);
+  background: rgba(99, 102, 241, 0.08);
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+
+.pendingHandoffHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.pendingHandoffRoute {
+  font-size: 11.5px;
+  font-weight: 700;
+  color: #4f46e5;
+}
+
+.pendingHandoffStatus {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: rgba(79, 70, 229, 0.12);
+  color: #4338ca;
+}
+
+.pendingHandoffMetaRow {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.pendingHandoffTarget {
+  font-weight: 600;
+  color: var(--text);
+  text-decoration: none;
+}
+
+.pendingHandoffTarget:hover {
+  text-decoration: underline;
+}
+
+.pendingHandoffSha {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.pendingHandoffSummary {
+  color: var(--muted);
+  white-space: pre-line;
   word-break: break-word;
 }
 

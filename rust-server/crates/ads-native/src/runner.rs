@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -9,13 +9,15 @@ use ads_contract::ws::HistoryEntry;
 use ads_runtime::scheduler::{
     ScheduleExecuteFuture, ScheduleExecutor, SchedulerExecutionInput, normalize_workspace_root,
 };
-use ads_runtime::{PromptQueueFuture, PromptQueueRunOutcome, PromptQueueRunner, PromptRunContext};
+use ads_runtime::{
+    LaneTurn, LaneTurnKey, LaneTurnKind, PromptQueueFuture, PromptQueueRunOutcome,
+    PromptQueueRunner, PromptRunContext,
+};
 use ads_state::{
     AppendNativeTurn, BeginNativeTurn, DEFAULT_HISTORY_MAX_ENTRIES_PER_SESSION,
     DEFAULT_HISTORY_MAX_TEXT_LENGTH, HistoryAddOutcome, HistoryStore, NativeTranscriptStore,
-    PromptExecutionMetadata, PromptQueueEntry, PromptQueueStatus, StateDb, StateResult,
-    UpdateNativeTurn, build_client_message_history_kind, get_default_role_profile,
-    history_client_message_id,
+    PromptExecutionMetadata, StateDb, StateResult, UpdateNativeTurn,
+    build_client_message_history_kind, get_default_role_profile, history_client_message_id,
 };
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
@@ -87,7 +89,7 @@ impl NativePromptRunnerOptions {
 
 pub struct NativePromptRunner {
     options: NativePromptRunnerOptions,
-    active: Mutex<HashMap<i64, Cancellation>>,
+    active: Mutex<HashMap<LaneTurnKey, Cancellation>>,
 }
 
 impl NativePromptRunner {
@@ -108,7 +110,7 @@ impl NativePromptRunner {
 
     async fn run_inner(
         &self,
-        entry: PromptQueueEntry,
+        entry: LaneTurn,
         context: PromptRunContext,
         cancellation: Cancellation,
     ) -> NativeResult<PromptQueueRunOutcome> {
@@ -144,7 +146,13 @@ impl NativePromptRunner {
                 pipeline.execute_turn_start(context).await;
             }
         }
-        let history_text = build_history_text(&user_text, images.len());
+        let history_text = entry
+            .history_display_text
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| build_history_text(&user_text, images.len()));
         let saved_model = payload
             .get("model")
             .and_then(Value::as_str)
@@ -876,7 +884,7 @@ impl NativePromptRunner {
 
     async fn fail_preflight(
         &self,
-        entry: &PromptQueueEntry,
+        entry: &LaneTurn,
         context: &PromptRunContext,
         middleware_context: Option<&TurnContext>,
         message: String,
@@ -1133,10 +1141,12 @@ impl NativePromptRunner {
         }
     }
 
-    fn add_error_history(&self, entry: &PromptQueueEntry, message: &str) -> NativeResult<()> {
+    fn add_error_history(&self, entry: &LaneTurn, message: &str) -> NativeResult<()> {
         let connection = self.options.db.connect()?;
         let history = self.history(&entry.lane_namespace);
-        let kind = if entry.payload.get("origin").and_then(Value::as_str) == Some("agent") {
+        let kind = if entry.kind == LaneTurnKind::AgentHandoff
+            || entry.payload.get("origin").and_then(Value::as_str) == Some("agent")
+        {
             format!("agent_message_error:{}", entry.client_message_id)
         } else {
             "error".to_string()
@@ -1161,8 +1171,6 @@ impl NativePromptRunner {
         history_key: &str,
         prompt: &str,
     ) -> NativeResult<String> {
-        static SCHEDULE_ENTRY_ID: AtomicI64 = AtomicI64::new(-1);
-
         let workspace_root = normalize_workspace_root(workspace_root);
         let owner = {
             let trimmed = owner.trim();
@@ -1190,9 +1198,11 @@ impl NativePromptRunner {
                 payload.insert("model".to_string(), Value::String(model.to_string()));
             }
         }
-        let entry = PromptQueueEntry {
-            id: SCHEDULE_ENTRY_ID.fetch_sub(1, Ordering::SeqCst),
-            client_message_id: format!("scheduler:{}", uuid::Uuid::new_v4()),
+        let client_message_id = format!("scheduler:{}", uuid::Uuid::new_v4());
+        let entry = LaneTurn {
+            key: LaneTurnKey::Scheduler(client_message_id.clone()),
+            kind: LaneTurnKind::Scheduler,
+            client_message_id,
             auth_user_id: owner.to_string(),
             user_id: hash_task_id(&history_key),
             session_id: history_key.clone(),
@@ -1203,15 +1213,8 @@ impl NativePromptRunner {
             lane_generation: 1,
             workspace_root,
             payload,
-            payload_hash: String::new(),
-            status: PromptQueueStatus::Running,
-            position: 0,
-            attempts: 1,
-            last_error: None,
+            history_display_text: None,
             created_at: now,
-            updated_at: now,
-            started_at: Some(now),
-            completed_at: None,
         };
 
         let output = Arc::new(Mutex::new(String::new()));
@@ -1267,9 +1270,9 @@ impl ScheduleExecutor for NativePromptRunner {
 }
 
 impl PromptQueueRunner for NativePromptRunner {
-    fn reconcile_before_run<'a>(
+    fn reconcile_lane_turn<'a>(
         &'a self,
-        entry: &'a PromptQueueEntry,
+        entry: &'a LaneTurn,
     ) -> PromptQueueFuture<'a, StateResult<Option<NativePromptRunOutcome>>> {
         Box::pin(async move {
             let connection = self.options.db.connect()?;
@@ -1290,38 +1293,39 @@ impl PromptQueueRunner for NativePromptRunner {
         })
     }
 
-    fn run_prompt<'a>(
+    fn run_lane_turn<'a>(
         &'a self,
-        entry: PromptQueueEntry,
+        entry: LaneTurn,
         context: PromptRunContext,
     ) -> PromptQueueFuture<'a, StateResult<NativePromptRunOutcome>> {
         Box::pin(async move {
             let cancellation = Cancellation::new();
+            let key = entry.key.clone();
             self.active
                 .lock()
                 .expect("active native prompts")
-                .insert(entry.id, cancellation.clone());
+                .insert(key.clone(), cancellation.clone());
             let result = self
                 .run_inner(entry.clone(), context, cancellation)
                 .await
                 .map_err(|error| {
-                    eprintln!("[ads-native] prompt {} failed: {error}", entry.id);
+                    eprintln!("[ads-native] turn {:?} failed: {error}", key);
                     ads_state::StateError::InvalidInput(error.to_string())
                 });
             self.active
                 .lock()
                 .expect("active native prompts")
-                .remove(&entry.id);
+                .remove(&key);
             result
         })
     }
 
-    fn abort_run(&self, entry: &PromptQueueEntry) {
+    fn abort_lane_turn(&self, entry: &LaneTurn) {
         if let Some(cancellation) = self
             .active
             .lock()
             .expect("active native prompts")
-            .get(&entry.id)
+            .get(&entry.key)
         {
             cancellation.cancel();
         }
@@ -1592,7 +1596,7 @@ fn detect_media_type(bytes: &[u8]) -> Option<&'static str> {
     None
 }
 
-fn build_transcript_id(entry: &PromptQueueEntry) -> String {
+fn build_transcript_id(entry: &LaneTurn) -> String {
     let project_id = ads_state::derive_project_session_id(&entry.workspace_root);
     let lane = if entry.lane_namespace == "web-actions" {
         "actions"

@@ -131,6 +131,7 @@ export function createAppContext() {
       rt.connected.value = false;
       rt.transcriptAuthoritative.value = false;
       rt.queuedPrompts.value = [];
+      if (rt.pendingAgentHandoffs) rt.pendingAgentHandoffs.value = [];
       rt.pendingImages.value = [];
       rt.composerDraft.value = "";
       for (const timer of [rt.connectionWatchdogTimer, rt.reconnectTimer, rt.noticeTimer, rt.liveActivityTtlTimer]) {

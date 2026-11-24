@@ -292,6 +292,7 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
 
   const clearOutboxForGenerationChange = (rt: ProjectRuntime): void => {
     rt.queuedPrompts.value = [];
+    if (rt.pendingAgentHandoffs) rt.pendingAgentHandoffs.value = [];
     rt.pendingAckClientMessageId = null;
     clearPendingPrompt(rt);
   };

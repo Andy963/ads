@@ -4,7 +4,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use ads_native::{ActionTools, ActionToolsFactory, NativeError};
-use ads_state::{PromptQueueEntry, WEB_ACOPILOT_NAMESPACE};
+use ads_runtime::LaneTurn;
+use ads_state::WEB_ACOPILOT_NAMESPACE;
 use tokio::process::Command;
 
 use crate::dispatch::{ReviewDispatchRequest, canonical_project_id};
@@ -13,7 +14,7 @@ use crate::queue::ReviewQueue;
 const GIT_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub fn review_action_tools_factory(queue: Arc<ReviewQueue>) -> ActionToolsFactory {
-    Arc::new(move |entry: &PromptQueueEntry| {
+    Arc::new(move |entry: &LaneTurn| {
         if entry.lane_namespace != WEB_ACOPILOT_NAMESPACE {
             return None;
         }
@@ -108,16 +109,17 @@ mod tests {
 
     use super::*;
     use crate::ReviewQueueOptions;
+    use ads_runtime::{LaneTurnKey, LaneTurnKind};
     use ads_state::{
-        PromptQueueStatus, StateDb, UpsertWebProject, ensure_web_project_tables, list_action_jobs,
-        upsert_web_project,
+        StateDb, UpsertWebProject, ensure_web_project_tables, list_action_jobs, upsert_web_project,
     };
     use serde_json::Map;
     use tempfile::tempdir;
 
-    fn entry(lane_namespace: &str) -> PromptQueueEntry {
-        PromptQueueEntry {
-            id: 1,
+    fn entry(lane_namespace: &str) -> LaneTurn {
+        LaneTurn {
+            key: LaneTurnKey::PromptQueue(1),
+            kind: LaneTurnKind::UserPrompt,
             client_message_id: "client-1".to_string(),
             auth_user_id: "user-1".to_string(),
             user_id: 1,
@@ -129,15 +131,8 @@ mod tests {
             lane_generation: 1,
             workspace_root: "/tmp".to_string(),
             payload: Map::new(),
-            payload_hash: "hash".to_string(),
-            status: PromptQueueStatus::Queued,
-            position: 0,
-            attempts: 0,
-            last_error: None,
+            history_display_text: None,
             created_at: 1,
-            updated_at: 1,
-            started_at: None,
-            completed_at: None,
         }
     }
 

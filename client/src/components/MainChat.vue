@@ -3,7 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue"
 import MainChatComposerPanel from "./MainChatComposerPanel.vue";
 import MainChatMessageList from "./MainChatMessageList.vue";
 
-import type { ChatMessage, IncomingImage, QueuedPrompt } from "./mainChat/types";
+import type { ChatMessage, IncomingImage, PendingAgentHandoff, QueuedPrompt } from "./mainChat/types";
 import type { ModelConfig } from "../api/types";
 import { useCopyMessage } from "./mainChat/useCopyMessage";
 import { loadMarkdown, loadedMarkdown } from "../lib/markdown/loader";
@@ -16,6 +16,7 @@ const props = withDefaults(defineProps<{
   viewport?: TranscriptViewport | null;
   transcriptAlignSeq?: number;
   queuedPrompts: QueuedPrompt[];
+  pendingAgentHandoffs?: PendingAgentHandoff[];
   pendingImages: IncomingImage[];
   draft?: string;
   latestPromptKey?: string;
@@ -43,7 +44,7 @@ const props = withDefaults(defineProps<{
   connectionPhase?: "connecting" | "syncing" | "reconnecting" | "error" | null;
   connectionPhaseMessage?: string | null;
   operationalError?: string | null;
-}>(), { voiceInputActive: true, transcriptAlignSeq: 0, transcriptAuthoritativeSeq: 0, transcriptResetSeq: 0 });
+}>(), { voiceInputActive: true, transcriptAlignSeq: 0, transcriptAuthoritativeSeq: 0, transcriptResetSeq: 0, pendingAgentHandoffs: () => [] });
 
 const emit = defineEmits<{
   (e: "update:draft", value: string): void;
@@ -1247,6 +1248,7 @@ onBeforeUnmount(() => {
       :latest-prompt-key="latestPromptKey"
       :voice-input-active="voiceInputActive"
       :queued-prompts="queuedPrompts"
+      :pending-agent-handoffs="pendingAgentHandoffs"
       :pending-images="pendingImages"
       :connected="connected"
       :busy="busy"

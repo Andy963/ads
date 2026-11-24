@@ -852,6 +852,7 @@ impl ReviewQueue {
                     "UPDATE action_jobs
                      SET agent_handoff_ready = 1, updated_at = ?1
                      WHERE id = ?2 AND requires_agent_handoff = 1
+                       AND status IN ('completed', 'failed')
                        AND superseded_at IS NULL",
                     rusqlite::params![now_ms(), job.id],
                 )?;
