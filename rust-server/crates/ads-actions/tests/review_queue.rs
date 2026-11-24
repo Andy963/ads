@@ -106,7 +106,27 @@ fn changed_resolver(first: ResolvedReview, second: ResolvedReview) -> TargetReso
 }
 
 fn pass_reviewer() -> ads_actions::ReviewerRunner {
-    Arc::new(|_request: ReviewerRequest| {
+    pass_reviewer_with_verification(true, 0)
+}
+
+fn pass_reviewer_with_verification(started: bool, exit_code: i64) -> ads_actions::ReviewerRunner {
+    Arc::new(move |request: ReviewerRequest| {
+        request
+            .verification_report
+            .lock()
+            .expect("verification report")
+            .commands
+            .push(ReviewTestReport {
+                command: "[\"cargo\",\"test\"]".to_string(),
+                exit_code,
+                summary: if exit_code == 0 {
+                    "passed".to_string()
+                } else {
+                    format!("failed with exit code {exit_code}")
+                },
+                output: Some("ok".to_string()),
+                started,
+            });
         Box::pin(async {
             Ok(ReviewVerdict {
                 status: ReviewVerdictStatus::Pass,
@@ -130,19 +150,6 @@ fn failing_reviewer(message: &'static str) -> ads_actions::ReviewerRunner {
 fn incomplete_reviewer() -> ads_actions::ReviewerRunner {
     Arc::new(|_request: ReviewerRequest| {
         Box::pin(async { Err(ReviewError::Incomplete("missing evidence".to_string())) })
-    })
-}
-
-fn verification(exit_code: i64) -> ads_actions::VerificationRunner {
-    Arc::new(move |_repo, _cancellation| {
-        Box::pin(async move {
-            Ok(ReviewTestReport {
-                command: "true".to_string(),
-                exit_code,
-                summary: "Tests and checks passed successfully".to_string(),
-                output: Some("ok".to_string()),
-            })
-        })
     })
 }
 
@@ -393,7 +400,6 @@ async fn carries_rework_declaration_across_operational_review_retries() {
     });
     let mut first_options = options();
     first_options.target_resolver = Some(fixed_resolver(resolved(&repo, &base, &head)));
-    first_options.verification = Some(verification(0));
     first_options.reviewer = Some(incomplete_reviewer());
     let first_queue = ReviewQueue::new(db.clone(), "worker-1", first_options);
     let mut first_retry = dispatch_request(project.clone(), &repo, Some("codex/issue-7"), Some(12));
@@ -452,7 +458,6 @@ async fn carries_rework_declaration_across_operational_review_retries() {
 
     let mut second_options = options();
     second_options.target_resolver = Some(fixed_resolver(resolved(&repo, &base, &newer_head)));
-    second_options.verification = Some(verification(0));
     second_options.reviewer = Some(pass_reviewer());
     let second_queue = ReviewQueue::new(db.clone(), "worker-2", second_options);
     second_queue
@@ -636,7 +641,6 @@ async fn processes_a_review_end_to_end() {
     let wakes = Arc::new(Mutex::new(Vec::new()));
     let mut options = options();
     options.target_resolver = Some(fixed_resolver(target.clone()));
-    options.verification = Some(verification(0));
     options.reviewer = Some(pass_reviewer());
     options.publisher = Some(Arc::new({
         let comments = comments.clone();
@@ -689,8 +693,9 @@ async fn processes_a_review_end_to_end() {
     let verdicts: Value = serde_json::from_str(&job.review_verdicts_json).expect("verdicts");
     assert_eq!(verdicts[0]["status"], "PASS");
     let report: Value = serde_json::from_str(&job.verification_report_json).expect("report");
-    assert_eq!(report["command"], "true");
-    assert_eq!(report["exitCode"], 0);
+    assert_eq!(report["commands"][0]["command"], "[\"cargo\",\"test\"]");
+    assert_eq!(report["commands"][0]["exitCode"], 0);
+    assert_eq!(report["commands"][0]["started"], true);
 
     let comments = comments.lock().expect("comments");
     assert_eq!(comments.len(), 1);
@@ -713,6 +718,85 @@ async fn processes_a_review_end_to_end() {
         Some("https://github.com/example/issues/7")
     );
     assert_eq!(wakes[0].status.as_str(), "PASS");
+}
+
+#[tokio::test]
+async fn allows_pass_after_started_successful_verification() {
+    let (_directory, db) = state();
+    let (_temp, repo, base, head) = repo();
+    let target = resolved(&repo, &base, &head);
+    let project = target.project_id.clone();
+    let mut options = options();
+    options.target_resolver = Some(fixed_resolver(target));
+    options.reviewer = Some(pass_reviewer_with_verification(true, 0));
+    options.publisher = Some(Arc::new(|_request: IssueCommentRequest| {
+        Box::pin(async { Ok(()) })
+    }));
+
+    let queue = ReviewQueue::new(db.clone(), "worker-1", options);
+    let ack = queue
+        .dispatch(
+            dispatch_request(project.clone(), &repo, Some("codex/issue-7"), Some(12)),
+            1_000,
+        )
+        .expect("dispatch");
+    assert!(queue.process(&project, &repo).await.expect("process"));
+
+    let connection = db.connect().expect("connection");
+    let job = get_action_job(&connection, &ack.job_id)
+        .expect("read")
+        .expect("job");
+    assert_eq!(job.status, ActionJobStatus::Completed);
+    assert!(
+        job.current_step
+            .as_deref()
+            .unwrap_or("")
+            .starts_with("PASS:")
+    );
+    let verdicts: Value = serde_json::from_str(&job.review_verdicts_json).expect("verdicts");
+    assert_eq!(verdicts[0]["status"], "PASS");
+    let report: Value = serde_json::from_str(&job.verification_report_json).expect("report");
+    assert_eq!(report["commands"][0]["started"], true);
+}
+
+#[tokio::test]
+async fn refuses_pass_when_reviewer_verification_fails() {
+    let (_directory, db) = state();
+    let (_temp, repo, base, head) = repo();
+    let target = resolved(&repo, &base, &head);
+    let project = target.project_id.clone();
+    let mut options = options();
+    options.target_resolver = Some(fixed_resolver(target));
+    options.reviewer = Some(pass_reviewer_with_verification(true, 1));
+    options.publisher = Some(Arc::new(|_request: IssueCommentRequest| {
+        Box::pin(async { Ok(()) })
+    }));
+
+    let queue = ReviewQueue::new(db.clone(), "worker-1", options);
+    let ack = queue
+        .dispatch(
+            dispatch_request(project.clone(), &repo, Some("codex/issue-7"), Some(12)),
+            1_000,
+        )
+        .expect("dispatch");
+    assert!(queue.process(&project, &repo).await.expect("process"));
+
+    let connection = db.connect().expect("connection");
+    let job = get_action_job(&connection, &ack.job_id)
+        .expect("read")
+        .expect("job");
+    assert_eq!(job.status, ActionJobStatus::Completed);
+    assert!(
+        job.current_step
+            .as_deref()
+            .unwrap_or("")
+            .starts_with("INCOMPLETE:")
+    );
+    let verdicts: Value = serde_json::from_str(&job.review_verdicts_json).expect("verdicts");
+    assert_eq!(verdicts[0]["status"], "INCOMPLETE");
+    let report: Value = serde_json::from_str(&job.verification_report_json).expect("report");
+    assert_eq!(report["commands"][0]["exitCode"], 1);
+    assert_eq!(report["commands"][0]["started"], true);
 }
 
 #[tokio::test]
@@ -790,12 +874,23 @@ async fn validates_and_delivers_rework_declaration_on_the_pinned_target() {
     let observed_declaration = Arc::new(Mutex::new(None));
     let mut options = options();
     options.target_resolver = Some(fixed_resolver(target));
-    options.verification = Some(verification(0));
     options.reviewer = Some(Arc::new({
         let observed_declaration = observed_declaration.clone();
         move |request: ReviewerRequest| {
             let observed_declaration = observed_declaration.clone();
             Box::pin(async move {
+                request
+                    .verification_report
+                    .lock()
+                    .expect("verification report")
+                    .commands
+                    .push(ReviewTestReport {
+                        command: "[\"cargo\",\"test\"]".to_string(),
+                        exit_code: 0,
+                        summary: "passed".to_string(),
+                        output: Some("ok".to_string()),
+                        started: true,
+                    });
                 *observed_declaration.lock().expect("declaration") =
                     request.payload.rework_declaration;
                 Ok(ReviewVerdict {
@@ -843,7 +938,6 @@ async fn fails_the_job_when_the_reviewer_errors() {
     let project = target.project_id.clone();
     let mut options = options();
     options.target_resolver = Some(fixed_resolver(target));
-    options.verification = Some(verification(0));
     options.reviewer = Some(failing_reviewer("boom"));
     let queue = ReviewQueue::new(db.clone(), "worker-1", options);
     let ack = queue
@@ -875,7 +969,6 @@ async fn completes_incomplete_verdicts_and_publishes_outcome() {
     let comments = Arc::new(Mutex::new(Vec::new()));
     let mut options = options();
     options.target_resolver = Some(fixed_resolver(target));
-    options.verification = Some(verification(1));
     options.reviewer = Some(incomplete_reviewer());
     options.publisher = Some(Arc::new({
         let comments = comments.clone();
@@ -924,14 +1017,25 @@ async fn does_not_publish_when_the_job_was_superseded_during_review() {
     let messages = Arc::new(Mutex::new(Vec::new()));
     let mut options = options();
     options.target_resolver = Some(fixed_resolver(target));
-    options.verification = Some(verification(0));
     options.reviewer = Some(Arc::new({
         let db = db.clone();
         let project = project.clone();
-        move |_request: ReviewerRequest| {
+        move |request: ReviewerRequest| {
             let db = db.clone();
             let project = project.clone();
             Box::pin(async move {
+                request
+                    .verification_report
+                    .lock()
+                    .expect("verification report")
+                    .commands
+                    .push(ReviewTestReport {
+                        command: "[\"cargo\",\"test\"]".to_string(),
+                        exit_code: 0,
+                        summary: "passed".to_string(),
+                        output: Some("ok".to_string()),
+                        started: true,
+                    });
                 let connection = db.connect().expect("connection");
                 supersede_review_jobs_for_new_head(
                     &connection,
@@ -1009,7 +1113,6 @@ async fn marks_incomplete_when_the_target_changed_during_review() {
     let project = target.project_id.clone();
     let mut options = options();
     options.target_resolver = Some(changed_resolver(target, changed_target));
-    options.verification = Some(verification(0));
     options.reviewer = Some(pass_reviewer());
     let queue = ReviewQueue::new(db.clone(), "worker-1", options);
     let ack = queue

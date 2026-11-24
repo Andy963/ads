@@ -49,6 +49,21 @@ pub struct ReviewTestReport {
     pub exit_code: i64,
     pub summary: String,
     pub output: Option<String>,
+    pub started: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ReviewVerificationReport {
+    pub commands: Vec<ReviewTestReport>,
+}
+
+impl ReviewVerificationReport {
+    pub fn has_successful_command(&self) -> bool {
+        self.commands
+            .iter()
+            .any(|command| command.started && command.exit_code == 0)
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -63,7 +78,7 @@ pub struct ReviewPayload {
     pub diff_capture_error: Option<String>,
     pub related_contexts: Option<Vec<ReviewRelatedContext>>,
     pub related_context_omissions: Option<Vec<ReviewContextOmission>>,
-    pub test_report: Option<ReviewTestReport>,
+    pub verification_report: Option<ReviewVerificationReport>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

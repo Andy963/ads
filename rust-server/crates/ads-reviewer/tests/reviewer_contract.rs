@@ -5,7 +5,7 @@ use ads_reviewer::{
     DEFAULT_REVIEWER_SYSTEM_PROMPT, DetachedReviewOptions, EnsembleReviewer, FnReviewModel,
     IssueVerdictCommentInput, IssueVerdictStatus, ReviewAdr, ReviewDefect, ReviewDiffRange,
     ReviewIssue, ReviewModel, ReviewPayload, ReviewSeverity, ReviewTestReport, ReviewVerdictStatus,
-    ReviewerError, build_issue_verdict_comment, build_review_prompt,
+    ReviewVerificationReport, ReviewerError, build_issue_verdict_comment, build_review_prompt,
     build_review_verdict_narration_prompt, filter_diff, find_review_protocol_start,
     find_review_protocol_stream_boundary, format_review_verdict_presentation,
     format_review_verdict_text, normalize_review_verdict_narration, parse_issue_verdict_comment,
@@ -225,11 +225,14 @@ fn builds_the_detached_review_prompt_with_issue_adr_report_and_diff() {
             decision: "Separate cognitive tier from deterministic controller".to_string(),
         }]),
         diff: "+ const value = 1;".to_string(),
-        test_report: Some(ReviewTestReport {
-            command: "npm test".to_string(),
-            exit_code: 1,
-            summary: "1 failing".to_string(),
-            output: Some("failure output".to_string()),
+        verification_report: Some(ReviewVerificationReport {
+            commands: vec![ReviewTestReport {
+                command: "[\"npm\",\"test\"]".to_string(),
+                exit_code: 1,
+                summary: "1 failing".to_string(),
+                output: Some("failure output".to_string()),
+                started: true,
+            }],
         }),
         ..Default::default()
     });

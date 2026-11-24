@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use ads_reviewer::{
-    IssueVerdictStatus, ReviewPayload, ReviewTestReport, ReviewVerdict, ReviewerError,
+    IssueVerdictStatus, ReviewPayload, ReviewVerdict, ReviewVerificationReport, ReviewerError,
 };
 use ads_state::ActionJobStatus;
 use serde::Serialize;
@@ -69,6 +69,7 @@ pub struct ReviewerRequest {
     pub job_id: String,
     pub owner: String,
     pub cancellation: ads_native::Cancellation,
+    pub verification_report: Arc<std::sync::Mutex<ReviewVerificationReport>>,
 }
 
 #[derive(Debug, Clone)]
@@ -166,11 +167,6 @@ impl ReworkDeclaration {
 pub type TargetResolver = Arc<
     dyn Fn(ResolveReviewRequest) -> BoxFuture<Result<ResolvedReview, ReviewError>> + Send + Sync,
 >;
-pub type VerificationRunner = Arc<
-    dyn Fn(PathBuf, ads_native::Cancellation) -> BoxFuture<Result<ReviewTestReport, ReviewError>>
-        + Send
-        + Sync,
->;
 pub type ReviewerRunner =
     Arc<dyn Fn(ReviewerRequest) -> BoxFuture<Result<ReviewVerdict, ReviewError>> + Send + Sync>;
 pub type IssueCommentPublisher =
@@ -181,14 +177,11 @@ pub type LaneWaker = Arc<dyn Fn(AcopilotWake) + Send + Sync>;
 #[derive(Clone, Default)]
 pub struct ReviewQueueOptions {
     pub target_resolver: Option<TargetResolver>,
-    pub verification: Option<VerificationRunner>,
     pub reviewer: Option<ReviewerRunner>,
     pub publisher: Option<IssueCommentPublisher>,
     pub messenger: Option<LaneMessenger>,
     pub waker: Option<LaneWaker>,
-    pub test_command: Option<String>,
     pub lease_ttl: Option<Duration>,
     pub heartbeat: Option<Duration>,
-    pub verification_timeout: Option<Duration>,
     pub reviewer_timeout: Option<Duration>,
 }

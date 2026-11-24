@@ -164,10 +164,6 @@ fn build_review_queue(db: StateDb, hub: Arc<WebSocketHub>) -> Arc<ReviewQueue> {
         }
     });
     let options = ReviewQueueOptions {
-        test_command: std::env::var("ADS_REVIEW_TEST_COMMAND")
-            .ok()
-            .map(|value| value.trim().to_string())
-            .filter(|value| !value.is_empty()),
         messenger: Some(messenger),
         waker: Some(waker),
         ..ReviewQueueOptions::default()
