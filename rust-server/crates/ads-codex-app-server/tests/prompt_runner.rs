@@ -875,3 +875,186 @@ async fn interrupts_a_turn_that_stalls_without_output() {
                 .is_some_and(|message| message.contains("produced no output for 80ms"))
     }));
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn injects_lane_role_instructions_sandbox_and_tools_and_refreshes_on_prompt_update() {
+    use std::os::unix::fs::PermissionsExt;
+    use std::sync::Arc;
+
+    use ads_codex_app_server::{
+        CodexAppServerPromptRunner, CodexAppServerPromptRunnerOptions, SpawnOptions,
+    };
+    use ads_runtime::{PromptQueueRunner, PromptRunContext};
+    use ads_state::{
+        EnqueuePromptInput, PromptQueueLane, PromptQueueStore, StateDb, WEB_ACOPILOT_NAMESPACE,
+        WEB_ACTIONS_NAMESPACE,
+    };
+    use serde_json::{Value, json};
+    use tempfile::tempdir;
+
+    let directory = tempdir().expect("temp dir");
+    let workspace = directory.path().join("workspace");
+    std::fs::create_dir(&workspace).expect("workspace");
+    let log_path = directory.path().join("rpc.log");
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../scripts/fixtures/fake-codex-app-server.mjs");
+    let wrapper = directory.path().join("fake-codex");
+    std::fs::write(
+        &wrapper,
+        format!(
+            "#!/bin/sh\nexec {:?} {:?} \"$@\"\n",
+            std::env::var("NODE_BINARY").unwrap_or_else(|_| "node".to_string()),
+            fixture
+        ),
+    )
+    .expect("wrapper");
+    std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+
+    let db = StateDb::open(directory.path().join("state.db")).expect("state db");
+    {
+        let connection = db.connect().expect("connection");
+        connection
+            .execute(
+                "UPDATE role_profiles SET system_prompt = 'ACOPILOT_PROMPT_V1' WHERE role = 'acopilot'",
+                [],
+            )
+            .expect("update acopilot v1");
+        connection
+            .execute(
+                "UPDATE role_profiles SET system_prompt = 'REVIEWER_PROMPT_V1' WHERE role = 'reviewer'",
+                [],
+            )
+            .expect("update reviewer v1");
+    }
+
+    let enqueue = |client_message_id: &str, namespace: &str, chat_session_id: &str| {
+        let connection = db.connect().expect("connection");
+        let store = PromptQueueStore::new(&connection).expect("queue store");
+        store
+            .enqueue(
+                EnqueuePromptInput {
+                    client_message_id: client_message_id.to_string(),
+                    lane: PromptQueueLane {
+                        auth_user_id: "user-1".to_string(),
+                        session_id: "session-1".to_string(),
+                        chat_session_id: chat_session_id.to_string(),
+                        history_key: format!("user-1::session-1::{chat_session_id}"),
+                        logical_history_key: format!("user-1::session-1::{chat_session_id}"),
+                        lane_namespace: namespace.to_string(),
+                        lane_generation: 1,
+                    },
+                    user_id: 42,
+                    workspace_root: workspace.to_string_lossy().to_string(),
+                    payload: json!({ "text": format!("turn {client_message_id}") })
+                        .as_object()
+                        .expect("payload")
+                        .clone(),
+                    retry_failed: false,
+                    retry_original: false,
+                    created_at: Some(1),
+                },
+                ads_contract::time::now_unix_millis(),
+            )
+            .expect("enqueue")
+            .entry
+    };
+
+    let runner = CodexAppServerPromptRunner::new(CodexAppServerPromptRunnerOptions {
+        db: db.clone(),
+        daemon_options: SpawnOptions {
+            binary: wrapper.to_string_lossy().to_string(),
+            env: [(
+                "ADS_APP_SERVER_PROBE_LOG".to_string(),
+                log_path.to_string_lossy().to_string(),
+            )]
+            .into_iter()
+            .collect(),
+            ..SpawnOptions::default()
+        },
+        history_max_entries_per_session: 1_000,
+        history_max_text_length: 100_000,
+        action_tools_factory: None,
+        turn_idle_timeout: None,
+    });
+
+    let acopilot_first = enqueue("acopilot-1", WEB_ACOPILOT_NAMESPACE, "acopilot");
+    let outcome = runner
+        .run_prompt(acopilot_first, PromptRunContext::new(Arc::new(|_| {})))
+        .await
+        .expect("acopilot first run");
+    assert_eq!(outcome, ads_runtime::PromptQueueRunOutcome::success());
+
+    let actions_first = enqueue("actions-1", WEB_ACTIONS_NAMESPACE, "main");
+    let outcome = runner
+        .run_prompt(actions_first, PromptRunContext::new(Arc::new(|_| {})))
+        .await
+        .expect("actions first run");
+    assert_eq!(outcome, ads_runtime::PromptQueueRunOutcome::success());
+
+    {
+        let connection = db.connect().expect("connection");
+        connection
+            .execute(
+                "UPDATE role_profiles SET system_prompt = 'ACOPILOT_PROMPT_V2' WHERE role = 'acopilot'",
+                [],
+            )
+            .expect("update acopilot v2");
+    }
+    let acopilot_second = enqueue("acopilot-2", WEB_ACOPILOT_NAMESPACE, "acopilot");
+    let outcome = runner
+        .run_prompt(acopilot_second, PromptRunContext::new(Arc::new(|_| {})))
+        .await
+        .expect("acopilot second run");
+    assert_eq!(outcome, ads_runtime::PromptQueueRunOutcome::success());
+
+    let rpc_log = std::fs::read_to_string(&log_path).expect("rpc log");
+    let messages: Vec<Value> = rpc_log
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .collect();
+
+    let acopilot_start = messages
+        .iter()
+        .find(|msg| {
+            msg["method"] == "thread/start"
+                && msg["params"]["developerInstructions"] == "ACOPILOT_PROMPT_V1"
+        })
+        .expect("acopilot thread/start");
+    assert_eq!(acopilot_start["params"]["sandbox"], "workspace-write");
+    assert!(
+        acopilot_start["params"]["dynamicTools"]
+            .as_array()
+            .expect("dynamicTools")
+            .iter()
+            .any(|tool| tool["name"] == "review_action"),
+        "acopilot lane should expose review_action"
+    );
+
+    let actions_start = messages
+        .iter()
+        .find(|msg| {
+            msg["method"] == "thread/start"
+                && msg["params"]["developerInstructions"] == "REVIEWER_PROMPT_V1"
+        })
+        .expect("actions thread/start");
+    assert_eq!(actions_start["params"]["sandbox"], "read-only");
+    assert!(
+        !actions_start["params"]["dynamicTools"]
+            .as_array()
+            .expect("dynamicTools")
+            .iter()
+            .any(|tool| tool["name"] == "review_action"),
+        "actions read-only lane must not expose review_action"
+    );
+
+    assert!(
+        messages.iter().any(|msg| {
+            matches!(
+                msg["method"].as_str(),
+                Some("thread/resume") | Some("thread/start")
+            ) && msg["params"]["developerInstructions"] == "ACOPILOT_PROMPT_V2"
+        }),
+        "updating role_profiles.system_prompt must propagate to subsequent turns: {rpc_log}"
+    );
+}

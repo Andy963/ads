@@ -982,6 +982,65 @@ async fn handoff_lane_turn_persists_display_summary_while_sending_model_prompt()
     );
     harness.drain().await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn injects_lane_scoped_role_system_prompt_and_hides_review_action_in_actions_lane() {
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let harness = Harness::start_with_wire(
+        chat_stream_router_captured(Arc::clone(&requests)),
+        "chat",
+        Arc::clone(&requests),
+    )
+    .await;
+    {
+        let connection = harness.db.connect().expect("connection");
+        connection
+            .execute(
+                "UPDATE role_profiles SET system_prompt = 'NATIVE_ACOPILOT_SYSTEM' WHERE role = 'acopilot'",
+                [],
+            )
+            .expect("acopilot prompt");
+        connection
+            .execute(
+                "UPDATE role_profiles SET system_prompt = 'NATIVE_REVIEWER_SYSTEM' WHERE role = 'reviewer'",
+                [],
+            )
+            .expect("reviewer prompt");
+    }
+
+    let mut acopilot_turn = LaneTurn::from(harness.enqueue("cm-acopilot-role", "hello acopilot"));
+    acopilot_turn.lane_namespace = ads_state::WEB_ACOPILOT_NAMESPACE.to_string();
+    let outcome = harness
+        .runner
+        .run_lane_turn(acopilot_turn, harness.context())
+        .await
+        .expect("acopilot turn");
+    assert_eq!(outcome, PromptQueueRunOutcome::success());
+
+    let mut actions_turn = LaneTurn::from(harness.enqueue("cm-actions-role", "hello actions"));
+    actions_turn.lane_namespace = ads_state::WEB_ACTIONS_NAMESPACE.to_string();
+    let outcome = harness
+        .runner
+        .run_lane_turn(actions_turn, harness.context())
+        .await
+        .expect("actions turn");
+    assert_eq!(outcome, PromptQueueRunOutcome::success());
+
+    let captured = {
+        let guard = requests.lock().expect("requests");
+        guard.clone()
+    };
+    assert_eq!(captured.len(), 2);
+    let acopilot_body = serde_json::to_string(&captured[0]).expect("serialize acopilot");
+    let actions_body = serde_json::to_string(&captured[1]).expect("serialize actions");
+    assert!(acopilot_body.contains("NATIVE_ACOPILOT_SYSTEM"));
+    assert!(!acopilot_body.contains("NATIVE_REVIEWER_SYSTEM"));
+    assert!(acopilot_body.contains("review_action"));
+    assert!(actions_body.contains("NATIVE_REVIEWER_SYSTEM"));
+    assert!(!actions_body.contains("NATIVE_ACOPILOT_SYSTEM"));
+    assert!(!actions_body.contains("review_action"));
+    harness.drain().await;
+}
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn runs_scheduler_prompts_with_scheduler_owner_credentials() {
     let requests = Arc::new(Mutex::new(Vec::new()));
