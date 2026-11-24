@@ -230,6 +230,9 @@ pub(crate) fn migrate_state(connection: &Connection, from: i64, to: i64) -> Stat
     if from < 50 {
         migrate_state_50(&transaction)?;
     }
+    if from < 51 {
+        migrate_state_51(&transaction)?;
+    }
     transaction.execute(
         "UPDATE schema_version SET version = ?1, updated_at = datetime('now') WHERE id = 1",
         params![to],
@@ -2270,6 +2273,15 @@ fn migrate_state_50(connection: &Connection) -> StateResult<()> {
     Ok(())
 }
 
+fn migrate_state_51(connection: &Connection) -> StateResult<()> {
+    rewrite_acopilot_prompts(connection, |prompt| {
+        prompt.replace(
+            RETIRED_REVIEW_ACTION_WAKE_INSTRUCTION,
+            REVIEW_ACTION_INSTRUCTION,
+        )
+    })
+}
+
 fn migrate_legacy_review_wakes(connection: &Connection) -> StateResult<Vec<String>> {
     let mut migrated_client_message_ids = Vec::new();
     let rows = {
@@ -3725,6 +3737,60 @@ mod tests {
                 params![client_message_id, payload_json, status, created_at],
             )
             .expect("legacy review wake");
+    }
+
+    #[test]
+    fn migrates_state_50_acopilot_prompt_and_preserves_custom_text() {
+        let connection = Connection::open_in_memory().expect("memory db");
+        connection
+            .execute_batch(
+                "CREATE TABLE schema_version (
+                   id INTEGER PRIMARY KEY,
+                   version INTEGER NOT NULL,
+                   updated_at TEXT NOT NULL
+                 );
+                 INSERT INTO schema_version VALUES (1, 50, datetime('now'));
+                 CREATE TABLE role_profiles (
+                   id TEXT PRIMARY KEY,
+                   role TEXT NOT NULL,
+                   system_prompt TEXT NOT NULL,
+                   version INTEGER NOT NULL,
+                   updated_at INTEGER NOT NULL
+                 );",
+            )
+            .expect("schema 50 fixture");
+        let old_prompt = format!(
+            "Keep custom introduction.\n{RETIRED_REVIEW_ACTION_WAKE_INSTRUCTION}\nKeep custom suffix."
+        );
+        connection
+            .execute(
+                "INSERT INTO role_profiles (id, role, system_prompt, version, updated_at)
+                 VALUES ('acopilot', 'acopilot', ?1, 1, 1)",
+                params![old_prompt],
+            )
+            .expect("legacy prompt");
+
+        migrate_state(&connection, 50, 51).expect("state migration");
+
+        let (prompt, profile_version): (String, i64) = connection
+            .query_row(
+                "SELECT system_prompt, version FROM role_profiles WHERE id = 'acopilot'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("migrated prompt");
+        let expected_prompt =
+            format!("Keep custom introduction.\n{REVIEW_ACTION_INSTRUCTION}\nKeep custom suffix.");
+        assert_eq!(prompt, expected_prompt);
+        assert_eq!(profile_version, 2);
+        let version: i64 = connection
+            .query_row(
+                "SELECT version FROM schema_version WHERE id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .expect("schema version");
+        assert_eq!(version, 51);
     }
 
     #[test]

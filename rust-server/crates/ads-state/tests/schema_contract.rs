@@ -42,7 +42,7 @@ fn opens_state_database_at_the_contract_version() {
 }
 
 #[test]
-fn migrates_state_48_to_50_with_rework_lineage_columns() {
+fn migrates_state_48_to_51_with_rework_lineage_columns() {
     let directory = tempdir().expect("temp dir");
     let path = directory.path().join("state.db");
     StateDb::open(&path).expect("state db");
@@ -87,7 +87,7 @@ fn migrates_state_48_to_50_with_rework_lineage_columns() {
 }
 
 #[test]
-fn migrates_state_49_to_50_backfilling_rework_root_lineage() {
+fn migrates_state_49_to_51_backfilling_rework_root_lineage() {
     let directory = tempdir().expect("temp dir");
     let path = directory.path().join("state.db");
     StateDb::open(&path).expect("state db");
@@ -446,7 +446,7 @@ fn checked_in_state_contract_matches_the_runtime_version() {
         STATE_SCHEMA_VERSION
     );
     assert!(
-        manifest.contains("\"rust_state_contract_migration_count\": 8"),
+        manifest.contains("\"rust_state_contract_migration_count\": 9"),
         "checked-in manifest must record the Rust-only state contract migrations"
     );
     assert!(contract_sql.contains("rework_declaration_json TEXT"));

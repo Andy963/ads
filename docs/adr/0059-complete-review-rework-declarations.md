@@ -22,4 +22,4 @@ The Rust Acopilot flow allowed a pull request to be redispatched after a `REJECT
 
 ## Consequences
 
-Review redispatch now has durable, exact-target evidence of the work performed after rejection. SQLite schema version 49 adds a nullable declaration column, preserving existing rows, and the migration supports existing databases. A declaration cannot be reused after a newer review outcome or against a different target.
+Review redispatch now has durable, exact-target evidence of the work performed after rejection. SQLite schema version 49 adds a nullable declaration column, preserving existing rows, and schema version 50 adds immutable rejected-job lineage. Schema version 51 refreshes the persisted Acopilot review instruction on existing databases while retaining surrounding custom prompt text. A declaration cannot be reused after a newer review outcome or against a different target.

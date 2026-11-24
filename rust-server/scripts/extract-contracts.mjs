@@ -83,6 +83,7 @@ CREATE INDEX IF NOT EXISTS idx_agent_messages_review
   () => {},
   (db) => addColumnIfMissing(db, "action_jobs", "rework_declaration_json", "TEXT"),
   (db) => addColumnIfMissing(db, "action_jobs", "rework_root_job_id", "TEXT"),
+  () => {},
 ];
 
 function ensureDir(dir) {
