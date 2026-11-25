@@ -944,14 +944,22 @@ fn parse_frontmatter(content: &str) -> Mapping {
 }
 
 fn extract_yaml_frontmatter(content: &str) -> Result<String, String> {
-    if !content.starts_with("---") {
+    let lines = content.split('\n').collect::<Vec<_>>();
+    if lines.first().map(|line| line.trim()) != Some("---") {
         return Err("No YAML frontmatter found".to_string());
     }
-    let Some(end_index) = content[3..].find("\n---").map(|index| index + 3) else {
+    let Some(end) = (1..lines.len()).find(|index| lines[*index].trim() == "---") else {
         return Err("Invalid frontmatter format".to_string());
     };
-    let start = content.find('\n').map(|index| index + 1).unwrap_or(0);
-    Ok(content[start..end_index].to_string())
+    let payload = lines[1..end]
+        .iter()
+        .map(|line| line.strip_suffix('\r').unwrap_or(line))
+        .collect::<Vec<_>>()
+        .join("\n");
+    if payload.trim().is_empty() {
+        return Err("Invalid frontmatter format".to_string());
+    }
+    Ok(payload)
 }
 
 fn map_get<'a>(map: &'a Mapping, key: &str) -> Option<&'a Yaml> {
@@ -1349,6 +1357,44 @@ mod tests {
         fs::write(skill_dir.join(SKILL_FILE_NAME), "# no frontmatter\n").expect("skill");
         let invalid = validate_skill_directory(&skill_dir);
         assert_eq!(invalid.message, "No YAML frontmatter found");
+
+        for (name, content, expected_message) in [
+            ("empty-lf", "---\n---", "Invalid frontmatter format"),
+            ("empty-crlf", "---\r\n---\r\n", "Invalid frontmatter format"),
+            (
+                "whitespace-only",
+                "---\n   \n---\n",
+                "Invalid frontmatter format",
+            ),
+            ("bad-open", "---foo\n---\n", "No YAML frontmatter found"),
+            (
+                "bad-close",
+                "---\nname: test\ndescription: desc\n---foo\n",
+                "Invalid frontmatter format",
+            ),
+            (
+                "unclosed",
+                "---\nname: test\ndescription: desc\n",
+                "Invalid frontmatter format",
+            ),
+        ] {
+            let case_dir = directory.path().join(name);
+            fs::create_dir_all(&case_dir).expect("case dir");
+            fs::write(case_dir.join(SKILL_FILE_NAME), content).expect("write case");
+            let result = validate_skill_directory(&case_dir);
+            assert!(!result.valid, "case {name} should be invalid");
+            assert_eq!(result.message, expected_message, "case {name}");
+        }
+
+        let crlf_dir = directory.path().join("valid-crlf");
+        fs::create_dir_all(&crlf_dir).expect("crlf dir");
+        fs::write(
+            crlf_dir.join(SKILL_FILE_NAME),
+            "---\r\nname: valid-crlf\r\ndescription: Valid CRLF skill\r\n---\r\n# Body\r\n",
+        )
+        .expect("write crlf skill");
+        let crlf_result = validate_skill_directory(&crlf_dir);
+        assert!(crlf_result.valid, "{}", crlf_result.message);
     }
 
     #[test]
