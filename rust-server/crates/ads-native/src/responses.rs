@@ -1370,8 +1370,24 @@ fn transport_error(error: reqwest::Error, cancellation: &crate::Cancellation) ->
     }
     NativeError::provider(
         NativeProviderErrorKind::Transient,
-        format!("Native Responses upstream request failed: {error}"),
+        format!(
+            "Native Responses upstream request failed: {}",
+            format_error_chain(&error)
+        ),
     )
+}
+
+fn format_error_chain(error: &dyn std::error::Error) -> String {
+    let mut parts = vec![error.to_string()];
+    let mut current = error.source();
+    while let Some(source) = current {
+        let text = source.to_string();
+        if !text.is_empty() && parts.last().map(String::as_str) != Some(text.as_str()) {
+            parts.push(text);
+        }
+        current = source.source();
+    }
+    parts.join(": ")
 }
 
 #[cfg(test)]
@@ -1673,6 +1689,37 @@ mod tests {
             error
                 .to_string()
                 .contains("changed streamed message content")
+        );
+    }
+
+    #[test]
+    fn formats_nested_transport_error_sources() {
+        #[derive(Debug)]
+        struct Inner(&'static str);
+        impl std::fmt::Display for Inner {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str(self.0)
+            }
+        }
+        impl std::error::Error for Inner {}
+
+        #[derive(Debug)]
+        struct Outer(&'static str, Inner);
+        impl std::fmt::Display for Outer {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str(self.0)
+            }
+        }
+        impl std::error::Error for Outer {
+            fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+                Some(&self.1)
+            }
+        }
+
+        let err = Outer("error sending request", Inner("connection reset by peer"));
+        assert_eq!(
+            format_error_chain(&err),
+            "error sending request: connection reset by peer"
         );
     }
 }

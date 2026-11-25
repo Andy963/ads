@@ -18,6 +18,7 @@ mod agent;
 mod daemon_registry;
 mod prompt_runner;
 mod provider_injection;
+mod reviewer;
 
 pub use agent::{
     ActionToolFuture, AgentActionTools, AgentError, AgentEvent, AgentInputPart, AgentRunResult,
@@ -29,6 +30,10 @@ pub use daemon_registry::{
 };
 pub use prompt_runner::{
     CodexActionToolsFactory, CodexAppServerPromptRunner, CodexAppServerPromptRunnerOptions,
+};
+pub use reviewer::{
+    CodexReviewRequest, augment_path_with_cargo_bin, is_mutating_review_command,
+    is_verification_command, run_codex_review,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

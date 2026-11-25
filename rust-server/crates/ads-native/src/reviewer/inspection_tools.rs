@@ -1080,10 +1080,8 @@ fn verification_command(
 ) -> NativeResult<Command> {
     let mut command = Command::new(&programs.resource_limiter);
     command.env_clear();
-    command.env(
-        "PATH",
-        std::env::var_os("PATH").unwrap_or_else(|| "/usr/local/bin:/usr/bin:/bin".into()),
-    );
+    let mut path_value =
+        std::env::var_os("PATH").unwrap_or_else(|| "/usr/local/bin:/usr/bin:/bin".into());
     command.env("HOME", working_directory);
     command.env("TMPDIR", working_directory);
     command.env("CARGO_NET_OFFLINE", "true");
@@ -1096,6 +1094,16 @@ fn verification_command(
             .map(PathBuf::from)
             .unwrap_or_else(|| home.join(".cargo"));
         if cargo_home.is_dir() {
+            let cargo_bin = cargo_home.join("bin");
+            if cargo_bin.is_dir() {
+                let mut paths: Vec<PathBuf> = std::env::split_paths(&path_value).collect();
+                if !paths.iter().any(|entry| entry == &cargo_bin) {
+                    paths.insert(0, cargo_bin);
+                    if let Ok(joined) = std::env::join_paths(paths) {
+                        path_value = joined;
+                    }
+                }
+            }
             command.env("CARGO_HOME", cargo_home);
         }
         let rustup_home = std::env::var_os("RUSTUP_HOME")
@@ -1105,6 +1113,7 @@ fn verification_command(
             command.env("RUSTUP_HOME", rustup_home);
         }
     }
+    command.env("PATH", path_value);
     command.args([
         format!("--cpu={MAX_VERIFICATION_CPU_SECONDS}:{MAX_VERIFICATION_CPU_SECONDS}"),
         format!(

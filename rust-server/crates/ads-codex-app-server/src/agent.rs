@@ -65,6 +65,7 @@ fn review_action_input_schema() -> Value {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SandboxMode {
     ReadOnly,
+    ReviewVerification,
     WorkspaceWrite,
     DangerFullAccess,
 }
@@ -73,7 +74,7 @@ impl SandboxMode {
     fn thread_value(self) -> &'static str {
         match self {
             Self::ReadOnly => "read-only",
-            Self::WorkspaceWrite => "workspace-write",
+            Self::ReviewVerification | Self::WorkspaceWrite => "workspace-write",
             Self::DangerFullAccess => "danger-full-access",
         }
     }
@@ -81,7 +82,7 @@ impl SandboxMode {
     fn turn_policy(self) -> Value {
         match self {
             Self::ReadOnly => json!({"type": "readOnly", "networkAccess": false}),
-            Self::WorkspaceWrite => json!({
+            Self::ReviewVerification | Self::WorkspaceWrite => json!({
                 "type": "workspaceWrite",
                 "writableRoots": [],
                 "networkAccess": false,
@@ -90,6 +91,10 @@ impl SandboxMode {
             }),
             Self::DangerFullAccess => json!({"type": "dangerFullAccess"}),
         }
+    }
+
+    pub(crate) fn is_review_restricted(self) -> bool {
+        matches!(self, Self::ReadOnly | Self::ReviewVerification)
     }
 }
 
@@ -702,7 +707,11 @@ impl CodexAppServerAgent {
                                         Ok(agent.handle_command_approval(params, &state).await)
                                     }
                                     "item/fileChange/requestApproval" => {
-                                        Ok(json!({"decision": "accept"}))
+                                        if agent.inner.options.sandbox_mode.is_review_restricted() {
+                                            Ok(json!({"decision": "decline"}))
+                                        } else {
+                                            Ok(json!({"decision": "accept"}))
+                                        }
                                     }
                                     "item/tool/call" => Ok(agent
                                         .handle_builtin_tool_call(
@@ -1114,7 +1123,16 @@ impl CodexAppServerAgent {
             .and_then(Value::as_str)
             .unwrap_or_default();
         state.lock().expect("turn state lock").side_effect_observed = true;
-        let Some(violation) = ads_native::find_security_violation(command) else {
+        let violation = ads_native::find_security_violation(command).or_else(|| {
+            self.inner
+                .options
+                .sandbox_mode
+                .is_review_restricted()
+                .then(|| crate::reviewer::is_mutating_review_command(command))
+                .flatten()
+                .map(str::to_string)
+        });
+        let Some(violation) = violation else {
             return json!({"decision": "accept"});
         };
         let item_id = params
@@ -1665,10 +1683,10 @@ impl CodexAppServerAgent {
 
     fn dynamic_tools(&self) -> Vec<Value> {
         let mut tools = self.inner.options.dynamic_tools.clone();
-        if self.inner.options.sandbox_mode != SandboxMode::ReadOnly
+        if !self.inner.options.sandbox_mode.is_review_restricted()
             && !tools
-            .iter()
-            .any(|tool| tool.get("name").and_then(Value::as_str) == Some("review_action"))
+                .iter()
+                .any(|tool| tool.get("name").and_then(Value::as_str) == Some("review_action"))
         {
             tools.insert(
                 0,

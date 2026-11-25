@@ -55,6 +55,7 @@ version = "0.1.0"
 dependencies = [
  "ads-contract",
  "ads-native",
+ "ads-reviewer",
  "ads-runtime",
  "ads-state",
  "base64 0.22.1",
