@@ -186,9 +186,7 @@ impl CommandManager {
             let status = child.wait().await;
             // The shell may exit while a descendant still owns the output pipes.
             // Reap the remaining process group before waiting for the pumps.
-            if session_for_wait.group_exists() {
-                session_for_wait.signal_group(libc::SIGKILL);
-            }
+            session_for_wait.terminate_group_once();
             if let Some(task) = stdout_task {
                 let _ = task.await;
             }
@@ -292,7 +290,7 @@ impl Drop for CommandManager {
     fn drop(&mut self) {
         self.closed.store(true, Ordering::SeqCst);
         for session in self.sessions.get_mut().expect("command sessions").drain(..) {
-            session.signal_group(libc::SIGKILL);
+            session.terminate_group_once();
         }
     }
 }
@@ -302,6 +300,9 @@ struct CommandSession {
     call_id: String,
     command: String,
     pid: Option<u32>,
+    group_terminated: AtomicBool,
+    #[cfg(test)]
+    dispatched_signals: Mutex<Vec<i32>>,
     started_at: Instant,
     stdout: Arc<Mutex<OutputBuffer>>,
     stderr: Arc<Mutex<OutputBuffer>>,
@@ -335,6 +336,9 @@ impl CommandSession {
             call_id,
             command,
             pid,
+            group_terminated: AtomicBool::new(false),
+            #[cfg(test)]
+            dispatched_signals: Mutex::new(Vec::new()),
             started_at: Instant::now(),
             stdout: Arc::new(Mutex::new(OutputBuffer::new(
                 max_output_bytes,
@@ -374,9 +378,7 @@ impl CommandSession {
         }
         state.finished_at = Some(Instant::now());
         drop(state);
-        if self.group_exists() {
-            self.signal_group(libc::SIGKILL);
-        }
+        self.terminate_group_once();
         let _ = self.done_tx.send(true);
     }
 
@@ -398,13 +400,13 @@ impl CommandSession {
             state.timed_out |= timed_out;
             state.cancelled |= !timed_out;
         }
-        self.signal_group(libc::SIGTERM);
+        self.signal_term();
         let mut done = self.done_rx.clone();
         if !*done.borrow() {
             let _ = tokio::time::timeout(KILL_GRACE, done.changed()).await;
         }
         if !*done.borrow() {
-            self.signal_group(libc::SIGKILL);
+            self.terminate_group_once();
             let _ = tokio::time::timeout(KILL_GRACE, done.changed()).await;
         }
     }
@@ -423,9 +425,6 @@ impl CommandSession {
                 }
             })
             .await;
-        }
-        if self.is_finished() && self.group_exists() {
-            self.signal_group(libc::SIGKILL);
         }
         let (stdout, truncated_stdout) = self.stdout.lock().expect("stdout").drain();
         let (stderr, truncated_stderr) = self.stderr.lock().expect("stderr").drain();
@@ -451,29 +450,38 @@ impl CommandSession {
         })
     }
 
-    fn signal_group(&self, signal: i32) {
-        let Some(pid) = self.pid.and_then(|pid| i32::try_from(pid).ok()) else {
-            return;
+    fn signal_term(&self) -> bool {
+        if self.group_terminated.load(Ordering::Acquire) || self.is_finished() {
+            return false;
         };
+        self.signal_group_raw(libc::SIGTERM)
+    }
+
+    fn terminate_group_once(&self) -> bool {
+        if self.group_terminated.swap(true, Ordering::AcqRel) {
+            return false;
+        }
+        self.signal_group_raw(libc::SIGKILL)
+    }
+
+    fn signal_group_raw(&self, signal: i32) -> bool {
+        let Some(pid) = self.pid.and_then(|pid| i32::try_from(pid).ok()) else {
+            return false;
+        };
+        #[cfg(test)]
+        self.dispatched_signals
+            .lock()
+            .expect("dispatched signals")
+            .push(signal);
         #[cfg(unix)]
         unsafe {
             libc::kill(-pid, signal);
         }
-    }
-
-    fn group_exists(&self) -> bool {
-        let Some(pid) = self.pid.and_then(|pid| i32::try_from(pid).ok()) else {
-            return false;
-        };
-        #[cfg(unix)]
-        unsafe {
-            libc::kill(-pid, 0) == 0
-        }
         #[cfg(not(unix))]
         {
             let _ = pid;
-            false
         }
+        true
     }
 }
 
@@ -1390,5 +1398,104 @@ mod tests {
         );
         manager.dispose().await;
         assert!(manager.pending_ids().is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn dispatches_sigkill_at_most_once_across_finish_reads_stop_and_drop() {
+        let directory = tempdir().expect("temp dir");
+        let manager = CommandManager::new(Vec::new(), Cancellation::new());
+        let initial = manager
+            .start(
+                CommandRequest {
+                    call_id: "call-once".to_string(),
+                    cmd: "/bin/sh".to_string(),
+                    args: vec!["-c".to_string(), "sleep 0.05 && echo done".to_string()],
+                    shell: false,
+                    cwd: directory.path().to_path_buf(),
+                    env: None,
+                    allowlist: None,
+                    max_output_bytes: 64 * 1024,
+                    max_runtime_ms: None,
+                },
+                1,
+            )
+            .await
+            .expect("start");
+        assert!(initial.running);
+        let session = {
+            let sessions = manager.sessions.lock().expect("command sessions");
+            assert_eq!(sessions.len(), 1);
+            Arc::clone(&sessions[0])
+        };
+
+        // Wait for CommandManager::start's real wait task to reap the process and finish().
+        let mut done = session.done_rx.clone();
+        while !*done.borrow() {
+            done.changed().await.expect("wait task finished");
+        }
+        assert!(session.is_finished());
+
+        // Repeated reads, repeated finish(), stop(), and dropping CommandManager while it still
+        // holds the finished session must never dispatch another signal.
+        let first_read = session.read(10, false).await.expect("first read");
+        assert!(!first_read.running);
+        assert!(first_read.stdout.contains("done"));
+        let second_read = session.read(10, false).await.expect("second read");
+        assert!(!second_read.running);
+        session.finish(Err(std::io::Error::other("duplicate finish")));
+        session.stop(false).await;
+        assert!(!session.terminate_group_once());
+        drop(manager);
+
+        let signals = session
+            .dispatched_signals
+            .lock()
+            .expect("dispatched signals")
+            .clone();
+        assert_eq!(signals, vec![libc::SIGKILL]);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn suppresses_sigterm_and_extra_sigkill_after_termination_before_finish() {
+        let mut command = Command::new("/bin/sh");
+        command
+            .args(["-c", "echo pre-finish"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(false);
+        #[cfg(unix)]
+        command.process_group(0);
+        let mut child = command.spawn().expect("spawn");
+        let pid = child.id();
+        let session = Arc::new(CommandSession::new(
+            "call-pre-finish".to_string(),
+            "/bin/sh -c echo pre-finish".to_string(),
+            pid,
+            64 * 1024,
+            Vec::new(),
+        ));
+        let status = child.wait().await;
+
+        // Simulate the window after wait-task termination while output pumps are still draining
+        // (group_terminated == true, is_finished() == false).
+        assert!(session.terminate_group_once());
+        assert!(!session.is_finished());
+        assert!(!session.signal_term());
+
+        let finisher = Arc::clone(&session);
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            finisher.finish(status);
+        });
+        session.stop(false).await;
+        assert!(!session.terminate_group_once());
+
+        let signals = session
+            .dispatched_signals
+            .lock()
+            .expect("dispatched signals")
+            .clone();
+        assert_eq!(signals, vec![libc::SIGKILL]);
     }
 }
