@@ -319,6 +319,18 @@ impl WebSocketHub {
         &self.config
     }
 
+    pub fn has_open_web_client(&self, auth_user_id: &str) -> bool {
+        let target = auth_user_id.trim();
+        if target.is_empty() {
+            return false;
+        }
+        self.connections
+            .lock()
+            .expect("websocket connection registry lock")
+            .values()
+            .any(|entry| !entry.connector && entry.auth_user_id == target)
+    }
+
     pub fn broadcast_task_terminal(&self, event: &Value) -> usize {
         let workspace_root = event
             .get("workspaceRoot")
@@ -1652,6 +1664,15 @@ pub(crate) fn emit_prompt_queue_snapshot(state: &AppState, fallback: &PromptQueu
 }
 
 pub(crate) fn emit_prompt_event(state: &AppState, entry: &PromptQueueEntry, payload: Value) {
+    let notification_kind = payload
+        .as_object()
+        .and_then(|record| record.get("type"))
+        .and_then(Value::as_str)
+        .and_then(|event_type| match event_type.trim() {
+            "result" => Some(crate::web_push::WebPushNotificationType::AssistantResponse),
+            "error" => Some(crate::web_push::WebPushNotificationType::PromptError),
+            _ => None,
+        });
     let turn = LaneTurn::from_prompt_entry(entry);
     emit_lane_turn_event_with(
         state.auth.db(),
@@ -1660,6 +1681,46 @@ pub(crate) fn emit_prompt_event(state: &AppState, entry: &PromptQueueEntry, payl
         Some(prompt_queue_event_revision(entry)),
         payload,
     );
+    let Some(kind) = notification_kind else {
+        return;
+    };
+    let is_web_channel = entry
+        .payload
+        .get("channel")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|channel| !channel.is_empty())
+        .map(|channel| channel.eq_ignore_ascii_case("web"))
+        .unwrap_or(true);
+    if !is_web_channel
+        || !state.web_push.is_configured()
+        || state.ws.has_open_web_client(&entry.auth_user_id)
+    {
+        return;
+    }
+    let lane = if entry.lane_namespace == ads_state::WEB_ACTIONS_NAMESPACE {
+        "actions"
+    } else {
+        "acopilot"
+    };
+    let project = Path::new(&entry.workspace_root)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .unwrap_or("ADS")
+        .to_string();
+    let notification = crate::web_push::WebPushNotification {
+        kind,
+        lane: Some(lane.to_string()),
+        project: Some(project),
+        session_id: Some(entry.session_id.clone()),
+    };
+    let web_push = Arc::clone(&state.web_push);
+    let user_id = entry.auth_user_id.clone();
+    tokio::spawn(async move {
+        web_push.notify_user(&user_id, notification).await;
+    });
 }
 
 pub(crate) fn emit_lane_turn_event_with(
@@ -5432,5 +5493,217 @@ mod tests {
             ),
             Some((7, 3))
         );
+    }
+
+    fn make_registration(auth_user_id: &str, connector: bool) -> ConnectionRegistration {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        ConnectionRegistration {
+            physical_id: format!("phys-{auth_user_id}-{connector}"),
+            auth_user_id: auth_user_id.to_string(),
+            session_id: "sess-1".to_string(),
+            chat_session_id: "acopilot".to_string(),
+            logical_history_key: format!("{auth_user_id}::sess-1::acopilot"),
+            workspace_root: Some("/tmp/ads".to_string()),
+            workspace_cwd: PathBuf::from("/tmp/ads"),
+            generation: 1,
+            connector,
+            sender: tx,
+        }
+    }
+
+    #[test]
+    fn tracks_open_non_connector_web_clients_per_user() {
+        let hub = WebSocketHub::new(WebSocketConfig::default());
+        assert!(!hub.has_open_web_client("user-1"));
+        assert!(!hub.has_open_web_client("   "));
+
+        // Connector sockets and other users' browser sockets do not count as user-1's web client.
+        let _connector = hub.register_connection(make_registration("user-1", true));
+        let _other_user = hub.register_connection(make_registration("user-2", false));
+        assert!(!hub.has_open_web_client("user-1"));
+        assert!(hub.has_open_web_client("user-2"));
+
+        {
+            let _web_client = hub.register_connection(make_registration("user-1", false));
+            assert!(hub.has_open_web_client("user-1"));
+        }
+        // Guard drop simulates disconnect.
+        assert!(!hub.has_open_web_client("user-1"));
+    }
+
+    #[tokio::test]
+    async fn emit_prompt_event_dispatches_and_suppresses_web_push_correctly() {
+        use crate::web_push::{
+            WebPushConfig, WebPushFuture, WebPushHttpRequest, WebPushService, WebPushTransport,
+        };
+        use ads_auth::{AuthConfig, AuthService};
+        use ads_state::{
+            PromptQueueEntry, PromptQueueStatus, StateDb, StoredWebPushSubscription, WorkspaceDb,
+        };
+        use base64::Engine;
+        use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+        use ring::agreement::{self, EphemeralPrivateKey};
+        use ring::rand::{SecureRandom, SystemRandom};
+        use ring::signature::{ECDSA_P256_SHA256_FIXED_SIGNING, EcdsaKeyPair, KeyPair};
+        use std::collections::HashSet;
+        use tempfile::tempdir;
+
+        struct RecordingTransport {
+            sent: std::sync::Mutex<Vec<WebPushHttpRequest>>,
+        }
+        impl WebPushTransport for RecordingTransport {
+            fn send<'a>(&'a self, request: WebPushHttpRequest) -> WebPushFuture<'a> {
+                self.sent.lock().expect("sent lock").push(request);
+                Box::pin(async move { Ok(201) })
+            }
+        }
+
+        let rng = SystemRandom::new();
+        let pkcs8 =
+            EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &rng).expect("pkcs8");
+        let kp = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, pkcs8.as_ref(), &rng)
+            .expect("kp");
+        let der = pkcs8.as_ref();
+        let priv_pos = der
+            .windows(2)
+            .position(|w| w == [0x04u8, 0x20])
+            .expect("priv marker")
+            + 2;
+        let config = WebPushConfig {
+            public_key: Some(URL_SAFE_NO_PAD.encode(kp.public_key().as_ref())),
+            private_key: Some(URL_SAFE_NO_PAD.encode(&der[priv_pos..priv_pos + 32])),
+            subject: Some("mailto:ops@example.com".to_string()),
+        };
+        let ua = EphemeralPrivateKey::generate(&agreement::ECDH_P256, &rng).expect("ua");
+        let ua_pub = ua.compute_public_key().expect("ua pub");
+        let mut auth_secret = [0u8; 16];
+        rng.fill(&mut auth_secret).expect("auth");
+
+        let dir = tempdir().expect("tempdir");
+        let db = StateDb::open(dir.path().join("state.db")).expect("state db");
+        let workspace_db =
+            Arc::new(WorkspaceDb::open(dir.path().join("workspaces.db")).expect("ws db"));
+        let auth = Arc::new(AuthService::new(
+            db.clone(),
+            AuthConfig {
+                session_ttl_seconds: 3_600,
+                session_pepper: "pepper".to_string(),
+                sliding_sessions: false,
+                login_max_attempts: 5,
+                login_base_lockout: std::time::Duration::from_secs(1),
+            },
+        ));
+        let transport = Arc::new(RecordingTransport {
+            sent: std::sync::Mutex::new(Vec::new()),
+        });
+        let web_push = Arc::new(WebPushService::with_transport(
+            db.clone(),
+            config,
+            Arc::clone(&transport) as Arc<dyn WebPushTransport>,
+        ));
+        web_push
+            .save_subscription(
+                "user-1",
+                &StoredWebPushSubscription {
+                    endpoint: "https://web.push.apple.com/device-1".to_string(),
+                    p256dh: URL_SAFE_NO_PAD.encode(ua_pub.as_ref()),
+                    auth: URL_SAFE_NO_PAD.encode(auth_secret),
+                },
+            )
+            .expect("save sub");
+
+        let ws = Arc::new(WebSocketHub::new(WebSocketConfig::default()));
+        let state = AppState {
+            auth,
+            cookie_secure: crate::CookieSecureMode::Never,
+            allowed_dirs: Arc::new(vec![dir.path().to_path_buf()]),
+            allowed_origins: Arc::new(HashSet::new()),
+            client_dir: None,
+            workspace_db,
+            default_workspace_root: Arc::new(dir.path().to_path_buf()),
+            workspace_state_dir: Arc::new(dir.path().to_path_buf()),
+            ws: Arc::clone(&ws),
+            prompt_queue: None,
+            agent_messages: None,
+            schedule_compiler: None,
+            scheduler: None,
+            review_queue: None,
+            pull_request_manager: Arc::new(crate::routes::pull_requests::PullRequestManager::new(
+                Arc::new(crate::routes::pull_requests::DefaultGhRunner),
+            )),
+            web_push,
+        };
+
+        let make_entry = |channel: Option<&str>| {
+            let mut payload = serde_json::Map::new();
+            payload.insert("text".to_string(), json!("hi"));
+            if let Some(channel) = channel {
+                payload.insert("channel".to_string(), json!(channel));
+            }
+            PromptQueueEntry {
+                id: 1,
+                client_message_id: "cm-1".to_string(),
+                auth_user_id: "user-1".to_string(),
+                user_id: 1,
+                session_id: "sess-1".to_string(),
+                chat_session_id: "acopilot".to_string(),
+                history_key: "user-1::sess-1::acopilot".to_string(),
+                logical_history_key: "user-1::sess-1::acopilot".to_string(),
+                lane_namespace: ads_state::WEB_ACOPILOT_NAMESPACE.to_string(),
+                lane_generation: 1,
+                workspace_root: "/home/andy/repos/ads".to_string(),
+                payload,
+                payload_hash: "hash-1".to_string(),
+                status: PromptQueueStatus::Running,
+                position: 0,
+                attempts: 1,
+                last_error: None,
+                created_at: 1,
+                updated_at: 1,
+                started_at: Some(1),
+                completed_at: None,
+            }
+        };
+
+        // 1. No open web client -> "result" and "error" each dispatch one push notification.
+        let _connector_only = ws.register_connection(make_registration("user-1", true));
+        emit_prompt_event(
+            &state,
+            &make_entry(None),
+            json!({ "type": "result", "text": "done" }),
+        );
+        emit_prompt_event(
+            &state,
+            &make_entry(Some("web")),
+            json!({ "type": "error", "message": "boom" }),
+        );
+        // Non-terminal event ("delta") and non-web channel ("telegram") must NOT dispatch.
+        emit_prompt_event(
+            &state,
+            &make_entry(None),
+            json!({ "type": "delta", "delta": "x" }),
+        );
+        emit_prompt_event(
+            &state,
+            &make_entry(Some("telegram")),
+            json!({ "type": "result", "text": "tg" }),
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert_eq!(transport.sent.lock().expect("sent").len(), 2);
+
+        // 2. Open non-connector web client suppresses push dispatch.
+        let _browser = ws.register_connection(make_registration("user-1", false));
+        emit_prompt_event(
+            &state,
+            &make_entry(None),
+            json!({ "type": "result", "text": "fg" }),
+        );
+        emit_prompt_event(
+            &state,
+            &make_entry(Some("web")),
+            json!({ "type": "error", "message": "fg-err" }),
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert_eq!(transport.sent.lock().expect("sent").len(), 2);
     }
 }

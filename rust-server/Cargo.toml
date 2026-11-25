@@ -54,6 +54,7 @@ percent-encoding = "2"
 rand = "0.8"
 regex = "1"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+ring = "0.17"
 rusqlite = { version = "0.41.1", features = ["bundled"] }
 scrypt = "0.12"
 serde = { version = "1", features = ["derive"] }

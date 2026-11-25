@@ -18,6 +18,7 @@ mod role_profile_store;
 mod schedule_store;
 mod sync_event_store;
 mod upstream_credential_store;
+mod web_push_store;
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -115,6 +116,10 @@ pub use sync_event_store::{
 pub use upstream_credential_store::{
     UpstreamCredentialMetadata, UpstreamCredentialStore, UpstreamCredentials,
     normalize_upstream_base_url,
+};
+pub use web_push_store::{
+    StoredWebPushSubscription, ensure_web_push_tables, list_web_push_subscriptions_by_user,
+    remove_web_push_subscription, save_web_push_subscription,
 };
 
 pub const WEB_ACTIONS_NAMESPACE: &str = "web-actions";
@@ -217,6 +222,7 @@ impl StateDb {
         ensure_model_provider_tables(&connection)?;
         ensure_model_service_tables(&connection)?;
         ensure_prompt_queue_tables(&connection)?;
+        ensure_web_push_tables(&connection)?;
         Ok(db)
     }
 

@@ -15,6 +15,7 @@ mod routes;
 mod skills;
 mod state;
 mod task_notifications;
+pub mod web_push;
 
 pub use agent_messages::{
     AgentMessageService, ReviewVerdictMessage, agent_message_snapshots,
@@ -41,4 +42,9 @@ pub use skills::{
 pub use state::AppState;
 pub use static_files::resolve_client_dir;
 pub use task_notifications::WebSocketScheduleNotifier;
+pub use web_push::{
+    ReqwestWebPushTransport, WebPushConfig, WebPushHttpRequest, WebPushNotification,
+    WebPushNotificationType, WebPushService, WebPushTransport, encrypt_web_push_payload,
+    is_allowed_web_push_endpoint, validate_subscription_keys,
+};
 pub use ws::{ActionsLaneMessage, WebSocketConfig, WebSocketHub, publish_actions_lane_message};
