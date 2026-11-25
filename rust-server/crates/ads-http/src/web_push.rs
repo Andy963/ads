@@ -189,7 +189,7 @@ impl VapidSigner {
         )
         .map_err(|_| "VAPID key pair validation failed".to_string())?;
         Ok(Some(Self {
-            public_key_b64: public_key_b64.to_string(),
+            public_key_b64: URL_SAFE_NO_PAD.encode(&public_bytes),
             subject: subject.to_string(),
             key_pair,
         }))
@@ -459,6 +459,13 @@ fn encrypt_aes128gcm_with_secret(
     if ua_public.len() != 65 || as_public.len() != 65 {
         return Err("P-256 public keys must be 65 bytes".to_string());
     }
+    // RFC 8188 §2.1 single-record limit: plaintext + 1B delimiter (0x02) + 16B GCM tag <= rs.
+    if record_size < 18 || plaintext.len().saturating_add(17) > record_size as usize {
+        return Err(format!(
+            "web push plaintext ({} bytes) exceeds single-record aes128gcm limit for rs={record_size}",
+            plaintext.len()
+        ));
+    }
     // RFC 8291 §3.3: IKM = HKDF(salt=auth_secret, ikm=ecdh_secret, info="WebPush: info\0" || ua_public || as_public, L=32)
     let hkdf_key = Hkdf::<Sha256>::new(Some(auth_secret), ecdh_secret);
     let mut key_info = Vec::with_capacity(14 + 65 + 65);
@@ -556,17 +563,17 @@ mod tests {
 
     #[test]
     fn matches_rfc8291_section_5_encryption_test_vector() {
-        // Cross-verified against reference http_ece aes128gcm (RFC 8291 / RFC 8188).
+        // Official RFC 8291 Section 5 test vector values.
         let ua_public = decode_base64url(
-            "BPTX-_xEOYeUTJuRhcHdq9w3gE7tG_wHEXtBf9tsY-gpD2XtWhiTlxE__ru0vruLT7zHtNn6xSeL0E1OSpejg84",
+            "BCVxsr7N_eNgVRqvHtD0zTZsEc6-VV-JvLexhqUzORcxaOzi6-AYWXvTBHm4bjyPjs7Vd8pZGH6SRpkNtoIAiw4",
         )
         .expect("ua_public");
         let as_public = decode_base64url(
-            "BOWVk58VLi6vB_al3evjUmVZA2o8kqpErFHbuGofBHU3yFbzpl9EICFCVX7jBg-5hCl4QZPPo67UnOnzMLbrLik",
+            "BP4z9KsN6nGRTbVYI_c7VJSPQTBtkgcy27mlmlMoZIIgDll6e3vCYLocInmYWAmS6TlzAC8wEqKK6PBru3jl7A8",
         )
         .expect("as_public");
         let ecdh_secret =
-            decode_base64url("KIZp26QAMBjuMM3P4wtEVkjs6KJIPdj_F0vX8nzWtCo").expect("ecdh_secret");
+            decode_base64url("kyrL1jIIOHEzg3sM2ZWRHDRB62YACZhhSlknJ672kSs").expect("ecdh_secret");
         let auth_secret = decode_base64url("BTBZMqHH6r4Tts7J_aSIgg").expect("auth_secret");
         let salt: [u8; 16] = decode_base64url("DGv6ra1nlYgDCS1FRnbzlw")
             .expect("salt")
@@ -585,12 +592,62 @@ mod tests {
         )
         .expect("encrypt");
 
-        // Exact reference http_ece aes128gcm ciphertext (144 bytes).
+        // Exact expected RFC 8291 Section 5 aes128gcm message (144 bytes).
         let expected = decode_base64url(
-            "DGv6ra1nlYgDCS1FRnbzlwAAEABBBOWVk58VLi6vB_al3evjUmVZA2o8kqpErFHbuGofBHU3yFbzpl9EICFCVX7jBg-5hCl4QZPPo67UnOnzMLbrLikKKvB7DMQlSF5fETqKul8vng9oanqXioy7NGALMi_dInqjHCkbpZni6_wHuiPKCh0pEAyBOq_VK087",
+            "DGv6ra1nlYgDCS1FRnbzlwAAEABBBP4z9KsN6nGRTbVYI_c7VJSPQTBtkgcy27mlmlMoZIIgDll6e3vCYLocInmYWAmS6TlzAC8wEqKK6PBru3jl7A_yl95bQpu6cVPTpK4Mqgkf1CXztLVBSt2Ks3oZwbuwXPXLWyouBWLVWGNWQexSgSxsj_Qulcy4a-fN",
         )
         .expect("expected");
         assert_eq!(encrypted, expected);
+    }
+
+    #[test]
+    fn canonicalizes_padded_vapid_public_key_and_rejects_oversized_plaintext() {
+        let rng = SystemRandom::new();
+        let pkcs8 =
+            EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &rng).expect("pkcs8");
+        let kp = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, pkcs8.as_ref(), &rng)
+            .expect("kp");
+        let raw_pub = kp.public_key().as_ref();
+        let der = pkcs8.as_ref();
+        let priv_pos = der
+            .windows(2)
+            .position(|w| w == [0x04u8, 0x20])
+            .expect("priv marker")
+            + 2;
+        let unpadded = URL_SAFE_NO_PAD.encode(raw_pub);
+        let padded = format!("{unpadded}==");
+        let config = WebPushConfig {
+            public_key: Some(padded),
+            private_key: Some(format!(
+                "{}=",
+                URL_SAFE_NO_PAD.encode(&der[priv_pos..priv_pos + 32])
+            )),
+            subject: Some("mailto:ops@example.com".to_string()),
+        };
+        let signer = VapidSigner::from_config(&config)
+            .expect("valid vapid")
+            .expect("signer");
+        assert_eq!(signer.public_key_b64, unpadded);
+        let header = signer
+            .authorization_header("https://web.push.apple.com/sub-1", 1_700_000_000)
+            .expect("auth header");
+        assert!(header.ends_with(&format!(", k={unpadded}")));
+        let (jwt_part, key_part) = header
+            .strip_prefix("vapid t=")
+            .and_then(|rest| rest.split_once(", k="))
+            .expect("vapid header parts");
+        assert!(!jwt_part.contains('='));
+        assert!(!key_part.contains('='));
+
+        let ua_private = EphemeralPrivateKey::generate(&agreement::ECDH_P256, &rng).expect("ua");
+        let ua_pub = ua_private.compute_public_key().expect("ua pub");
+        let auth_secret = [7u8; 16];
+        let max_plaintext = vec![b'a'; (DEFAULT_RECORD_SIZE as usize) - 17];
+        assert!(encrypt_web_push_payload(ua_pub.as_ref(), &auth_secret, &max_plaintext).is_ok());
+        let oversized = vec![b'a'; (DEFAULT_RECORD_SIZE as usize) - 16];
+        let err = encrypt_web_push_payload(ua_pub.as_ref(), &auth_secret, &oversized)
+            .expect_err("oversized must fail");
+        assert!(err.contains("exceeds single-record aes128gcm limit"));
     }
 
     #[test]
@@ -682,20 +739,20 @@ mod tests {
     }
 
     struct MockTransport {
-        status: u16,
+        response: Result<u16, String>,
         sent: Mutex<Vec<WebPushHttpRequest>>,
     }
 
     impl WebPushTransport for MockTransport {
         fn send<'a>(&'a self, request: WebPushHttpRequest) -> WebPushFuture<'a> {
             self.sent.lock().expect("sent lock").push(request);
-            let status = self.status;
-            Box::pin(async move { Ok(status) })
+            let response = self.response.clone();
+            Box::pin(async move { response })
         }
     }
 
     #[tokio::test]
-    async fn removes_stale_subscription_on_410_and_keeps_on_201() {
+    async fn prunes_permanent_error_subscriptions_and_retains_on_success_or_transient_failures() {
         let rng = SystemRandom::new();
         let pkcs8 =
             EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &rng).expect("pkcs8");
@@ -726,52 +783,58 @@ mod tests {
 
         let dir = tempdir().expect("tempdir");
         let db = StateDb::open(dir.path().join("state.db")).expect("db");
-        let transport_ok = Arc::new(MockTransport {
-            status: 201,
-            sent: Mutex::new(Vec::new()),
-        });
-        let service_ok =
-            WebPushService::with_transport(db.clone(), config.clone(), transport_ok.clone());
-        service_ok.save_subscription("user-1", &sub).expect("save");
-        service_ok
-            .notify_user(
-                "user-1",
-                WebPushNotification {
-                    kind: WebPushNotificationType::AssistantResponse,
-                    lane: Some("acopilot".to_string()),
-                    project: Some("ads".to_string()),
-                    session_id: Some("sess-1".to_string()),
-                },
-            )
-            .await;
-        assert_eq!(transport_ok.sent.lock().expect("sent").len(), 1);
-        assert_eq!(
-            list_web_push_subscriptions_by_user(&db.connect().expect("conn"), "user-1")
-                .expect("list")
-                .len(),
-            1
-        );
+        let notification = WebPushNotification {
+            kind: WebPushNotificationType::AssistantResponse,
+            lane: Some("acopilot".to_string()),
+            project: Some("ads".to_string()),
+            session_id: Some("sess-1".to_string()),
+        };
 
-        let transport_gone = Arc::new(MockTransport {
-            status: 410,
-            sent: Mutex::new(Vec::new()),
-        });
-        let service_gone = WebPushService::with_transport(db.clone(), config, transport_gone);
-        service_gone
-            .notify_user(
-                "user-1",
-                WebPushNotification {
-                    kind: WebPushNotificationType::PromptError,
-                    lane: Some("acopilot".to_string()),
-                    project: Some("ads".to_string()),
-                    session_id: Some("sess-1".to_string()),
-                },
-            )
-            .await;
-        assert!(
-            list_web_push_subscriptions_by_user(&db.connect().expect("conn"), "user-1")
-                .expect("list")
-                .is_empty()
-        );
+        // Success (201) and transient failures (503, transport Err) must retain the subscription.
+        for response in [Ok(201), Ok(503), Err("connection reset".to_string())] {
+            let transport = Arc::new(MockTransport {
+                response,
+                sent: Mutex::new(Vec::new()),
+            });
+            let service =
+                WebPushService::with_transport(db.clone(), config.clone(), transport.clone());
+            service.save_subscription("user-1", &sub).expect("save");
+            service.notify_user("user-1", notification.clone()).await;
+            assert_eq!(transport.sent.lock().expect("sent").len(), 1);
+            assert_eq!(
+                list_web_push_subscriptions_by_user(&db.connect().expect("conn"), "user-1")
+                    .expect("list")
+                    .len(),
+                1,
+                "subscription should be retained on non-permanent response"
+            );
+        }
+
+        // Permanent failure statuses (400, 401, 403, 404, 410) must prune the stale subscription.
+        for status in [400, 401, 403, 404, 410] {
+            let transport = Arc::new(MockTransport {
+                response: Ok(status),
+                sent: Mutex::new(Vec::new()),
+            });
+            let service =
+                WebPushService::with_transport(db.clone(), config.clone(), transport.clone());
+            service.save_subscription("user-1", &sub).expect("save");
+            service
+                .notify_user(
+                    "user-1",
+                    WebPushNotification {
+                        kind: WebPushNotificationType::PromptError,
+                        ..notification.clone()
+                    },
+                )
+                .await;
+            assert_eq!(transport.sent.lock().expect("sent").len(), 1);
+            assert!(
+                list_web_push_subscriptions_by_user(&db.connect().expect("conn"), "user-1")
+                    .expect("list")
+                    .is_empty(),
+                "status {status} should prune stale subscription"
+            );
+        }
     }
 }
