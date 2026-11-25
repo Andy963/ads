@@ -12,6 +12,7 @@ ads-runtime.workspace = true
 ads-state.workspace = true
 base64.workspace = true
 bytes.workspace = true
+chrono.workspace = true
 globset.workspace = true
 libc.workspace = true
 regex.workspace = true
