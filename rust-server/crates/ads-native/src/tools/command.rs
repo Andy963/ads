@@ -1402,9 +1402,64 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn dispatches_sigkill_at_most_once_across_finish_reads_stop_and_drop() {
+        let directory = tempdir().expect("temp dir");
+        let manager = CommandManager::new(Vec::new(), Cancellation::new());
+        let initial = manager
+            .start(
+                CommandRequest {
+                    call_id: "call-once".to_string(),
+                    cmd: "/bin/sh".to_string(),
+                    args: vec!["-c".to_string(), "sleep 0.05 && echo done".to_string()],
+                    shell: false,
+                    cwd: directory.path().to_path_buf(),
+                    env: None,
+                    allowlist: None,
+                    max_output_bytes: 64 * 1024,
+                    max_runtime_ms: None,
+                },
+                1,
+            )
+            .await
+            .expect("start");
+        assert!(initial.running);
+        let session = {
+            let sessions = manager.sessions.lock().expect("command sessions");
+            assert_eq!(sessions.len(), 1);
+            Arc::clone(&sessions[0])
+        };
+
+        // Wait for CommandManager::start's real wait task to reap the process and finish().
+        let mut done = session.done_rx.clone();
+        while !*done.borrow() {
+            done.changed().await.expect("wait task finished");
+        }
+        assert!(session.is_finished());
+
+        // Repeated reads, repeated finish(), stop(), and dropping CommandManager while it still
+        // holds the finished session must never dispatch another signal.
+        let first_read = session.read(10, false).await.expect("first read");
+        assert!(!first_read.running);
+        assert!(first_read.stdout.contains("done"));
+        let second_read = session.read(10, false).await.expect("second read");
+        assert!(!second_read.running);
+        session.finish(Err(std::io::Error::other("duplicate finish")));
+        session.stop(false).await;
+        assert!(!session.terminate_group_once());
+        drop(manager);
+
+        let signals = session
+            .dispatched_signals
+            .lock()
+            .expect("dispatched signals")
+            .clone();
+        assert_eq!(signals, vec![libc::SIGKILL]);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn suppresses_sigterm_and_extra_sigkill_after_termination_before_finish() {
         let mut command = Command::new("/bin/sh");
         command
-            .args(["-c", "echo done"])
+            .args(["-c", "echo pre-finish"])
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -1414,24 +1469,27 @@ mod tests {
         let mut child = command.spawn().expect("spawn");
         let pid = child.id();
         let session = Arc::new(CommandSession::new(
-            "call-once".to_string(),
-            "/bin/sh -c echo done".to_string(),
+            "call-pre-finish".to_string(),
+            "/bin/sh -c echo pre-finish".to_string(),
             pid,
             64 * 1024,
             Vec::new(),
         ));
         let status = child.wait().await;
-        assert!(session.terminate_group_once());
-        session.finish(status);
 
-        // Repeated reads, finish, stop, and explicit terminate after exit must never signal again.
-        let first_read = session.read(10, false).await.expect("first read");
-        assert!(!first_read.running);
-        let second_read = session.read(10, false).await.expect("second read");
-        assert!(!second_read.running);
+        // Simulate the window after wait-task termination while output pumps are still draining
+        // (group_terminated == true, is_finished() == false).
+        assert!(session.terminate_group_once());
+        assert!(!session.is_finished());
+        assert!(!session.signal_term());
+
+        let finisher = Arc::clone(&session);
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            finisher.finish(status);
+        });
         session.stop(false).await;
         assert!(!session.terminate_group_once());
-        assert!(!session.signal_term());
 
         let signals = session
             .dispatched_signals
