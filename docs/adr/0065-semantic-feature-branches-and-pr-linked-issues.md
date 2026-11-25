@@ -14,10 +14,10 @@ In practice, this coupling creates two problems:
 
 ## Decision
 
-- **Decouple Review Target Validation from Branch Prefixes**: Both `rust-server` (`ads-actions`) and `ts-server` (`LaneDispatchBus`) accept any checked-out, non-protected feature branch for pull-request review. Detached HEAD and protected branches (`dev`, `main`, `master`) remain rejected.
+- **Decouple Review Target Validation from Branch Prefixes**: `rust-server` (`ads-actions`) accepts any checked-out, non-protected feature branch for pull-request review. Detached HEAD and protected branches (`dev`, `main`, `master`) remain rejected. The retired `ts-server` implementation is intentionally left untouched.
 - **PR Body as Authoritative Issue Source**: The review target resolver extracts unique closing Issue references (`Closes`, `Fixes`, `Resolves` with `#<id>`, case-insensitive, optional colon) from the pull request body. Exactly one distinct linked Issue is required; zero or multiple distinct linked Issues fail closed with an `INCOMPLETE` outcome. Repeated references to the same Issue are deduplicated.
 - **Recommended Semantic Branch Convention**: Feature branches should use `<type>/<issue-id>-<short-slug>` (for example `fix/681-turn-timeout`, `feat/700-ws-reconnect`, `refactor/701-semantic-branches`), while branches without an embedded Issue ID or with an unrelated numeric token remain valid because the PR body is authoritative.
-- **Best-Effort Enqueue Hint & Legacy Compatibility**: `issue_id_from_branch` / `issueIdFromBranch` remains an optional enqueue-time hint supporting both semantic branches (`<type>/<id>-<slug>`, `<type>/issue-<id>`) and legacy `codex/issue-<id>` branches. Target pinning always overwrites the job's `issue_id` with the PR-body-verified Issue ID.
+- **Best-Effort Enqueue Hint & Legacy Compatibility**: `issue_id_from_branch` remains an optional enqueue-time hint supporting both semantic branches (`<type>/<id>-<slug>`, `<type>/issue-<id>`) and legacy `codex/issue-<id>` branches. Target pinning always overwrites the job's `issue_id` with the PR-body-verified Issue ID.
 
 ## Consequences
 
