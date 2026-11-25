@@ -108,7 +108,7 @@ JSON.stringify(composerReport, null, 2);
 | `ADS_WEB_LOGIN_LOCKOUT_MS` | `300000` (5分钟) | 登录锁定基础时长 |
 | `ADS_ADVISOR_CODEX_MODEL` | 未设置 | Acopilot 泳道使用的专属 Codex 模型覆盖（变量名沿用旧称，旧名 `ADS_PLANNER_CODEX_MODEL` 仍兼容，已弃用） |
 | `ADS_ADVISOR_SANDBOX_MODE` | `danger-full-access` | Acopilot 泳道沙箱权限覆盖，需保留写权限才能实现代码；非法值回退为 `workspace-write`（变量名沿用旧称，旧名 `ADS_PLANNER_SANDBOX_MODE` 仍兼容，已弃用） |
-| `ADS_REVIEW_TEST_COMMAND` | `npm --prefix ts-server test` | Actions Reviewer 队列评审前执行的验证命令；其他项目需覆盖为适用命令 |
+| `ADS_REVIEW_TEST_COMMAND` | 已由 Reviewer 自主选择替代 | 历史兼容配置；当前由 Reviewer 按 diff 选择验证命令（见 ADR 0060 / ADR 0066） |
 | `ADS_SCHEDULER_MODEL` | 未设置 | Scheduler 执行定时 Prompt 时使用的模型覆盖 |
 
 ### Web Push 通知

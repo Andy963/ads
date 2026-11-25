@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { flushPromises, mount } from "@vue/test-utils";
 
-import type { PullRequestDetail, PullRequestSummary } from "../../../ts-server/shared/pullRequests.js";
+import type { PullRequestDetail, PullRequestSummary } from "../shared/pullRequests.js";
 
 let listImpl: (url: string) => Promise<unknown> = async () => ({ items: [], nextCursor: null, partial: false, fetchedAt: 1 });
 let detailImpl: (projectId: string, number: number) => Promise<unknown> = async () => ({ item: null, error: "missing", fetchedAt: 1 });

@@ -6,7 +6,6 @@ use ads_reviewer::{
     ReviewCaptureOptions, ReviewDiffOverride, ReviewGitResult, ReviewIssue, ReviewTarget,
     capture_review_payload_async, capture_review_payload_with,
 };
-use serde_json::Value;
 
 const BASE: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const HEAD: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
@@ -314,54 +313,6 @@ async fn default_runner_captures_a_real_repository() {
     assert_eq!(range.head_commit.as_deref().map(str::len), Some(40));
 }
 
-#[tokio::test]
-async fn payload_matches_the_typescript_capture() {
-    let directory = tempfile::tempdir().expect("tempdir");
-    let repo = directory.path();
-    git(repo, &["init", "-q"]);
-    git(repo, &["config", "user.email", "reviewer@example.com"]);
-    git(repo, &["config", "user.name", "Reviewer"]);
-    std::fs::write(repo.join("a.txt"), "one\n").expect("write a");
-    git(repo, &["add", "."]);
-    git(repo, &["commit", "-q", "-m", "first"]);
-    std::fs::write(repo.join("b.txt"), "two\n").expect("write b");
-    git(repo, &["add", "."]);
-    git(repo, &["commit", "-q", "-m", "second"]);
-
-    let ts_server_root = ts_server_root();
-    let output = Command::new("node")
-        .arg("--import")
-        .arg(ts_server_root.join("node_modules/tsx/dist/loader.mjs"))
-        .arg(repo_root().join("rust-server/scripts/review-capture-fixture.ts"))
-        .arg(repo)
-        .current_dir(ts_server_root)
-        .output()
-        .expect("run node fixture");
-    assert!(
-        output.status.success(),
-        "fixture failed:\nstdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let expected: Value = serde_json::from_slice(&output.stdout).expect("fixture json");
-
-    let target = ReviewTarget {
-        base_ref: "HEAD~1".to_string(),
-        head_ref: "HEAD".to_string(),
-        ..target(false)
-    };
-    let payload = capture_review_payload_async(&target, repo, &options(false)).await;
-    let actual = serde_json::to_value(&payload).expect("payload json");
-
-    assert_eq!(actual["issue"], expected["issue"]);
-    assert_eq!(actual["diffRange"], expected["diffRange"]);
-    assert_eq!(actual["diff"], expected["diff"]);
-    assert_eq!(actual["diffStat"], expected["diffStat"]);
-    assert_eq!(actual["diffCaptureError"], expected["diffCaptureError"]);
-    assert_eq!(expected["relatedContextCount"], 0);
-    assert_eq!(expected["omissionCount"], 0);
-}
-
 fn git(repo: &Path, args: &[&str]) {
     let output = Command::new("git")
         .args(args)
@@ -373,21 +324,6 @@ fn git(repo: &Path, args: &[&str]) {
         "git {args:?} failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-}
-
-fn repo_root() -> &'static Path {
-    static ROOT: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
-    ROOT.get_or_init(|| {
-        Path::new(env!("CARGO_MANIFEST_DIR"))
-            .ancestors()
-            .nth(3)
-            .expect("repo root")
-            .to_path_buf()
-    })
-}
-
-fn ts_server_root() -> std::path::PathBuf {
-    repo_root().join("ts-server")
 }
 
 #[tokio::test]

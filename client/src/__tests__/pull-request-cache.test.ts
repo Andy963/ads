@@ -6,7 +6,7 @@ import {
   type PullRequestCacheStore,
   type PullRequestFirstPageRecord,
 } from "../lib/pullRequestCache";
-import type { PullRequestSummary } from "../../../ts-server/shared/pullRequests.js";
+import type { PullRequestSummary } from "../shared/pullRequests.js";
 
 class MemoryStore implements PullRequestCacheStore {
   records = new Map<string, PullRequestFirstPageRecord>();

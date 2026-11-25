@@ -2,7 +2,7 @@ import type {
   PullRequestDetailResponse,
   PullRequestListQuery,
   PullRequestListResponse,
-} from "../../../ts-server/shared/pullRequests.js";
+} from "../shared/pullRequests.js";
 
 function buildListUrl(query: PullRequestListQuery): string {
   const params = new URLSearchParams({

@@ -76,4 +76,5 @@
 - 0065 - [ADR 0065: Allow Semantic Feature Branches and Resolve Backing Issues from PR Bodies](0065-semantic-feature-branches-and-pr-linked-issues.md)
 - 0066 - [ADR 0066: Route Actions Reviewer Through the Active Agent Runtime](0066-runtime-unified-actions-reviewer.md)
 - 0067 - [ADR 0067: Port Web Push API Routes and VAPID Delivery to Rust Server](0067-rust-server-web-push-notifications.md)
+- 0068 - [ADR 0068: Retire Legacy TypeScript Server to Archive Branch](0068-retire-ts-server-to-archive-branch.md)
 <!-- ADS:ADR_INDEX_END -->

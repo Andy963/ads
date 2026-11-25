@@ -1,4 +1,4 @@
-import type { PullRequestSummary } from "../../../ts-server/shared/pullRequests.js";
+import type { PullRequestSummary } from "../shared/pullRequests.js";
 
 const DB_NAME = "ads-pull-request-cache";
 const DB_VERSION = 1;
