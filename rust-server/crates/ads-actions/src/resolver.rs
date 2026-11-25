@@ -1,6 +1,6 @@
 use std::path::Path;
 use std::process::Stdio;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use ads_reviewer::{ReviewAdr, ReviewIssue, ReviewTarget};
@@ -9,12 +9,59 @@ use serde_json::Value;
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::Command;
 
+use crate::dispatch::is_protected_branch;
 use crate::types::{ResolveReviewRequest, ResolvedReview, ReviewError, TargetResolver};
 
 const ACTIONS_BASE_BRANCH: &str = "dev";
 const DEFAULT_CMD_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_COMMAND_OUTPUT_CHARS: usize = 20_000;
 const GH_RETRY_DELAYS: [Duration; 2] = [Duration::from_millis(500), Duration::from_secs(2)];
+
+pub fn extract_linked_issue_ids(pr_body: &str) -> Vec<i64> {
+    static ISSUE_REF_RE: OnceLock<Regex> = OnceLock::new();
+    let re = ISSUE_REF_RE.get_or_init(|| {
+        Regex::new(r"(?i)\b(?:close[sd]?|fix(?:es|ed)?|resolve[sd]?)(?:\s*:\s*|\s+)#([1-9]\d*)\b")
+            .expect("valid closing issue reference regex")
+    });
+    let mut ids = Vec::new();
+    for caps in re.captures_iter(pr_body) {
+        let Some(matched) = caps.get(1) else {
+            continue;
+        };
+        let Ok(issue_id) = matched.as_str().parse::<i64>() else {
+            continue;
+        };
+        if issue_id > 0 && !ids.contains(&issue_id) {
+            ids.push(issue_id);
+        }
+    }
+    ids
+}
+
+fn resolve_linked_issue_id(pr_body: &str) -> Result<i64, ReviewError> {
+    let ids = extract_linked_issue_ids(pr_body);
+    let tick = "\x60";
+    match ids.as_slice() {
+        [] => Err(ReviewError::Incomplete(format!(
+            "The pull request description does not link a GitHub Issue. Add {tick}Closes #<id>{tick} to the PR body, then dispatch the review again."
+        ))),
+        [issue_id] => Ok(*issue_id),
+        many => {
+            let list = many
+                .iter()
+                .map(|id| format!("#{id}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            Err(ReviewError::Incomplete(format!(
+                "The pull request description links multiple GitHub Issues ({list}). Link exactly one Issue with {tick}Closes #<id>{tick}, then dispatch the review again."
+            )))
+        }
+    }
+}
+
+fn is_review_protected_branch(branch: &str) -> bool {
+    branch == ACTIONS_BASE_BRANCH || is_protected_branch(branch)
+}
 
 pub fn parse_acceptance_criteria(body: &str) -> Vec<String> {
     let header = match Regex::new(r"(?im)^#{2,}\s+Acceptance Criteria\s*$") {
@@ -250,6 +297,16 @@ pub async fn resolve_interactive_target(
     )
     .await?;
 
+    if branch.is_empty() {
+        return Err(ReviewError::Other(
+            "Interactive review requires a checked-out feature branch.".to_string(),
+        ));
+    }
+    if is_review_protected_branch(&branch) {
+        return Err(ReviewError::Other(format!(
+            "Interactive review cannot run on protected branch '{branch}'. Check out a feature branch first."
+        )));
+    }
     if let Some(expected_branch) = request.branch.as_deref() {
         let expected_branch = expected_branch.trim();
         if !expected_branch.is_empty() && expected_branch != branch {
@@ -257,22 +314,6 @@ pub async fn resolve_interactive_target(
                 "Requested branch '{expected_branch}' does not match the current branch '{branch}'. Switch back to the review branch and dispatch again."
             )));
         }
-    }
-
-    let digits = branch.strip_prefix("codex/issue-").ok_or_else(|| {
-        ReviewError::Other(
-            "Interactive review requires the assigned codex/issue-<id> feature branch.".to_string(),
-        )
-    })?;
-    let issue_id: i64 = digits.parse().map_err(|_| {
-        ReviewError::Other(
-            "The current feature branch does not identify a valid GitHub Issue.".to_string(),
-        )
-    })?;
-    if issue_id < 1 {
-        return Err(ReviewError::Other(
-            "The current feature branch does not identify a valid GitHub Issue.".to_string(),
-        ));
     }
 
     let status = git_cmd(
@@ -433,22 +474,7 @@ pub async fn resolve_interactive_target(
         )));
     }
 
-    let issue_ref_re = match Regex::new(&format!(
-        r"(?i)(?:close[sd]?|fix(?:es|ed)?|resolve[sd]?)\s+#{issue_id}\b"
-    )) {
-        Ok(re) => re,
-        Err(_) => {
-            return Err(ReviewError::Other(
-                "Failed to compile issue regex".to_string(),
-            ));
-        }
-    };
-    if !issue_ref_re.is_match(&pr_body) {
-        let tick = "\x60";
-        return Err(ReviewError::Incomplete(format!(
-            "The pull request description does not link Issue #{issue_id}. Add {tick}Closes #{issue_id}{tick} to the PR body, then dispatch the review again."
-        )));
-    }
+    let issue_id = resolve_linked_issue_id(&pr_body)?;
 
     let (issue_code, issue_stdout, issue_stderr) = run_gh_cmd(
         &[
@@ -646,5 +672,23 @@ mod tests {
         assert!(!is_retryable_github_failure(
             "no pull requests found for branch"
         ));
+    }
+
+    #[test]
+    fn extracts_deduplicated_closing_issue_references() {
+        assert_eq!(extract_linked_issue_ids("Closes #12"), vec![12]);
+        assert_eq!(
+            extract_linked_issue_ids("fixes: #42\nResolves #42"),
+            vec![42]
+        );
+        assert_eq!(
+            extract_linked_issue_ids("Summary\n\nCloses #12\nFixes #34\nResolves #12"),
+            vec![12, 34]
+        );
+        assert!(extract_linked_issue_ids("Closes #0").is_empty());
+        assert!(extract_linked_issue_ids("See #12 and Ref #34").is_empty());
+        assert!(extract_linked_issue_ids("mycloses #12").is_empty());
+        assert!(extract_linked_issue_ids("Closes #12a").is_empty());
+        assert!(extract_linked_issue_ids("Closes #99999999999999999999999999").is_empty());
     }
 }

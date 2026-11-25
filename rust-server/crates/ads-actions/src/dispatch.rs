@@ -29,10 +29,49 @@ pub struct ReviewDispatchRequest {
 const AUTOMATIC_REVIEW_FAILURE_WINDOW_MS: i64 = 15 * 60 * 1000;
 const AUTOMATIC_REVIEW_FAILURE_LIMIT: usize = 2;
 
+pub fn is_protected_branch(branch: &str) -> bool {
+    matches!(branch.trim(), "dev" | "main" | "master")
+}
+
 pub fn issue_id_from_branch(branch: Option<&str>) -> Option<i64> {
     let branch = branch.unwrap_or("").trim();
-    let digits = branch.strip_prefix("codex/issue-")?;
-    if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+    if branch.is_empty() || is_protected_branch(branch) {
+        return None;
+    }
+    let rest = if let Some(rest) = branch.strip_prefix("codex/issue-") {
+        rest
+    } else if let Some(rest) = branch.strip_prefix("issue-") {
+        rest
+    } else {
+        let (prefix, remainder) = branch.split_once('/')?;
+        if !matches!(
+            prefix,
+            "feat"
+                | "fix"
+                | "refactor"
+                | "perf"
+                | "docs"
+                | "test"
+                | "chore"
+                | "build"
+                | "ci"
+                | "style"
+                | "revert"
+                | "issue"
+        ) {
+            return None;
+        }
+        remainder.strip_prefix("issue-").unwrap_or(remainder)
+    };
+    let digit_len = rest
+        .bytes()
+        .take_while(|byte| byte.is_ascii_digit())
+        .count();
+    if digit_len == 0 {
+        return None;
+    }
+    let (digits, tail) = rest.split_at(digit_len);
+    if digits.starts_with('0') || (!tail.is_empty() && !tail.starts_with('-')) {
         return None;
     }
     let issue_id = digits.parse::<i64>().ok()?;
@@ -375,5 +414,47 @@ fn review_queue_ack(job: ActionJobRecord) -> ReviewQueueAck {
         status: job.status,
         issue_id: job.issue_id.filter(|issue_id| *issue_id > 0),
         note: REVIEW_QUEUE_NOTE.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detects_protected_branches() {
+        assert!(is_protected_branch("dev"));
+        assert!(is_protected_branch("main"));
+        assert!(is_protected_branch("master"));
+        assert!(is_protected_branch(" dev "));
+        assert!(!is_protected_branch("fix/701-semantic-branches"));
+        assert!(!is_protected_branch("codex/issue-701"));
+    }
+
+    #[test]
+    fn extracts_optional_issue_id_hint_from_semantic_and_legacy_branches() {
+        assert_eq!(issue_id_from_branch(Some("codex/issue-7")), Some(7));
+        assert_eq!(issue_id_from_branch(Some(" codex/issue-7 ")), Some(7));
+        assert_eq!(issue_id_from_branch(Some("codex/issue-7-slug")), Some(7));
+        assert_eq!(
+            issue_id_from_branch(Some("fix/681-turn-timeout")),
+            Some(681)
+        );
+        assert_eq!(issue_id_from_branch(Some("feat/700")), Some(700));
+        assert_eq!(
+            issue_id_from_branch(Some("refactor/issue-42-cleanup")),
+            Some(42)
+        );
+        assert_eq!(issue_id_from_branch(Some("docs/12-adr")), Some(12));
+        assert_eq!(issue_id_from_branch(Some("issue/99-test")), Some(99));
+        assert_eq!(issue_id_from_branch(Some("issue-99-test")), Some(99));
+
+        assert_eq!(issue_id_from_branch(Some("fix/turn-timeout")), None);
+        assert_eq!(issue_id_from_branch(Some("fix/012-leading-zero")), None);
+        assert_eq!(issue_id_from_branch(Some("fix/12a-invalid")), None);
+        assert_eq!(issue_id_from_branch(Some("feature/12-custom")), None);
+        assert_eq!(issue_id_from_branch(Some("dev")), None);
+        assert_eq!(issue_id_from_branch(Some("main")), None);
+        assert_eq!(issue_id_from_branch(None), None);
     }
 }

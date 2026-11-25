@@ -12,7 +12,7 @@
 
 1. Acopilot 调查需求，并先创建英文 GitHub Issue，内容包含 Problem Description、Root Cause Analysis、Scope of Work 与 Acceptance Criteria。
 2. Acopilot 决定任务边界和改动范围。`review_action` 是常驻内置工具；服务端从已认证的会话解析项目、工作区与用户身份。
-3. Acopilot 在 `codex/issue-<id>` 分支实现、验证并准备对应 PR。未经用户明确授权，不得推送、合并或部署。
+3. Acopilot 从最新 `dev` 切出语义特性分支（推荐 `<type>/<issue-id>-<short-slug>`，如 `fix/681-turn-timeout`、`feat/700-ws-reconnect`，同时兼容旧 `codex/issue-<id>`）实现、验证并准备对应 PR，并在 PR 正文中以唯一的 `Closes #<id>` 绑定对应 Issue。未经用户明确授权，不得推送、合并或部署。
 4. PR 创建后，Acopilot 调用 `review_action`。该调用只把 `pull_request_review` 任务入队并立即返回 job id，不等待评审结果；PR、Issue 条件、base/head 提交与相关 ADR 在任务到达队首时固定。
 5. Actions 队列按项目串行运行验证命令，再把完整验证报告交给只读 Reviewer，由它结合固定的 Issue/ADR 与 PR diff 评估。命令正常结束后，退出码非零不会阻止 Reviewer 运行。Actions 会话只记录命令、退出码与简短摘要，原始输出保留在任务记录和 Reviewer 输入中。
 6. 任务结束后，服务端用统一 `gh` 身份把结构化裁决写成 Issue comment，标记为 `<!-- ads:review-verdict -->`，内容含状态、PR、base/head、job id、摘要与 findings；随后在 `agent_messages` 中创建一条持久 Reviewer-to-Acopilot handoff。Issue comment 是权威 artifact，agent message 是跨 role 交互，Acopilot turn 只是消费该消息后的执行状态。三者不能合并成用户 prompt。PASS、REJECT、INCOMPLETE 与该任务固定的 PR、base/head、Issue 与 ADR 快照绑定；REJECT 时由 Acopilot 修复并为新提交再次派审。
