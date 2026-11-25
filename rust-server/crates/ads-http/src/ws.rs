@@ -319,6 +319,18 @@ impl WebSocketHub {
         &self.config
     }
 
+    pub fn has_open_web_client(&self, auth_user_id: &str) -> bool {
+        let target = auth_user_id.trim();
+        if target.is_empty() {
+            return false;
+        }
+        self.connections
+            .lock()
+            .expect("websocket connection registry lock")
+            .values()
+            .any(|entry| !entry.connector && entry.auth_user_id == target)
+    }
+
     pub fn broadcast_task_terminal(&self, event: &Value) -> usize {
         let workspace_root = event
             .get("workspaceRoot")
@@ -1652,6 +1664,15 @@ pub(crate) fn emit_prompt_queue_snapshot(state: &AppState, fallback: &PromptQueu
 }
 
 pub(crate) fn emit_prompt_event(state: &AppState, entry: &PromptQueueEntry, payload: Value) {
+    let notification_kind = payload
+        .as_object()
+        .and_then(|record| record.get("type"))
+        .and_then(Value::as_str)
+        .and_then(|event_type| match event_type.trim() {
+            "result" => Some(crate::web_push::WebPushNotificationType::AssistantResponse),
+            "error" => Some(crate::web_push::WebPushNotificationType::PromptError),
+            _ => None,
+        });
     let turn = LaneTurn::from_prompt_entry(entry);
     emit_lane_turn_event_with(
         state.auth.db(),
@@ -1660,6 +1681,44 @@ pub(crate) fn emit_prompt_event(state: &AppState, entry: &PromptQueueEntry, payl
         Some(prompt_queue_event_revision(entry)),
         payload,
     );
+    let Some(kind) = notification_kind else {
+        return;
+    };
+    let is_web_channel = entry
+        .payload
+        .get("channel")
+        .and_then(Value::as_str)
+        .map(|channel| channel.trim().eq_ignore_ascii_case("web"))
+        .unwrap_or(true);
+    if !is_web_channel
+        || !state.web_push.is_configured()
+        || state.ws.has_open_web_client(&entry.auth_user_id)
+    {
+        return;
+    }
+    let lane = if entry.lane_namespace == ads_state::WEB_ACTIONS_NAMESPACE {
+        "actions"
+    } else {
+        "acopilot"
+    };
+    let project = Path::new(&entry.workspace_root)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .unwrap_or("ADS")
+        .to_string();
+    let notification = crate::web_push::WebPushNotification {
+        kind,
+        lane: Some(lane.to_string()),
+        project: Some(project),
+        session_id: Some(entry.session_id.clone()),
+    };
+    let web_push = Arc::clone(&state.web_push);
+    let user_id = entry.auth_user_id.clone();
+    tokio::spawn(async move {
+        web_push.notify_user(&user_id, notification).await;
+    });
 }
 
 pub(crate) fn emit_lane_turn_event_with(

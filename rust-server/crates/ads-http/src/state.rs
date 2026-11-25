@@ -10,6 +10,7 @@ use ads_state::WorkspaceDb;
 
 use crate::CookieSecureMode;
 use crate::agent_messages::AgentMessageService;
+use crate::web_push::WebPushService;
 use crate::ws::WebSocketHub;
 
 #[derive(Clone)]
@@ -29,4 +30,5 @@ pub struct AppState {
     pub scheduler: Option<Arc<SchedulerRuntime>>,
     pub review_queue: Option<Arc<ReviewQueue>>,
     pub pull_request_manager: Arc<crate::routes::pull_requests::PullRequestManager>,
+    pub web_push: Arc<WebPushService>,
 }

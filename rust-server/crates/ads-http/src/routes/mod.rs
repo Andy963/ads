@@ -8,6 +8,7 @@ mod providers;
 pub mod pull_requests;
 mod role_profiles;
 mod schedules;
+mod web_push;
 
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -36,6 +37,7 @@ use crate::AppState;
 use crate::CookieSecureMode;
 use crate::cookies::{client_ip, read_session_cookie, user_agent};
 use crate::error::ApiError;
+use crate::web_push::{WebPushConfig, WebPushService};
 use crate::ws::{WebSocketConfig, WebSocketHub};
 
 const JSON_BODY_LIMIT: usize = 1_000_000;
@@ -55,6 +57,7 @@ pub struct RouterConfig {
     pub websocket_hub: Option<Arc<WebSocketHub>>,
     pub review_queue: Option<Arc<ReviewQueue>>,
     pub gh_runner: Option<Arc<dyn pull_requests::GhRunner>>,
+    pub web_push_service: Option<Arc<WebPushService>>,
 }
 
 impl RouterConfig {
@@ -79,6 +82,7 @@ impl RouterConfig {
             websocket_hub: None,
             review_queue: None,
             gh_runner: None,
+            web_push_service: None,
         }
     }
 
@@ -121,6 +125,11 @@ impl RouterConfig {
         self.gh_runner = Some(runner);
         self
     }
+
+    pub fn with_web_push_service(mut self, service: Arc<WebPushService>) -> Self {
+        self.web_push_service = Some(service);
+        self
+    }
 }
 
 pub fn build_router(auth: Arc<AuthService>, config: RouterConfig) -> Router {
@@ -128,6 +137,12 @@ pub fn build_router(auth: Arc<AuthService>, config: RouterConfig) -> Router {
         .gh_runner
         .unwrap_or_else(|| Arc::new(pull_requests::DefaultGhRunner));
     let pull_request_manager = Arc::new(pull_requests::PullRequestManager::new(gh_runner));
+    let web_push = config.web_push_service.unwrap_or_else(|| {
+        Arc::new(WebPushService::new(
+            auth.db().clone(),
+            WebPushConfig::from_env(),
+        ))
+    });
     let mut state = AppState {
         auth,
         cookie_secure: config.cookie_secure,
@@ -146,6 +161,7 @@ pub fn build_router(auth: Arc<AuthService>, config: RouterConfig) -> Router {
         scheduler: config.scheduler,
         review_queue: config.review_queue,
         pull_request_manager,
+        web_push,
     };
     if let Some(runner) = config.prompt_queue_runner {
         start_prompt_queue(&mut state, Arc::clone(&runner));
@@ -157,6 +173,9 @@ pub fn build_router(auth: Arc<AuthService>, config: RouterConfig) -> Router {
         .route("/api/auth/login", post(auth::login))
         .route("/api/auth/logout", post(auth::logout))
         .route("/api/auth/me", get(auth::me))
+        .route("/api/web-push/config", get(web_push::config))
+        .route("/api/web-push/subscription", post(web_push::subscribe))
+        .route("/api/web-push/unsubscribe", post(web_push::unsubscribe))
         .route("/api/projects", get(projects::list).post(projects::create))
         .route("/api/projects/reorder", post(projects::reorder))
         .route("/api/projects/active", patch(projects::set_active))
