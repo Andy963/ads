@@ -32,7 +32,7 @@
 ## 4. 配置前提
 
 - Reviewer 角色必须启用并配置可用模型和系统指令。
-- `ADS_REVIEW_TEST_COMMAND` 指定队列评审前的验证命令；ADS 仓库使用 `npm --prefix ts-server test`，其他项目按仓库边界覆盖。
+- 验证命令由 Reviewer 根据 diff 自主选择并在只读审查上下文中执行（见 ADR 0060 / ADR 0066），ADS 仓库覆盖 `rust-server/`（`cargo test`）与 `client/`（`npm --prefix client test`）。
 - Acopilot 泳道需要保留实现代码所需的工作区写权限；Actions Reviewer 保持只读。
 
 ## 5. 失败语义

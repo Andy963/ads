@@ -18,16 +18,20 @@ jobs:
         with:
           node-version: "24"
           cache: "npm"
-          cache-dependency-path: |
-            client/package-lock.json
-            ts-server/package-lock.json
+          cache-dependency-path: client/package-lock.json
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust-server
 
       - name: Install client dependencies
         working-directory: client
-        run: npm ci
-
-      - name: Install server dependencies
-        working-directory: ts-server
         run: npm ci
 
       - name: Verify dev toolchain
@@ -35,68 +39,39 @@ jobs:
           set -euo pipefail
           node -v
           npm -v
-          npm --prefix ts-server exec --no -- tsx --version
+          rustc --version
+          cargo --version
           npm --prefix client exec --no -- vitest --version
-
-      - name: Lint server
-        working-directory: ts-server
-        run: npm run lint
 
       - name: Lint client
         working-directory: client
         run: npm run lint
 
+      - name: Test client
+        working-directory: client
+        run: npm test
+
       - name: Build client
         working-directory: client
         run: npm run build
 
-      - name: Build server
-        working-directory: ts-server
-        run: npm run build
+      - name: Lint Rust server
+        working-directory: rust-server
+        run: cargo clippy --workspace --all-targets
 
-      - name: Verify release layout
-        working-directory: ts-server
-        run: npm run verify:release
+      - name: Test Rust server
+        working-directory: rust-server
+        run: cargo test --workspace -- --test-threads=2
 
-      - name: Run unit tests
-        working-directory: ts-server
-        run: npm test
-
-      - name: Run web tests
-        working-directory: client
-        run: npm test
-
-      - name: Install browser engines
-        working-directory: client
-        run: npx --no playwright install --with-deps webkit chromium
-
-      - name: Run chat browser regressions
-        working-directory: client
-        run: npm run test:chat-browser
-
-      - name: Run model and retry browser regressions
-        env:
-          TMPDIR: ${{ runner.temp }}
-        working-directory: client
-        run: |
-          npm run test:model-settings-browser
-          npm run test:model-selection-browser
-          npm run test:message-retry-browser
-
-      - name: Upload retry browser failure diagnostics
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: message-retry-browser-failure
-          path: ${{ runner.temp }}/ads-message-retry-*/
-          if-no-files-found: ignore
-          retention-days: 7
+      - name: Build Rust release binaries
+        working-directory: rust-server
+        run: cargo build --release -p ads-server -p ads-telegram
 
       - name: Resolve release version and tag
         id: vars
         run: |
           set -euo pipefail
-          VERSION=$(node -p "require('./ts-server/package.json').version")
+          VERSION=$(node -p "require('./client/package.json').version")
           if [[ "${GITHUB_REF_TYPE:-}" == "tag" ]]; then
             TAG="${GITHUB_REF_NAME}"
           else
@@ -116,15 +91,17 @@ jobs:
         run: |
           set -euo pipefail
           TAG="${{ steps.vars.outputs.tag }}"
-          tar -czf "ads-${TAG}.tgz" client/dist ts-server/dist ts-server/package.json ts-server/package-lock.json ts-server/scripts/verify-release-layout.js README.md LICENSE .env.example .env.advanced.example
-          SMOKE_DIR="$RUNNER_TEMP/ads-release-smoke"
-          rm -rf "$SMOKE_DIR"
-          mkdir -p "$SMOKE_DIR"
-          tar -xzf "ads-${TAG}.tgz" -C "$SMOKE_DIR"
-          node "$SMOKE_DIR/ts-server/scripts/verify-release-layout.js" "$SMOKE_DIR"
-          cd "$SMOKE_DIR/ts-server"
-          npm ci --omit=dev --no-audit --no-fund
-          node dist/server/cli.js version
+          STAGE_DIR="$RUNNER_TEMP/ads-release-stage"
+          rm -rf "$STAGE_DIR"
+          mkdir -p "$STAGE_DIR/bin" "$STAGE_DIR/dist"
+          cp -p rust-server/target/release/ads-server "$STAGE_DIR/bin/ads-server"
+          cp -p rust-server/target/release/ads-telegram "$STAGE_DIR/bin/ads-telegram"
+          cp -a client/dist "$STAGE_DIR/dist/client"
+          cp -p README.md LICENSE .env.example .env.advanced.example "$STAGE_DIR/"
+          tar -czf "ads-${TAG}.tgz" -C "$STAGE_DIR" bin dist README.md LICENSE .env.example .env.advanced.example
+          test -x "$STAGE_DIR/bin/ads-server"
+          test -x "$STAGE_DIR/bin/ads-telegram"
+          test -f "$STAGE_DIR/dist/client/index.html"
 
       - name: Create GitHub Release
         if: steps.vars.outputs.release == 'true'

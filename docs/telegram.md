@@ -1,6 +1,6 @@
 # ADS Telegram Connector
 
-ADS includes a standalone Telegram Channel Connector in `ts-server/connectors/telegram/`. It runs outside ADS Core and communicates with Core over an authenticated WebSocket. Telegram turns enter Core as `channel: "telegram"` and therefore run through the same `MiddlewarePipeline`, memory recall, and safety rules as Web turns.
+ADS includes a standalone Rust Telegram Channel Connector in `rust-server/crates/ads-telegram/` (`ads-telegram`). It runs outside ADS Core and communicates with Core over an authenticated WebSocket. Telegram turns enter Core as `channel: "telegram"` and therefore run through the same `MiddlewarePipeline`, memory recall, and safety rules as Web turns.
 
 Core streams prompt output as `delta` frames followed by a `result` frame. Task lifecycle notifications use the transport-neutral `task_terminal` event; only the connector calls the Telegram API.
 
@@ -26,10 +26,10 @@ Start the two processes independently:
 
 ```bash
 # Start ADS Core
-cd ts-server && npm start
+cargo run --manifest-path rust-server/Cargo.toml -p ads-server
 
 # Start the Telegram Connector
-cd ts-server/connectors/telegram && npm start
+cargo run --manifest-path rust-server/Cargo.toml -p ads-telegram
 ```
 
 ## Supported Interaction

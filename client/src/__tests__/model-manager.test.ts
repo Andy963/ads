@@ -11,7 +11,7 @@ import {
   MIN_MODEL_CONTEXT_WINDOW,
   MODEL_CONTEXT_KEYS,
   MODEL_OUTPUT_KEYS,
-} from "../../../ts-server/shared/modelTokenBudget";
+} from "../shared/modelTokenBudget";
 
 function fixture() {
   const providers = [{ id: "p1", name: "Provider One", baseUrl: "https://one.invalid/v1", isEnabled: true, hasCredential: true },

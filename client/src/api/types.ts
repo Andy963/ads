@@ -1,4 +1,4 @@
-import type { CanonicalLaneId } from "../../../ts-server/shared/terminology.js";
+import type { CanonicalLaneId } from "../shared/terminology.js";
 
 /**
  * Role-profile values as the API stores and reports them.
@@ -6,7 +6,7 @@ import type { CanonicalLaneId } from "../../../ts-server/shared/terminology.js";
  * This is the shared `StoredRoleProfileValue`, not a client-local copy: role
  * profiles are limited to Acopilot and Reviewer. See ADR 0027.
  */
-export type { StoredRoleProfileValue } from "../../../ts-server/shared/terminology.js";
+export type { StoredRoleProfileValue } from "../shared/terminology.js";
 
 export type AuthStatus = {
   initialized: boolean;

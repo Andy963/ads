@@ -20,7 +20,8 @@ By participating in this project, you agree to maintain a respectful and inclusi
 
 ### Prerequisites
 
-- Node.js 18 or newer
+- Rust 1.85 or newer (`cargo`, `rustfmt`, `clippy`)
+- Node.js 24 or newer (for `client/`)
 - npm or yarn
 - Git
 
@@ -35,13 +36,12 @@ By participating in this project, you agree to maintain a respectful and inclusi
 3. Install package-local dependencies:
    ```bash
    npm ci --prefix client
-   npm ci --prefix ts-server
    ```
 4. Create a `.env` file based on `.env.example` (shared by Telegram/Web)
 5. Build the project:
    ```bash
    npm --prefix client run build
-   npm --prefix ts-server run build
+   cargo build --manifest-path rust-server/Cargo.toml -p ads-server -p ads-telegram
    ```
 
 ## Development Workflow
@@ -49,16 +49,16 @@ By participating in this project, you agree to maintain a respectful and inclusi
 ### Running in Development Mode
 
 ```bash
-npm --prefix ts-server run dev
+cargo run --manifest-path rust-server/Cargo.toml -p ads-server
 npm --prefix client run dev
 ```
 
-This runs the server in watch mode, automatically rebuilding on file changes.
+This starts the Rust backend alongside the Vite hot-reload client dev server.
 
 ### Running Tests
 
 ```bash
-npm --prefix ts-server test
+cargo test --manifest-path rust-server/Cargo.toml --workspace -- --test-threads=2
 npm --prefix client test
 ```
 
@@ -66,7 +66,7 @@ npm --prefix client test
 
 ```bash
 npm --prefix client run build
-npm --prefix ts-server run build
+cargo build --manifest-path rust-server/Cargo.toml --release -p ads-server -p ads-telegram
 ```
 
 ## Pull Request Process
@@ -84,10 +84,9 @@ npm --prefix ts-server run build
 
 3. **Test your changes**:
    ```bash
-   npm --prefix ts-server test
+   cargo test --manifest-path rust-server/Cargo.toml --workspace -- --test-threads=2
    npm --prefix client test
    npm --prefix client run build
-   npm --prefix ts-server run build
    ```
 
 4. **Push to your fork**:
@@ -144,7 +143,7 @@ export function loadConfig(path: string): UserConfig {
 ## Testing
 
 - Write tests for new features and bug fixes
-- Place tests in the `ts-server/tests/` directory
+- Place backend tests under `rust-server/crates/<crate>/tests/` and client tests under `client/src/__tests__/`
 - Use descriptive test names
 - Aim for high code coverage on critical paths
 
@@ -181,12 +180,7 @@ describe('Feature Name', () => {
 ```
 ads/
 ├── client/        # Shared frontend (Vue 3, Vite)
-├── rust-server/   # Rust backend and connector crates
-├── ts-server/     # TypeScript backend, shared contracts, tests, and connector
-│   ├── server/
-│   ├── shared/
-│   ├── tests/
-│   └── connectors/telegram/
+├── rust-server/   # Active Rust backend and connector crates
 └── docs/          # Documentation
 ```
 

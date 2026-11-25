@@ -1,7 +1,6 @@
 # ADS Rust 后端
 
-本 workspace 是 ADS TypeScript 后端的兼容优先 Rust 替代实现。在 Rust 服务通过
-完整黑盒一致性测试前，现有 `ts-server/server/` 实现仍是行为基准。
+本 workspace 是 ADS 唯一的活跃后端实现（原 TypeScript 后端已废弃并归档至分支 `archive/ts-server-deprecated`）。
 
 ## 当前切片
 
@@ -99,66 +98,6 @@ cargo run -p ads-server
 CARGO_BUILD_JOBS=2 cargo test --workspace -- --test-threads=2
 ```
 
-## 重新生成合同
+## 归档说明
 
-在仓库根目录执行：
-
-```bash
-node --import ./ts-server/node_modules/tsx/dist/loader.mjs rust-server/scripts/extract-contracts.mjs
-```
-
-脚本会在临时数据库中执行真实 TypeScript 迁移，并将 DDL、密码兼容向量、HTTP
-路由清单和 WebSocket 帧清单写入 `rust-server/contracts/`。
-
-## 黑盒一致性测试
-
-```bash
-node rust-server/scripts/conformance-auth.mjs
-node rust-server/scripts/conformance-projects.mjs
-node rust-server/scripts/conformance-actions.mjs
-node rust-server/scripts/conformance-context-extractor.mjs
-node rust-server/scripts/conformance-models.mjs
-node rust-server/scripts/conformance-role-profiles.mjs
-node rust-server/scripts/conformance-providers.mjs
-node rust-server/scripts/conformance-schedules.mjs
-node rust-server/scripts/conformance-scheduler-runtime.mjs
-node rust-server/scripts/conformance-http-boundaries.mjs
-node rust-server/scripts/conformance-attachments.mjs
-node rust-server/scripts/conformance-connector.mjs
-node rust-server/scripts/conformance-ws-bootstrap.mjs
-node rust-server/scripts/conformance-ws-command.mjs
-node rust-server/scripts/conformance-ws-command-snapshot.mjs
-node rust-server/scripts/conformance-ws-delta-snapshot.mjs
-node rust-server/scripts/conformance-ws-multiplexed.mjs
-node rust-server/scripts/conformance-ws-project-cwd.mjs
-node rust-server/scripts/conformance-ws-reset.mjs
-node rust-server/scripts/conformance-ws-prompt-queue.mjs
-node rust-server/scripts/conformance-ws-native-runtime.mjs
-node rust-server/scripts/conformance-skills.mjs
-node rust-server/scripts/conformance-app-server.mjs
-node rust-server/scripts/conformance-ws-codex-runtime.mjs
-node rust-server/scripts/conformance-ui-rust.mjs
-```
-
-脚本会启动隔离的 Node 与 Rust 服务，分别初始化管理员，并对比状态码与 JSON
-响应体；鉴权脚本额外对比 cookie、登出和登录锁定行为，HTTP 边界脚本对比
-Origin、缺失 `Content-Type` 和 1 MB 请求体边界，actions 脚本对比 job 列表、
-项目解析、公开字段过滤与废弃 POST 路由的 `410` 文案，context extractor 脚本对
-同一 git fixture 逐字段对比 TypeScript/Rust 的 contexts 与 omissions，WebSocket
-脚本对比
-bootstrap、控制帧、关闭码、durable replay、history、reset、session switch，
-command builtin/preflight/cwd 持久化与 project workspace 恢复优先级，以及
-prompt enqueue ACK、队列事件、
-取消/reconcile 与重连 replay；native runtime 脚本使用 fake SSE upstream
-校验流式输出、history、sync event、
-native transcript、`read_file` / `apply_patch` 工具调用、工具结果回传、
-文件落盘与上游请求体；multiplexed 脚本校验单物理连接上的双 lane bootstrap、
-scoped prompt 隔离与 session rebind；skills 脚本使用同一隔离 fixture 对比
-TypeScript command router 与 Rust command line 的 skill 命令结果和创建文件；
-schedules 脚本向两套隔离 workspace 数据库写入相同 schedule 行，对比列表、
-启用、停用、待澄清 409 与 run 列表；scheduler runtime 脚本在真实 Rust 服务
-中验证 due schedule 触发、失败 run 落库、`nextRunAt` 前移、disabled schedule
-不执行，以及 liteque 队列的 drizzle migration journal 兼容性；Codex runtime
-脚本验证 Rust 服务的 WebSocket prompt、图片本地化、history、scheduler 执行，以及
-同一 state 下 Codex→Native→Codex 回滚和 thread resume；UI 脚本用真实 Chromium
-登录 Rust 服务、发送 prompt、验证回复与 reload 后历史恢复，并保存截图。
+原 TypeScript 服务端（`ts-server/`）与历史双端黑盒对齐脚本已冻结归档在 `archive/ts-server-deprecated` 分支。`rust-server/contracts/` 中的 SQLite schema 与种子快照仍由 `ads-state` 直接内嵌保留。

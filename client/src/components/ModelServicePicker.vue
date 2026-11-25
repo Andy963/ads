@@ -2,7 +2,7 @@
 import { computed, onMounted, ref } from "vue";
 import type { ApiClient } from "../api/client";
 import type { ModelConfig, ModelProvider } from "../api/types";
-import type { ModelService, ModelServiceSelection } from "../../../ts-server/shared/modelServices";
+import type { ModelService, ModelServiceSelection } from "../shared/modelServices";
 import SettingsSheet from "./SettingsSheet.vue";
 
 const props = defineProps<{ api: ApiClient; service: ModelService }>();

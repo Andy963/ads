@@ -13,7 +13,7 @@ import type {
   PullRequestListQuery,
   PullRequestState,
   PullRequestSummary,
-} from "../../../ts-server/shared/pullRequests.js";
+} from "../shared/pullRequests.js";
 
 const props = defineProps<{ projectId: string; active?: boolean }>();
 

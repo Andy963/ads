@@ -11,16 +11,7 @@
     "lint": "eslint src vite.config.ts vitest.config.ts scripts",
     "report:bundle": "node scripts/report-web-bundle.js",
     "test:composer-browser": "node scripts/test-composer-browser.js",
-    "test:composer-layout-browser": "node scripts/test-composer-layout-browser.js",
-    "test:chat-browser": "node scripts/test-chat-browser.js",
-    "test:execute-marquee-browser": "node scripts/test-execute-marquee-browser.js",
-    "test:role-prompt-keyboard-browser": "node scripts/test-role-prompt-keyboard-browser.js",
-    "test:login-keyboard-browser": "node scripts/test-login-keyboard-browser.js",
-    "test:lane-control-browser": "node scripts/test-lane-control-browser.js",
-    "test:model-settings-browser": "node scripts/test-model-settings-browser.js",
-    "test:model-selection-browser": "node scripts/test-model-selection-browser.js",
-    "test:task-notice-browser": "node scripts/test-task-notice-browser.js",
-    "test:message-retry-browser": "node scripts/test-message-retry-browser.js"
+    "test:composer-layout-browser": "node scripts/test-composer-layout-browser.js"
   },
   "engines": {
     "node": ">=24"

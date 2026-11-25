@@ -9,7 +9,7 @@ import {
   ACOPILOT_LANE_ID,
   LEGACY_LANE_ALIASES,
   type CanonicalLaneId,
-} from "../../../ts-server/shared/terminology.js";
+} from "../shared/terminology.js";
 
 export { ACOPILOT_LANE_ID, ACTIONS_LANE_ID };
 

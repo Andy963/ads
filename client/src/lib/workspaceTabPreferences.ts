@@ -1,4 +1,4 @@
-import { normalizeLaneId, type CanonicalLaneId } from "../../../ts-server/shared/terminology.js";
+import { normalizeLaneId, type CanonicalLaneId } from "../shared/terminology.js";
 import { readMobileTabPreference, writeMobileTabPreference } from "./preferencesStore.js";
 
 /**
