@@ -1,11 +1,14 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use ads_actions::{ReviewQueue, ReviewQueueOptions, review_action_tools_factory};
+use ads_actions::{
+    ReviewError, ReviewQueue, ReviewQueueOptions, ReviewerRunner, review_action_tools_factory,
+};
 use ads_auth::{AuthConfig, AuthService, InitAdminOutcome, ResetAdminOutcome};
 use ads_codex_app_server::{
     AgentActionTools, AgentRuntimeBackend, CodexActionToolsFactory, CodexAppServerPromptRunner,
-    CodexAppServerPromptRunnerOptions, SpawnOptions, resolve_agent_runtime,
+    CodexAppServerPromptRunnerOptions, CodexReviewRequest, SpawnOptions, resolve_agent_runtime,
+    run_codex_review,
 };
 use ads_http::{
     ActionsLaneMessage, CookieSecureMode, ReviewVerdictMessage, RouterConfig, WebSocketConfig,
@@ -43,14 +46,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let workspaces_db_path = resolve_workspaces_db_path();
     let workspace_db = Arc::new(WorkspaceDb::open(&workspaces_db_path)?);
     let websocket_hub = Arc::new(WebSocketHub::new(WebSocketConfig::from_env()));
-    let review_queue = build_review_queue(state_db.clone(), Arc::clone(&websocket_hub));
+    let runtime_backend = resolve_agent_runtime(std::env::var("ADS_AGENT_RUNTIME").ok().as_deref());
+    let review_queue = build_review_queue(
+        state_db.clone(),
+        Arc::clone(&websocket_hub),
+        runtime_backend,
+    );
     let model_resolver = ModelResolver::new(state_db.clone());
     let mut native_options =
         NativePromptRunnerOptions::new(state_db.clone(), model_resolver.clone());
     let native_action_tools = review_action_tools_factory(Arc::clone(&review_queue));
     native_options.action_tools_factory = Some(Arc::clone(&native_action_tools));
     let native_runner = Arc::new(NativePromptRunner::new(native_options));
-    let runtime_backend = resolve_agent_runtime(std::env::var("ADS_AGENT_RUNTIME").ok().as_deref());
     let (prompt_runner, schedule_executor): (
         Arc<dyn PromptQueueRunner>,
         Arc<dyn ScheduleExecutor>,
@@ -114,7 +121,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn build_review_queue(db: StateDb, hub: Arc<WebSocketHub>) -> Arc<ReviewQueue> {
+fn build_review_queue(
+    db: StateDb,
+    hub: Arc<WebSocketHub>,
+    runtime_backend: AgentRuntimeBackend,
+) -> Arc<ReviewQueue> {
     let messenger_db = db.clone();
     let messenger_hub = Arc::clone(&hub);
     let waker_db = db.clone();
@@ -163,9 +174,36 @@ fn build_review_queue(db: StateDb, hub: Arc<WebSocketHub>) -> Arc<ReviewQueue> {
             eprintln!("[ads-actions] unable to enqueue Reviewer handoff: {error}");
         }
     });
+    let reviewer: Option<ReviewerRunner> = match runtime_backend {
+        AgentRuntimeBackend::CodexAppServer => {
+            let reviewer_db = db.clone();
+            Some(Arc::new(move |request| {
+                let db = reviewer_db.clone();
+                Box::pin(async move {
+                    run_codex_review(CodexReviewRequest {
+                        db,
+                        payload: request.payload,
+                        repo_path: request.repo_path,
+                        profile_id: request.profile_id,
+                        job_id: request.job_id,
+                        owner: request.owner,
+                        timeout: std::time::Duration::from_secs(30 * 60),
+                        cancellation: request.cancellation,
+                        verification_report: request.verification_report,
+                        daemon_options: SpawnOptions::default(),
+                        registry: None,
+                    })
+                    .await
+                    .map_err(ReviewError::from)
+                })
+            }))
+        }
+        AgentRuntimeBackend::Native => None,
+    };
     let options = ReviewQueueOptions {
         messenger: Some(messenger),
         waker: Some(waker),
+        reviewer,
         ..ReviewQueueOptions::default()
     };
     Arc::new(ReviewQueue::new(

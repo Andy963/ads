@@ -74,4 +74,5 @@
 - 0063 - [ADR 0063: Extend Mobile Horizontal Swipe Carousel to All Three Workspace Views](0063-mobile-three-view-workspace-swipe.md)
 - 0064 - [ADR 0064: Transport-Agnostic Public Ingress Contract](0064-transport-agnostic-ingress-contract.md)
 - 0065 - [ADR 0065: Allow Semantic Feature Branches and Resolve Backing Issues from PR Bodies](0065-semantic-feature-branches-and-pr-linked-issues.md)
+- 0066 - [ADR 0066: Route Actions Reviewer Through the Active Agent Runtime](0066-runtime-unified-actions-reviewer.md)
 <!-- ADS:ADR_INDEX_END -->

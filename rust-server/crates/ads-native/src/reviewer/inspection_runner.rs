@@ -22,6 +22,9 @@ const REVIEWER_OUTPUT_TOKENS: u64 = 32_768;
 const MAX_REVIEWER_TEXT_UNITS: usize = 8_000;
 const MAX_REVIEWER_ARGUMENT_UNITS: usize = 4_096;
 
+const DEFAULT_INCOMPLETE_SUMMARY: &str =
+    "Reviewer reported insufficient evidence; developer rework was not requested.";
+
 pub type ReviewerComplete = Arc<
     dyn Fn(
             NativeCompletionRequest,
@@ -77,9 +80,12 @@ pub async fn run_reviewer_inspection(
     request_options.max_tokens = Some(budget.reserved_tokens);
     let complete = options.complete.unwrap_or_else(|| {
         let cancellation = options.cancellation.clone();
+        let retry_count = crate::resolve_transient_model_retry_count();
         Arc::new(move |request: NativeCompletionRequest| {
             let cancellation = cancellation.clone();
-            Box::pin(async move { complete_native_model(&request, &cancellation, None).await })
+            Box::pin(async move {
+                complete_with_transient_retry(&request, &cancellation, retry_count).await
+            })
         })
     });
     let mut messages = vec![
@@ -115,7 +121,7 @@ pub async fn run_reviewer_inspection(
                 model: options.model.model.clone(),
                 messages: projection.messages,
                 tools: active_tools.clone(),
-                streaming: false,
+                streaming: true,
                 output_schema: None,
                 options: request_options.clone(),
             };
@@ -137,20 +143,8 @@ pub async fn run_reviewer_inspection(
                 )));
             }
             if result.tool_calls.is_empty() {
-                let reported_incomplete = serde_json::from_str::<Value>(&result.text)
-                    .ok()
-                    .and_then(|value| {
-                        value
-                            .get("status")
-                            .and_then(Value::as_str)
-                            .map(|status| status == "INCOMPLETE")
-                    })
-                    .unwrap_or(false);
-                if reported_incomplete {
-                    return Err(ReviewerError::Incomplete(
-                        "Reviewer reported insufficient evidence; developer rework was not requested."
-                            .to_string(),
-                    ));
+                if let Some(summary) = extract_incomplete_summary(&result.text) {
+                    return Err(ReviewerError::Incomplete(summary));
                 }
                 if requires_paging && !inspection.has_read_full_diff() {
                     premature_verdicts += 1;
@@ -281,7 +275,7 @@ pub async fn run_reviewer_inspection(
                             model: model.model,
                             messages,
                             tools: Vec::new(),
-                            streaming: false,
+                            streaming: true,
                             output_schema: None,
                             options: summary_options,
                         };
@@ -394,6 +388,140 @@ fn reviewer_native_error(error: NativeError) -> ReviewerError {
     }
 }
 
+fn extract_incomplete_summary(raw_text: &str) -> Option<String> {
+    let verdict = parse_review_verdict(raw_text, None).ok()?;
+    if verdict.status != ads_reviewer::ReviewVerdictStatus::Incomplete {
+        return None;
+    }
+    let summary = verdict.summary.trim();
+    Some(if summary.is_empty() {
+        DEFAULT_INCOMPLETE_SUMMARY.to_string()
+    } else {
+        summary.to_string()
+    })
+}
+
+async fn complete_with_transient_retry(
+    request: &NativeCompletionRequest,
+    cancellation: &Cancellation,
+    retry_count: usize,
+) -> crate::NativeResult<NativeCompletion> {
+    complete_with_retry_fn(retry_count, None, cancellation, || {
+        complete_native_model(request, cancellation, None)
+    })
+    .await
+}
+
+async fn complete_with_retry_fn<F, Fut>(
+    retry_count: usize,
+    backoff_ms: Option<&[u64]>,
+    cancellation: &Cancellation,
+    mut call: F,
+) -> crate::NativeResult<NativeCompletion>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = crate::NativeResult<NativeCompletion>>,
+{
+    let attempts = crate::max_attempts(retry_count);
+    let mut last_error = None;
+    for attempt in 1..=attempts {
+        cancellation.check()?;
+        match call().await {
+            Ok(completion) => return Ok(completion),
+            Err(error) => {
+                let retryable = attempt < attempts && crate::is_retryable_model_error(&error);
+                if !retryable {
+                    return Err(error);
+                }
+                let delay_ms = crate::resolve_transient_retry_delay_ms(
+                    &error.to_string(),
+                    attempt,
+                    backoff_ms,
+                    now_ms(),
+                );
+                last_error = Some(error);
+                if delay_ms > 0 {
+                    tokio::select! {
+                        _ = cancellation.cancelled() => return Err(NativeError::Cancelled),
+                        _ = tokio::time::sleep(std::time::Duration::from_millis(delay_ms)) => {}
+                    }
+                }
+            }
+        }
+    }
+    Err(last_error
+        .unwrap_or_else(|| NativeError::Io("Transient model retry loop exhausted".to_string())))
+}
+
 fn utf16_len(value: &str) -> usize {
     value.encode_utf16().count()
+}
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn preserves_incomplete_summary_from_raw_and_fenced_json() {
+        assert_eq!(
+            extract_incomplete_summary(
+                r#"{"status":"INCOMPLETE","summary":"cargo not found on PATH","defects":[]}"#
+            ),
+            Some("cargo not found on PATH".to_string())
+        );
+        let fence = "\x60\x60\x60";
+        let fenced = format!(
+            "{fence}json\n{{\"status\":\"INCOMPLETE\",\"summary\":\"missing fixture\",\"defects\":[]}}\n{fence}"
+        );
+        assert_eq!(
+            extract_incomplete_summary(&fenced),
+            Some("missing fixture".to_string())
+        );
+        assert_eq!(
+            extract_incomplete_summary(r#"{"status":"INCOMPLETE","summary":"   ","defects":[]}"#),
+            Some(DEFAULT_INCOMPLETE_SUMMARY.to_string())
+        );
+        assert_eq!(
+            extract_incomplete_summary(r#"{"status":"PASS","summary":"ok","defects":[]}"#),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn retries_transient_reviewer_upstream_errors() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let cancellation = Cancellation::new();
+        let completion = complete_with_retry_fn(1, Some(&[0]), &cancellation, || {
+            let calls = Arc::clone(&calls);
+            async move {
+                let attempt = calls.fetch_add(1, Ordering::SeqCst) + 1;
+                if attempt == 1 {
+                    Err(NativeError::provider(
+                        crate::NativeProviderErrorKind::Transient,
+                        "Native Responses upstream request failed: connection reset",
+                    ))
+                } else {
+                    Ok(NativeCompletion {
+                        text: r#"{"status":"PASS","summary":"ok","defects":[]}"#.to_string(),
+                        tool_calls: Vec::new(),
+                        usage: None,
+                        finish_reason: Some("stop".to_string()),
+                        native_responses: None,
+                    })
+                }
+            }
+        })
+        .await
+        .expect("retry succeeds");
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        assert!(completion.text.contains("PASS"));
+    }
 }

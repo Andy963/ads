@@ -789,7 +789,17 @@ async fn stops_for_incomplete_or_invalid_verdicts() {
     let error = run_reviewer_inspection(options(&repo, None, incomplete))
         .await
         .expect_err("incomplete");
-    assert!(matches!(error, ReviewerError::Incomplete(_)));
+    assert_eq!(error, ReviewerError::Incomplete("Evidence gap".to_string()));
+
+    let (streaming_check, requests) = scripted(vec![completion(
+        r#"{"status":"INCOMPLETE","summary":"Missing verification","defects":[]}"#,
+        Vec::new(),
+    )]);
+    let _ = run_reviewer_inspection(options(&repo, None, streaming_check)).await;
+    assert!(
+        requests.lock().expect("requests")[0].streaming,
+        "reviewer requests must stream to survive reverse-proxy idle timeouts"
+    );
 
     let (invalid, _) = scripted(vec![completion("not a verdict", Vec::new())]);
     let error = run_reviewer_inspection(options(&repo, None, invalid))
