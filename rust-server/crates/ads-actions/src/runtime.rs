@@ -210,6 +210,64 @@ mod tests {
         assert_eq!(jobs[0].chat_session_id.as_deref(), Some("main"));
     }
 
+    #[tokio::test]
+    async fn review_action_enqueues_a_job_from_a_semantic_feature_branch() {
+        let directory = tempdir().expect("temp dir");
+        let repo = directory.path().join("repo");
+        std::fs::create_dir(&repo).expect("repo dir");
+        run_git(&repo, &["init", "-q"]);
+        run_git(&repo, &["config", "user.email", "reviewer@example.com"]);
+        run_git(&repo, &["config", "user.name", "Reviewer"]);
+        std::fs::write(repo.join("file.txt"), "content\n").expect("file");
+        run_git(&repo, &["add", "."]);
+        run_git(&repo, &["commit", "-q", "-m", "initial"]);
+        run_git(&repo, &["branch", "-m", "fix/701-semantic-branches"]);
+
+        let db = StateDb::open(directory.path().join("state.db")).expect("state db");
+        let project_id = canonical_project_id("project-1", Some(&repo));
+        {
+            let connection = db.connect().expect("connection");
+            connection
+                .execute(
+                    "INSERT INTO web_users (id, username, password_hash, created_at, updated_at)
+                     VALUES ('user-1', 'admin', 'hash', 1, 1)",
+                    [],
+                )
+                .expect("user");
+            ensure_web_project_tables(&connection).expect("project tables");
+            upsert_web_project(
+                &connection,
+                UpsertWebProject {
+                    user_id: "user-1",
+                    project_id: &project_id,
+                    workspace_root: &repo.to_string_lossy(),
+                    name: "Review project",
+                    chat_session_id: Some("main"),
+                },
+                1_000,
+            )
+            .expect("project");
+        }
+        let queue = Arc::new(ReviewQueue::new(
+            db.clone(),
+            "worker-1",
+            ReviewQueueOptions::default(),
+        ));
+        let factory = review_action_tools_factory(queue);
+        let mut prompt = entry(WEB_ACOPILOT_NAMESPACE);
+        prompt.session_id = project_id.clone();
+        prompt.workspace_root = repo.to_string_lossy().to_string();
+        let action_tools = factory(&prompt).expect("action tools");
+        let ack = action_tools.review_action().await.expect("review action");
+        assert_eq!(ack["ok"], true);
+        assert_eq!(ack["issueId"], 701);
+
+        let connection = db.connect().expect("connection");
+        let jobs = list_action_jobs(&connection, &project_id, None, Some("user-1")).expect("jobs");
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].branch.as_deref(), Some("fix/701-semantic-branches"));
+    }
+
     fn run_git(repo: &Path, args: &[&str]) {
         let output = StdCommand::new("git")
             .args(args)

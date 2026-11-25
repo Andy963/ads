@@ -165,11 +165,70 @@ function parseAcceptanceCriteria(body: string): string[] {
     .filter(Boolean);
 }
 
-function issueIdFromBranch(branch: string | null | undefined): number | null {
-  const match = /^codex\/issue-(\d+)$/.exec(String(branch ?? "").trim());
+const PROTECTED_BRANCHES = new Set([ACTIONS_BASE_BRANCH, "main", "master"]);
+const SEMANTIC_BRANCH_PREFIXES = new Set([
+  "feat",
+  "fix",
+  "refactor",
+  "perf",
+  "docs",
+  "test",
+  "chore",
+  "build",
+  "ci",
+  "style",
+  "revert",
+  "issue",
+]);
+
+export function isProtectedBranch(branch: string | null | undefined): boolean {
+  return PROTECTED_BRANCHES.has(String(branch ?? "").trim());
+}
+
+export function issueIdFromBranch(branch: string | null | undefined): number | null {
+  const trimmed = String(branch ?? "").trim();
+  if (!trimmed || isProtectedBranch(trimmed)) return null;
+  let rest: string;
+  if (trimmed.startsWith("codex/issue-")) {
+    rest = trimmed.slice("codex/issue-".length);
+  } else if (trimmed.startsWith("issue-")) {
+    rest = trimmed.slice("issue-".length);
+  } else {
+    const slash = trimmed.indexOf("/");
+    if (slash <= 0) return null;
+    const prefix = trimmed.slice(0, slash);
+    if (!SEMANTIC_BRANCH_PREFIXES.has(prefix)) return null;
+    const remainder = trimmed.slice(slash + 1);
+    rest = remainder.startsWith("issue-") ? remainder.slice("issue-".length) : remainder;
+  }
+  const match = /^([1-9]\d*)(?:$|-)/.exec(rest);
   if (!match) return null;
   const issueId = Number(match[1]);
   return Number.isSafeInteger(issueId) && issueId > 0 ? issueId : null;
+}
+
+export function extractLinkedIssueIds(prBody: string): number[] {
+  const regex = /\b(?:close[sd]?|fix(?:es|ed)?|resolve[sd]?)(?:\s*:\s*|\s+)#([1-9]\d*)\b/gi;
+  const ids: number[] = [];
+  for (const match of prBody.matchAll(regex)) {
+    const issueId = Number(match[1]);
+    if (Number.isSafeInteger(issueId) && issueId > 0 && !ids.includes(issueId)) {
+      ids.push(issueId);
+    }
+  }
+  return ids;
+}
+
+function resolveLinkedIssueId(prBody: string): number {
+  const ids = extractLinkedIssueIds(prBody);
+  if (ids.length === 0) {
+    throw new ReviewerIncompleteError("The pull request description does not link a GitHub Issue. Add `Closes #<id>` to the PR body, then dispatch the review again.");
+  }
+  if (ids.length > 1) {
+    const list = ids.map((id) => `#${id}`).join(", ");
+    throw new ReviewerIncompleteError(`The pull request description links multiple GitHub Issues (${list}). Link exactly one Issue with \`Closes #<id>\`, then dispatch the review again.`);
+  }
+  return ids[0]!;
 }
 
 async function defaultPublishIssueComment(input: {
@@ -280,7 +339,7 @@ export interface LaneDispatchBusOptions {
   interactiveGithubMetadataReader?: (input: {
     repoPath: string;
     branch: string;
-    issueId: number;
+    issueId?: number | null;
     prNumber?: number | null;
   }) => InteractiveGithubMetadata | Promise<InteractiveGithubMetadata>;
 }
@@ -473,7 +532,7 @@ export class LaneDispatchBus {
   private async readInteractiveGithubMetadata(input: {
     repoPath: string;
     branch: string;
-    issueId: number;
+    issueId?: number | null;
     prNumber?: number | null;
   }, signal?: AbortSignal): Promise<InteractiveGithubMetadata> {
     if (this.options.interactiveGithubMetadataReader) {
@@ -536,14 +595,15 @@ export class LaneDispatchBus {
       throw new Error(`Open pull request metadata is invalid: ${error instanceof Error ? error.message : String(error)}`);
     }
 
+    const linkedIssueId = resolveLinkedIssueId(pullRequest.body);
     const issueResult = await this.runInteractiveCommand(
       "gh",
-      ["issue", "view", String(input.issueId), "--json", "number,title,body,state"],
+      ["issue", "view", String(linkedIssueId), "--json", "number,title,body,state"],
       input.repoPath,
       signal,
     );
     if (issueResult.exitCode !== 0) {
-      throw new Error(`Unable to resolve GitHub Issue #${input.issueId}: ${issueResult.stderr.trim() || "gh command failed"}`);
+      throw new Error(`Unable to resolve GitHub Issue #${linkedIssueId}: ${issueResult.stderr.trim() || "gh command failed"}`);
     }
     let issue: Record<string, unknown>;
     try {
@@ -632,16 +692,14 @@ export class LaneDispatchBus {
     };
 
     const branch = await git(["branch", "--show-current"], "Unable to determine the current feature branch");
+    if (!branch) {
+      throw new Error("Interactive review requires a checked-out feature branch.");
+    }
+    if (isProtectedBranch(branch)) {
+      throw new Error(`Interactive review cannot run on protected branch '${branch}'. Check out a feature branch first.`);
+    }
     if (input.branch && input.branch !== branch) {
       throw new ReviewerIncompleteError(`Requested branch '${input.branch}' does not match the current branch '${branch}'. Switch back to the review branch and dispatch again.`);
-    }
-    const issueMatch = /^codex\/issue-(\d+)$/.exec(branch);
-    if (!issueMatch) {
-      throw new Error("Interactive review requires the assigned codex/issue-<id> feature branch.");
-    }
-    const issueId = Number(issueMatch[1]);
-    if (!Number.isSafeInteger(issueId) || issueId < 1) {
-      throw new Error("The current feature branch does not identify a valid GitHub Issue.");
     }
     if (await git(["status", "--porcelain", "-uno"], "Unable to inspect tracked workspace state")) {
       throw new ReviewerIncompleteError("The workspace has uncommitted tracked changes. Commit or revert them, then dispatch the review again.");
@@ -659,7 +717,7 @@ export class LaneDispatchBus {
     const metadata = await this.readInteractiveGithubMetadata({
       repoPath,
       branch,
-      issueId,
+      issueId: issueIdFromBranch(branch),
       prNumber: input.prNumber,
     }, signal);
     const pr = metadata.pullRequest;
@@ -675,10 +733,7 @@ export class LaneDispatchBus {
     if (metadata.openPullRequests.length !== 1 || metadata.openPullRequests[0]?.number !== pr.number) {
       throw new ReviewerIncompleteError(`Expected exactly one open pull request for this project, found ${metadata.openPullRequests.length}. Close or finish the extra PR, then dispatch the review again.`);
     }
-    const issueReference = new RegExp(`(?:close[sd]?|fix(?:es|ed)?|resolve[sd]?)\\s+#${issueId}\\b`, "i");
-    if (!issueReference.test(pr.body)) {
-      throw new ReviewerIncompleteError(`The pull request description does not link Issue #${issueId}. Add \`Closes #${issueId}\` to the PR body, then dispatch the review again.`);
-    }
+    const issueId = resolveLinkedIssueId(pr.body);
 
     const issue = metadata.issue;
     const issueTitle = issue.title;

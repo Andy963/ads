@@ -73,4 +73,5 @@
 - 0062 - [ADR 0062: Authoritative Upstream Provider Model Sync](0062-authoritative-provider-model-sync.md)
 - 0063 - [ADR 0063: Extend Mobile Horizontal Swipe Carousel to All Three Workspace Views](0063-mobile-three-view-workspace-swipe.md)
 - 0064 - [ADR 0064: Transport-Agnostic Public Ingress Contract](0064-transport-agnostic-ingress-contract.md)
+- 0065 - [ADR 0065: Allow Semantic Feature Branches and Resolve Backing Issues from PR Bodies](0065-semantic-feature-branches-and-pr-linked-issues.md)
 <!-- ADS:ADR_INDEX_END -->

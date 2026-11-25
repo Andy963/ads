@@ -6,7 +6,13 @@ import { afterEach, beforeEach, describe, it } from "node:test";
 import { spawnSync } from "node:child_process";
 import DatabaseConstructor, { type Database as DatabaseType } from "better-sqlite3";
 
-import { LaneDispatchBus, type InteractiveReviewTarget } from "../../server/actions/bus.js";
+import {
+  extractLinkedIssueIds,
+  isProtectedBranch,
+  issueIdFromBranch,
+  LaneDispatchBus,
+  type InteractiveReviewTarget,
+} from "../../server/actions/bus.js";
 import {
   createActionJob,
   supersedeReviewJobsForNewHead,
@@ -120,6 +126,7 @@ describe("Actions Reviewer queue", () => {
       onReviewPrompt?: (prompt: string) => void;
       onMetadataRead?: (count: number) => void;
       openPullRequests?: Array<{ number: number; headRefName: string }>;
+      prBody?: string;
       onHistoryMessage?: (entry: { role: string; text: string; kind?: string }) => void;
       onBroadcast?: (payload: unknown) => void;
       onIssueComment?: (body: string) => void;
@@ -157,7 +164,7 @@ describe("Actions Reviewer queue", () => {
             baseRefName: "dev",
             baseRefOid: value.baseCommit!,
             headRefOid: value.headCommit!,
-            body: "Closes #900",
+            body: options.prBody ?? `Closes #${value.issue.id}`,
           },
           openPullRequests: options.openPullRequests ?? [{ number: value.prNumber, headRefName: value.branch }],
           issue: {
@@ -975,5 +982,95 @@ describe("Actions Reviewer queue", () => {
       releaseReview();
       await tools.dispose();
     }
+  });
+
+  it("parses semantic and legacy branch hints and extracts closing PR issue references", () => {
+    assert.equal(isProtectedBranch("dev"), true);
+    assert.equal(isProtectedBranch("main"), true);
+    assert.equal(isProtectedBranch("master"), true);
+    assert.equal(isProtectedBranch("fix/701-semantic-branches"), false);
+
+    assert.equal(issueIdFromBranch("codex/issue-7"), 7);
+    assert.equal(issueIdFromBranch("fix/681-turn-timeout"), 681);
+    assert.equal(issueIdFromBranch("feat/700"), 700);
+    assert.equal(issueIdFromBranch("refactor/issue-42-cleanup"), 42);
+    assert.equal(issueIdFromBranch("issue/99-test"), 99);
+    assert.equal(issueIdFromBranch("issue-99-test"), 99);
+    assert.equal(issueIdFromBranch("fix/turn-timeout"), null);
+    assert.equal(issueIdFromBranch("fix/012-leading-zero"), null);
+    assert.equal(issueIdFromBranch("fix/12a-invalid"), null);
+    assert.equal(issueIdFromBranch("dev"), null);
+
+    assert.deepEqual(extractLinkedIssueIds("Closes #12"), [12]);
+    assert.deepEqual(extractLinkedIssueIds("fixes: #42\nResolves #42"), [42]);
+    assert.deepEqual(extractLinkedIssueIds("Closes #12\nFixes #34\nResolves #12"), [12, 34]);
+    assert.deepEqual(extractLinkedIssueIds("See #12 and Closes #0 and mycloses #9"), []);
+  });
+
+  it("rejects protected branches and detached HEAD during target resolution", async () => {
+    const reviewTarget = target();
+    const bus = createBus(() => reviewTarget);
+
+    for (const protectedBranch of ["dev", "main", "master"]) {
+      spawnSync("git", ["checkout", "-B", protectedBranch], { cwd: repoDir });
+      await assert.rejects(bus.resolveInteractiveReviewTarget({
+        projectId: reviewTarget.projectId,
+        repoPath: repoDir,
+        authUserId: "user-1",
+      }), new RegExp(`protected branch '${protectedBranch}'`));
+    }
+
+    spawnSync("git", ["checkout", "--detach", headCommit], { cwd: repoDir });
+    await assert.rejects(bus.resolveInteractiveReviewTarget({
+      projectId: reviewTarget.projectId,
+      repoPath: repoDir,
+      authUserId: "user-1",
+    }), /checked-out feature branch/);
+  });
+
+  it("resolves semantic feature branches using PR body as authoritative Issue source", async () => {
+    for (const scenario of [
+      { branch: "fix/701-semantic-branches", prBody: "Closes #701", issueId: 701 },
+      { branch: "feat/turn-timeout", prBody: "Fixes: #702\nResolves #702", issueId: 702 },
+      { branch: "fix/404-error-handling", prBody: "Closes #703", issueId: 703 },
+    ]) {
+      spawnSync("git", ["checkout", "-B", scenario.branch, headCommit], { cwd: repoDir });
+      const reviewTarget = target({
+        branch: scenario.branch,
+        issue: {
+          id: scenario.issueId,
+          title: "Semantic branch review",
+          description: "Review this implementation.\n\n## Acceptance Criteria\n- Works cleanly.",
+          acceptanceCriteria: ["Works cleanly."],
+        },
+      });
+      const bus = createBus(() => reviewTarget, { prBody: scenario.prBody });
+      const resolved = await bus.resolveInteractiveReviewTarget({
+        projectId: reviewTarget.projectId,
+        repoPath: repoDir,
+        authUserId: "user-1",
+      });
+      assert.equal(resolved.branch, scenario.branch);
+      assert.equal(resolved.issue.id, scenario.issueId);
+    }
+  });
+
+  it("returns INCOMPLETE when PR body links zero or multiple distinct Issues", async () => {
+    spawnSync("git", ["checkout", "-B", "fix/701-semantic-branches", headCommit], { cwd: repoDir });
+    const reviewTarget = target({ branch: "fix/701-semantic-branches" });
+
+    const missingIssueBus = createBus(() => reviewTarget, { prBody: "No closing reference" });
+    await assert.rejects(missingIssueBus.resolveInteractiveReviewTarget({
+      projectId: reviewTarget.projectId,
+      repoPath: repoDir,
+      authUserId: "user-1",
+    }), /does not link a GitHub Issue/);
+
+    const multiIssueBus = createBus(() => reviewTarget, { prBody: "Closes #701\nFixes #702" });
+    await assert.rejects(multiIssueBus.resolveInteractiveReviewTarget({
+      projectId: reviewTarget.projectId,
+      repoPath: repoDir,
+      authUserId: "user-1",
+    }), /multiple GitHub Issues \(#701, #702\)/);
   });
 });
