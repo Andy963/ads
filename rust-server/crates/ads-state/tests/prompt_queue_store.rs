@@ -407,6 +407,42 @@ fn explicit_original_retry_refreshes_controls_without_replacing_immutable_payloa
             .get("model_reasoning_effort")
             .is_none()
     );
+
+    store
+        .claim_ownership("owner-1", 10, 180, 60_000, |_| true)
+        .expect("reclaim again");
+    let requeued_again = store
+        .get_by_client_message_id("cm-controls")
+        .expect("get retried again")
+        .expect("retried entry again");
+    store
+        .mark_running(requeued_again.id, "owner-1", 190, 60_000)
+        .expect("running third attempt");
+    store
+        .mark_failed(requeued_again.id, "temporary third time", "owner-1", 200)
+        .expect("failed third time");
+
+    let mut invalid_retry = prompt_input("cm-controls", 1, "invalid controls", 210);
+    invalid_retry.payload = payload(json!({
+        "text": "invalid controls",
+        "model": 42,
+        "modelReasoningEffort": "   ",
+        "model_reasoning_effort": " low "
+    }));
+    invalid_retry.retry_failed = true;
+    invalid_retry.retry_original = true;
+    let retried_invalid = store
+        .enqueue(invalid_retry, 210)
+        .expect("ignore invalid retry controls");
+    assert_eq!(retried_invalid.entry.payload["model"], "model-c");
+    assert_eq!(retried_invalid.entry.payload["modelReasoningEffort"], "low");
+    assert!(
+        retried_invalid
+            .entry
+            .payload
+            .get("model_reasoning_effort")
+            .is_none()
+    );
 }
 
 #[test]

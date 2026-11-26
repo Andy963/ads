@@ -1193,7 +1193,10 @@ export function createChatActions(ctx: AppContext) {
     state.dismissedPromptIds?.delete(userItem.id);
     const execution = userItem.execution ?? {};
     const agentId = String(execution.agentId ?? "").trim() || String(state.activeAgentId.value ?? "").trim();
-    const model = String(state.modelId.value ?? "").trim() || String(execution.model ?? "").trim();
+    const selectedModel = String(state.modelId.value ?? "").trim();
+    const modelFromLane = selectedModel.toLowerCase() === "auto" ? "" : selectedModel;
+    const executionModel = String(execution.model ?? "").trim();
+    const model = modelFromLane || (executionModel.toLowerCase() === "auto" ? "" : executionModel);
     const modelReasoningEffort = String(state.modelReasoningEffort.value ?? "").trim()
       || String(execution.modelReasoningEffort ?? "").trim();
     state.queuedPrompts.value = [

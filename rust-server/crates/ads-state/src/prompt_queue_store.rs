@@ -246,18 +246,26 @@ fn canonicalize_payload(value: &Value) -> Value {
     }
 }
 
+fn retry_control_text(value: Option<&Value>) -> Option<String> {
+    value
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+}
+
 fn merge_retry_controls(
     payload: &mut Map<String, Value>,
-    model: Option<Value>,
-    effort: Option<Value>,
+    model: Option<String>,
+    effort: Option<String>,
 ) {
     if let Some(model) = model {
-        payload.insert("model".to_string(), model);
+        payload.insert("model".to_string(), Value::String(model));
     }
     if let Some(effort) = effort {
         payload.remove("modelReasoningEffort");
         payload.remove("model_reasoning_effort");
-        payload.insert("modelReasoningEffort".to_string(), effort);
+        payload.insert("modelReasoningEffort".to_string(), Value::String(effort));
     }
 }
 
@@ -417,12 +425,9 @@ impl<'a> PromptQueueStore<'a> {
             ));
         }
 
-        let refreshed_model = input.payload.get("model").cloned();
-        let refreshed_effort = input
-            .payload
-            .get("modelReasoningEffort")
-            .cloned()
-            .or_else(|| input.payload.get("model_reasoning_effort").cloned());
+        let refreshed_model = retry_control_text(input.payload.get("model"));
+        let refreshed_effort = retry_control_text(input.payload.get("modelReasoningEffort"))
+            .or_else(|| retry_control_text(input.payload.get("model_reasoning_effort")));
         let mut payload = input.payload;
         let mut payload_hash = hash_prompt_queue_payload(&payload);
         if self.is_cancelled(&client_message_id, input.user_id, &lane)? {

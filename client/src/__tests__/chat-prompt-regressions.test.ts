@@ -684,6 +684,35 @@ describe("issue-478: turn failure retry", () => {
     ]));
   });
 
+  it("falls back to the failed execution model when the lane still has the auto placeholder", async () => {
+    const { chat, rt } = mountHarness();
+    const sendPrompt = vi.fn().mockReturnValue(true);
+    rt.ws = { sendPrompt } as never;
+    rt.modelId.value = "AUTO";
+    rt.modelReasoningEffort.value = "high";
+    const failure = { id: "failure", role: "system" as const, kind: "error" as const, content: "Provider failed" };
+    rt.messages.value = [
+      {
+        id: "failed-turn",
+        role: "user",
+        kind: "text",
+        content: "Retry the original turn",
+        execution: { model: "original-model", modelReasoningEffort: "low" },
+      },
+      failure,
+    ];
+
+    chat.retryPrompt(failure, rt);
+    await settle();
+
+    expect(sendPrompt).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      model: "original-model",
+      model_reasoning_effort: "high",
+      replay_incomplete: true,
+      retry_original: true,
+    }), "failed-turn");
+  });
+
   it.each(["offline", "sync", "locked"])("queues a retry with feedback while %s and sends it once when ready", async (gate) => {
     const { chat, rt } = mountHarness();
     const sendPrompt = vi.fn().mockReturnValue(true);
