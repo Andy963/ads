@@ -79,16 +79,7 @@ pub fn is_transient_upstream_payload(value: &Value) -> Option<bool> {
     if let Some(status) = extract_structured_http_status(value) {
         return Some(is_retryable_http_status(status));
     }
-    if let Some(code) = extract_structured_error_code(value) {
-        let lower = code.trim().to_ascii_lowercase();
-        if PERMANENT_ERROR_CODES.contains(&lower.as_str()) {
-            return Some(false);
-        }
-        if RETRYABLE_ERROR_CODES.contains(&lower.as_str()) {
-            return Some(true);
-        }
-    }
-    None
+    classify_structured_error_codes(value)
 }
 
 fn extract_structured_http_status(value: &Value) -> Option<u16> {
@@ -103,42 +94,89 @@ fn extract_structured_http_status(value: &Value) -> Option<u16> {
             return Some(status);
         }
     }
-    for nested_key in [
-        "error",
-        "data",
-        "codexErrorInfo",
-        "httpConnectionFailed",
-        "additionalDetails",
-    ] {
+    for nested_key in ["error", "data", "additionalDetails"] {
         if let Some(nested) = object.get(nested_key)
             && let Some(status) = extract_structured_http_status(nested)
         {
             return Some(status);
         }
     }
+    if let Some(info) = object.get("codexErrorInfo") {
+        if let Some(status) = extract_structured_http_status(info) {
+            return Some(status);
+        }
+        if let Some(info_obj) = info.as_object() {
+            for variant_value in info_obj.values() {
+                if let Some(status) = extract_structured_http_status(variant_value) {
+                    return Some(status);
+                }
+            }
+        }
+    }
     None
 }
 
-fn extract_structured_error_code(value: &Value) -> Option<&str> {
-    let object = value.as_object()?;
-    for key in ["code", "type"] {
-        if let Some(code) = object
-            .get(key)
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|code| !code.is_empty())
-        {
-            return Some(code);
-        }
+fn classify_code_str(code: &str) -> Option<bool> {
+    let lower = code.trim().to_ascii_lowercase();
+    if PERMANENT_ERROR_CODES.contains(&lower.as_str()) {
+        return Some(false);
     }
-    for nested_key in ["error", "data", "codexErrorInfo"] {
-        if let Some(nested) = object.get(nested_key)
-            && let Some(code) = extract_structured_error_code(nested)
-        {
-            return Some(code);
-        }
+    if RETRYABLE_ERROR_CODES.contains(&lower.as_str()) {
+        return Some(true);
     }
     None
+}
+
+fn classify_structured_error_codes(value: &Value) -> Option<bool> {
+    let mut found_retryable = false;
+    if collect_structured_code_classification(value, &mut found_retryable).is_none() {
+        return Some(false);
+    }
+    found_retryable.then_some(true)
+}
+
+// Returns None immediately on any permanent code (so permanent takes strict precedence);
+// returns Some(()) otherwise while setting found_retryable if any retryable code is seen.
+fn collect_structured_code_classification(value: &Value, found_retryable: &mut bool) -> Option<()> {
+    if let Some(text) = value.as_str() {
+        match classify_code_str(text) {
+            Some(false) => return None,
+            Some(true) => *found_retryable = true,
+            None => {}
+        }
+        return Some(());
+    }
+    let Some(object) = value.as_object() else {
+        return Some(());
+    };
+    for key in ["code", "type"] {
+        if let Some(code) = object.get(key).and_then(Value::as_str) {
+            match classify_code_str(code) {
+                Some(false) => return None,
+                Some(true) => *found_retryable = true,
+                None => {}
+            }
+        }
+    }
+    for nested_key in ["error", "data", "additionalDetails"] {
+        if let Some(nested) = object.get(nested_key) {
+            collect_structured_code_classification(nested, found_retryable)?;
+        }
+    }
+    if let Some(info) = object.get("codexErrorInfo") {
+        collect_structured_code_classification(info, found_retryable)?;
+        if let Some(info_obj) = info.as_object() {
+            for (variant_name, variant_value) in info_obj {
+                match classify_code_str(variant_name) {
+                    Some(false) => return None,
+                    Some(true) => *found_retryable = true,
+                    None => {}
+                }
+                collect_structured_code_classification(variant_value, found_retryable)?;
+            }
+        }
+    }
+    Some(())
 }
 
 pub fn is_transient_upstream_model_error(message: &str) -> bool {
@@ -201,7 +239,7 @@ pub fn is_transient_upstream_model_error(message: &str) -> bool {
 fn has_non_retryable_auth_signal(normalized: &str) -> bool {
     static AUTH_RE: OnceLock<Regex> = OnceLock::new();
     let re = AUTH_RE.get_or_init(|| {
-        Regex::new(r"\b(?:http(?:/\d(?:\.\d)?)?\s+40[13]|status(?:\s+code)?\s*[:=]?\s*40[13]|401\s+unauthorized|403\s+forbidden|invalid\s+api\s+key|authentication\s+failed)\b")
+        Regex::new(r"\b(?:http(?:/\d(?:\.\d)?)?\s+40[13]|status(?:\s+code)?\s*[:=]?\s*40[13]|401\s+unauthorized|403\s+forbidden|invalid\s+api\s+key|invalid_api_key|authentication\s+failed|authentication_error|permission_denied)\b")
             .expect("valid auth error regex")
     });
     re.is_match(normalized)
@@ -234,6 +272,46 @@ fn has_http_status_52x(normalized: &str) -> bool {
     re.is_match(normalized)
 }
 
+fn is_rate_limit_message(message: &str) -> bool {
+    let trimmed = message.trim();
+    if trimmed.starts_with('{')
+        && let Ok(parsed) = serde_json::from_str::<Value>(trimmed)
+    {
+        if let Some(status) = extract_structured_http_status(&parsed) {
+            return status == 429;
+        }
+        if let Some(code) = extract_rate_limit_code(&parsed) {
+            return code;
+        }
+    }
+    let normalized = message
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_lowercase();
+    has_http_status_429(&normalized)
+}
+
+fn extract_rate_limit_code(value: &Value) -> Option<bool> {
+    let object = value.as_object()?;
+    for key in ["code", "type"] {
+        if let Some(code) = object.get(key).and_then(Value::as_str) {
+            let lower = code.trim().to_ascii_lowercase();
+            if matches!(lower.as_str(), "rate_limit_exceeded" | "rate_limit_error") {
+                return Some(true);
+            }
+        }
+    }
+    for nested_key in ["error", "data", "codexErrorInfo"] {
+        if let Some(nested) = object.get(nested_key)
+            && let Some(found) = extract_rate_limit_code(nested)
+        {
+            return Some(found);
+        }
+    }
+    None
+}
+
 pub fn resolve_transient_retry_delay_ms(
     message: &str,
     attempt: usize,
@@ -243,12 +321,7 @@ pub fn resolve_transient_retry_delay_ms(
     if let Some(backoff) = backoff.filter(|values| !values.is_empty()) {
         return backoff[(attempt.saturating_sub(1)).min(backoff.len() - 1)];
     }
-    let normalized = message
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-        .to_ascii_lowercase();
-    if has_http_status_429(&normalized) {
+    if is_rate_limit_message(message) {
         return parse_retry_after_ms(message, now_ms)
             .unwrap_or_else(|| rate_limit_cyclic_backoff_ms(attempt));
     }
@@ -411,6 +484,39 @@ mod tests {
         assert!(is_transient_upstream_model_error(
             r#"{"error":{"status":429,"code":"rate_limit_exceeded"}}"#
         ));
+        // Standard SSE/provider envelopes where outer type is "error" must inspect inner fields.
+        assert!(!is_transient_upstream_model_error(
+            r#"{"type":"error","error":{"type":"authentication_error","message":"stream disconnected"}}"#
+        ));
+        assert!(is_transient_upstream_model_error(
+            r#"{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}"#
+        ));
+        // Unrecognized vendor code must not shadow a recognized type.
+        assert!(!is_transient_upstream_model_error(
+            r#"{"error":{"code":"vendor_999","type":"invalid_request_error","message":"stream disconnected"}}"#
+        ));
+        assert!(is_transient_upstream_model_error(
+            r#"{"error":{"code":"vendor_999","type":"overloaded_error","message":"busy"}}"#
+        ));
+        // codexErrorInfo string variants and non-httpConnectionFailed variants with httpStatusCode.
+        assert_eq!(
+            is_transient_upstream_payload(&serde_json::json!({
+                "error": { "codexErrorInfo": "unauthorized", "message": "stream disconnected" }
+            })),
+            Some(false)
+        );
+        assert_eq!(
+            is_transient_upstream_payload(&serde_json::json!({
+                "error": { "codexErrorInfo": { "responseStreamFailed": { "httpStatusCode": 429 } } }
+            })),
+            Some(true)
+        );
+        assert_eq!(
+            is_transient_upstream_payload(&serde_json::json!({
+                "error": { "codexErrorInfo": { "responseStreamFailed": { "httpStatusCode": 401 } } }
+            })),
+            Some(false)
+        );
     }
 
     #[test]
@@ -431,6 +537,16 @@ mod tests {
         assert_eq!(
             resolve_transient_retry_delay_ms("HTTP 429", 4, Some(&[0, 10, 20]), 0),
             20
+        );
+        // Structured JSON 429 payload must still honor Retry-After.
+        assert_eq!(
+            resolve_transient_retry_delay_ms(
+                r#"{"error":{"status":429,"retry_after":5}}"#,
+                1,
+                None,
+                0
+            ),
+            5_000
         );
     }
 
@@ -548,6 +664,7 @@ mod tests {
             status: Some(401),
         };
         assert!(!is_retryable_model_error(&transient_with_401_status));
+        assert!(!transient_with_401_status.is_transient());
 
         assert!(!is_retryable_model_error(&NativeError::ProviderHttp {
             status: 401

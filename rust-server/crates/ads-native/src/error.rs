@@ -57,14 +57,14 @@ impl NativeError {
     }
 
     pub fn is_transient(&self) -> bool {
-        matches!(
-            self,
+        match self {
             Self::Provider {
                 kind: NativeProviderErrorKind::Transient,
+                status,
                 ..
-            } | Self::ProviderHttp {
-                status: 408 | 425 | 429 | 500 | 502 | 503 | 504 | 520..=524
-            }
-        )
+            } => status.is_none_or(crate::is_retryable_http_status),
+            Self::ProviderHttp { status } => crate::is_retryable_http_status(*status),
+            _ => false,
+        }
     }
 }

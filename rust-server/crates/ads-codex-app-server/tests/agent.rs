@@ -1087,6 +1087,23 @@ async fn does_not_retry_request_token_429_or_authentication_failures_but_retries
                 "codexErrorInfo": { "httpConnectionFailed": { "httpStatusCode": 401 } }
             }),
         ),
+        (
+            "project-codex-error-info-unauthorized",
+            json!({
+                "message": "stream disconnected",
+                "codexErrorInfo": "unauthorized"
+            }),
+        ),
+        (
+            "project-sse-auth-envelope",
+            json!({
+                "type": "error",
+                "error": {
+                    "type": "authentication_error",
+                    "message": "stream disconnected"
+                }
+            }),
+        ),
     ] {
         let request_log = Arc::new(Mutex::new(Vec::new()));
         let factory = custom_error_retry_factory(Arc::clone(&request_log), payload);
