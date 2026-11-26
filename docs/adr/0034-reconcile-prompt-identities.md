@@ -1,7 +1,7 @@
 # ADR 0034: Reconcile Prompt Identities Against Durable Server State
 
 ## Status
-Accepted
+Accepted. The original-payload retry model-control decision is superseded by ADR 0070; the identity, scope, content, attachment, and deduplication decisions remain in force.
 
 ## Context
 The browser outbox can survive longer than a WebSocket connection and may be restored by another tab or device. A client that missed the original running or completion event cannot infer that an old prompt was consumed from the active queue snapshot, because completed rows are not advertised there. Local dismissal and consumption caches also cannot serve as the cross-device authority.

@@ -4,6 +4,7 @@ import { finalizeStreamingOnDisconnect, mergeHistoryFromServer, normalizeTurnSem
 import { ingestCommandActivity, ingestExploredActivity } from "../lib/live_activity";
 
 import type { AppContext, ChatItem, IncomingImage, ProjectRuntime, QueuedPrompt } from "./controller";
+import type { PreparedPromptPayload } from "./controllerTypes";
 import { createExecuteActions } from "./chatExecute";
 import { findFirstLiveIndex, findLastLiveIndex, isLiveMessageId, LIVE_ACTIVITY_ID, LIVE_MESSAGE_IDS, LIVE_STEP_ID } from "./chatLive";
 export { LIVE_ACTIVITY_ID, LIVE_MESSAGE_IDS, LIVE_STEP_ID } from "./chatLive";
@@ -28,6 +29,18 @@ type UploadedImageAttachment = {
   height: number;
   contentType: string;
   sizeBytes: number;
+};
+
+const normalizeExplicitRetryModel = (value: unknown): string => {
+  const model = String(value ?? "").trim();
+  return model && model.toLowerCase() !== "auto" ? model : "";
+};
+
+const withRetryModel = (payload: PreparedPromptPayload, model: string): PreparedPromptPayload => {
+  const nextPayload = { ...payload };
+  delete nextPayload.model;
+  if (model) nextPayload.model = model;
+  return nextPayload;
 };
 
 export function createChatActions(ctx: AppContext) {
@@ -1193,6 +1206,10 @@ export function createChatActions(ctx: AppContext) {
     state.dismissedPromptIds?.delete(userItem.id);
     const execution = userItem.execution ?? {};
     const agentId = String(execution.agentId ?? "").trim() || String(state.activeAgentId.value ?? "").trim();
+    const model = normalizeExplicitRetryModel(state.modelId.value)
+      || normalizeExplicitRetryModel(execution.model);
+    const modelReasoningEffort = String(state.modelReasoningEffort.value ?? "").trim()
+      || String(execution.modelReasoningEffort ?? "").trim();
     state.queuedPrompts.value = [
       ...state.queuedPrompts.value,
       {
@@ -1202,8 +1219,8 @@ export function createChatActions(ctx: AppContext) {
         images: [],
         createdAt: Date.now(),
         ...(agentId ? { agentId } : {}),
-        ...(execution.model ? { model: execution.model } : {}),
-        ...(execution.modelReasoningEffort ? { modelReasoningEffort: execution.modelReasoningEffort } : {}),
+        ...(model ? { model } : {}),
+        ...(modelReasoningEffort ? { modelReasoningEffort } : {}),
         replayIncomplete: true,
         retryOriginal: true,
         deliveryStatus: state.connected.value ? "awaiting_ack" : "offline",
@@ -1299,15 +1316,23 @@ export function createChatActions(ctx: AppContext) {
       const effort = next.preparedPayload?.model_reasoning_effort
         ?? (queuedEffort || String(state.modelReasoningEffort.value ?? "").trim() || "high");
       const queuedModel = String(next.model ?? "").trim();
-      const model = next.preparedPayload?.model ?? (queuedModel || String(state.modelId.value ?? "").trim() || "auto");
+      const model = next.retryOriginal
+        ? normalizeExplicitRetryModel(next.preparedPayload?.model)
+          || normalizeExplicitRetryModel(next.model)
+          || normalizeExplicitRetryModel(state.modelId.value)
+        : next.preparedPayload?.model ?? (queuedModel || String(state.modelId.value ?? "").trim() || "auto");
       const queuedAgentId = String(next.agentId ?? "").trim();
       const activeAgentId = String(state.activeAgentId.value ?? "").trim();
       const agentId = next.preparedPayload?.agentId ?? (queuedAgentId || activeAgentId);
-      const preparedPayload = next.preparedPayload ?? {
-        text: promptText, model_reasoning_effort: effort, model, agentId,
+      const defaultPayload: PreparedPromptPayload = {
+        text: promptText, model_reasoning_effort: effort, agentId,
+        ...(model ? { model } : {}),
         ...(next.origin === "system" ? { origin: "system" as const } : {}),
         ...(next.images.length > 0 ? { images: next.images.map(image => ({ ...image })) } : {}),
       };
+      const preparedPayload = next.retryOriginal
+        ? withRetryModel(next.preparedPayload ?? defaultPayload, model)
+        : next.preparedPayload ?? defaultPayload;
       // Freeze the first wire payload before handing it to WebSocket. A failed
       // send must not re-upload images or pick up changed model controls.
       state.queuedPrompts.value = state.queuedPrompts.value.map(prompt => prompt.clientMessageId === next.clientMessageId

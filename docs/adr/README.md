@@ -78,4 +78,5 @@
 - 0067 - [ADR 0067: Port Web Push API Routes and VAPID Delivery to Rust Server](0067-rust-server-web-push-notifications.md)
 - 0068 - [ADR 0068: Retire Legacy TypeScript Server to Archive Branch](0068-retire-ts-server-to-archive-branch.md)
 - 0069 - [ADR 0069: Make Lane Stream Replay Idempotent by Turn and Assistant Item Identity](0069-idempotent-lane-stream-replay.md)
+- 0070 - [ADR 0070: Refresh Model Controls for Explicit Failed-Turn Retries](0070-refresh-model-controls-for-failed-turn-retries.md)
 <!-- ADS:ADR_INDEX_END -->

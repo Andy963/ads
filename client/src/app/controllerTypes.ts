@@ -24,7 +24,7 @@ export type PreparedPromptPayload = {
   text: string;
   images?: IncomingImage[];
   agentId: string;
-  model: string;
+  model?: string;
   model_reasoning_effort: string;
   origin?: "system";
 };

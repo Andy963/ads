@@ -598,6 +598,8 @@ describe("issue-478: turn failure retry", () => {
           execution: { agentId: "codex", model: "original-model", modelReasoningEffort: "medium" } },
         { id: turnFailureCardId("u-retry"), role: "system", kind: "error", content: "Provider unavailable", ts: 2 },
       ];
+      rt.modelId.value = "selected-model";
+      rt.modelReasoningEffort.value = "high";
       rt.laneStatus.value = { kind: "error", message: "Provider unavailable" };
       await settleUi(wrapper);
 
@@ -615,14 +617,14 @@ describe("issue-478: turn failure retry", () => {
         expect(rt.queuedPrompts.value).toHaveLength(1);
         expect(panel.find(".queue-item").exists()).toBe(true);
         expect(rt.queuedPrompts.value[0]).toMatchObject({
-          clientMessageId: "u-retry", replayIncomplete: true, retryOriginal: true, model: "original-model", modelReasoningEffort: "medium",
+          clientMessageId: "u-retry", replayIncomplete: true, retryOriginal: true, model: "selected-model", modelReasoningEffort: "high",
         });
         expect(other.messages.value).toHaveLength(0);
         return;
       }
       expect(sendPrompt).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
-        text: "Retry the original turn", agentId: "codex", model: "original-model",
-        model_reasoning_effort: "medium", replay_incomplete: true,
+        text: "Retry the original turn", agentId: "codex", model: "selected-model",
+        model_reasoning_effort: "high", replay_incomplete: true,
         retry_original: true,
       }), "u-retry");
       expect(rt.messages.value.filter(message => message.role === "user")).toHaveLength(1);
@@ -630,6 +632,114 @@ describe("issue-478: turn failure retry", () => {
     } finally {
       wrapper.unmount();
     }
+  });
+
+  it("uses the current lane controls for consecutive failed-turn retries", async () => {
+    const { chat, rt, handler } = mountHarness();
+    const sendPrompt = vi.fn().mockReturnValue(true);
+    rt.ws = { sendPrompt } as never;
+    rt.modelId.value = "model-a";
+    rt.modelReasoningEffort.value = "low";
+
+    chat.enqueuePrompt("Retry the original turn", [], rt);
+    await settle();
+    const clientMessageId = String(rt.messages.value.find((message) => message.role === "user")?.id ?? "");
+    expect(clientMessageId).not.toBe("");
+    expect(sendPrompt).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      model: "model-a", model_reasoning_effort: "low",
+    }), clientMessageId);
+
+    handler({ type: "error", message: "model A failed", clientMessageId });
+    await settle();
+    const firstFailure = rt.messages.value.find((message) => message.kind === "error");
+    expect(firstFailure).toBeDefined();
+
+    rt.modelId.value = "model-b";
+    rt.modelReasoningEffort.value = "medium";
+    chat.retryPrompt(firstFailure!, rt);
+    await settle();
+    expect(sendPrompt).toHaveBeenCalledTimes(2);
+    expect(sendPrompt.mock.calls[1]).toEqual(expect.objectContaining([
+      expect.objectContaining({
+        model: "model-b", model_reasoning_effort: "medium", replay_incomplete: true, retry_original: true,
+      }),
+      clientMessageId,
+    ]));
+
+    handler({ type: "error", message: "model B failed", clientMessageId });
+    await settle();
+    const secondFailure = rt.messages.value.find((message) => message.kind === "error");
+    expect(secondFailure).toBeDefined();
+
+    rt.modelId.value = "model-c";
+    rt.modelReasoningEffort.value = "high";
+    chat.retryPrompt(secondFailure!, rt);
+    await settle();
+    expect(sendPrompt).toHaveBeenCalledTimes(3);
+    expect(sendPrompt.mock.calls[2]).toEqual(expect.objectContaining([
+      expect.objectContaining({
+        model: "model-c", model_reasoning_effort: "high", replay_incomplete: true, retry_original: true,
+      }),
+      clientMessageId,
+    ]));
+  });
+
+  it("falls back to the failed execution model when the lane still has the auto placeholder", async () => {
+    const { chat, rt } = mountHarness();
+    const sendPrompt = vi.fn().mockReturnValue(true);
+    rt.ws = { sendPrompt } as never;
+    rt.modelId.value = "AUTO";
+    rt.modelReasoningEffort.value = "high";
+    const failure = { id: "failure", role: "system" as const, kind: "error" as const, content: "Provider failed" };
+    rt.messages.value = [
+      {
+        id: "failed-turn",
+        role: "user",
+        kind: "text",
+        content: "Retry the original turn",
+        execution: { model: "original-model", modelReasoningEffort: "low" },
+      },
+      failure,
+    ];
+
+    chat.retryPrompt(failure, rt);
+    await settle();
+
+    expect(sendPrompt).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      model: "original-model",
+      model_reasoning_effort: "high",
+      replay_incomplete: true,
+      retry_original: true,
+    }), "failed-turn");
+  });
+
+  it("does not send the auto placeholder when a failed turn has no execution model", async () => {
+    const { chat, rt } = mountHarness();
+    const sendPrompt = vi.fn().mockReturnValue(true);
+    rt.ws = { sendPrompt } as never;
+    rt.modelId.value = "AUTO";
+    rt.modelReasoningEffort.value = "high";
+    const failure = { id: "failure", role: "system" as const, kind: "error" as const, content: "Provider failed" };
+    rt.messages.value = [
+      {
+        id: "failed-turn-without-metadata",
+        role: "user",
+        kind: "text",
+        content: "Retry the original turn",
+      },
+      failure,
+    ];
+
+    chat.retryPrompt(failure, rt);
+    await settle();
+
+    const payload = sendPrompt.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(payload).not.toHaveProperty("model");
+    expect(payload).toMatchObject({
+      model_reasoning_effort: "high",
+      replay_incomplete: true,
+      retry_original: true,
+    });
   });
 
   it.each(["offline", "sync", "locked"])("queues a retry with feedback while %s and sends it once when ready", async (gate) => {

@@ -302,6 +302,196 @@ fn retries_requeue_failed_attempts_without_replaying_completed_rows() {
 }
 
 #[test]
+fn explicit_original_retry_refreshes_controls_without_replacing_immutable_payload() {
+    let (_directory, _db, connection) = open_store();
+    let store = PromptQueueStore::new(&connection).expect("store");
+
+    let mut initial = prompt_input("cm-controls", 1, "original prompt", 100);
+    initial.payload = payload(json!({
+        "text": "original prompt",
+        "images": [{ "id": "attachment-1", "url": "/image.png" }],
+        "agentId": "codex",
+        "model": "model-a",
+        "model_reasoning_effort": "low",
+        "immutable": { "source": "original" }
+    }));
+    let original = store.enqueue(initial, 100).expect("original prompt");
+    let original_hash = original.entry.payload_hash.clone();
+    store
+        .claim_ownership("owner-1", 10, 100, 60_000, |_| true)
+        .expect("claim");
+    let queued = store
+        .get_by_client_message_id("cm-controls")
+        .expect("get original")
+        .expect("original entry");
+    store
+        .mark_running(queued.id, "owner-1", 110, 60_000)
+        .expect("running");
+    store
+        .mark_failed(queued.id, "temporary", "owner-1", 120)
+        .expect("failed");
+
+    let mut retry = prompt_input("cm-controls", 1, "tampered prompt", 130);
+    retry.payload = payload(json!({
+        "text": "tampered prompt",
+        "images": [{ "id": "tampered", "url": "/tampered.png" }],
+        "agentId": "tampered-agent",
+        "model": "model-b",
+        "model_reasoning_effort": "xhigh",
+        "replay_incomplete": true,
+        "retry_original": true,
+        "immutable": { "source": "tampered" }
+    }));
+    retry.retry_failed = true;
+    retry.retry_original = true;
+    let retried = store.enqueue(retry, 130).expect("retry original prompt");
+    assert!(!retried.duplicate);
+    assert_eq!(retried.entry.status, PromptQueueStatus::Queued);
+    assert_eq!(retried.entry.payload["text"], "original prompt");
+    assert_eq!(
+        retried.entry.payload["images"],
+        json!([{ "id": "attachment-1", "url": "/image.png" }])
+    );
+    assert_eq!(retried.entry.payload["agentId"], "codex");
+    assert_eq!(
+        retried.entry.payload["immutable"],
+        json!({ "source": "original" })
+    );
+    assert_eq!(retried.entry.payload["model"], "model-b");
+    assert_eq!(retried.entry.payload["modelReasoningEffort"], "xhigh");
+    assert!(
+        retried
+            .entry
+            .payload
+            .get("model_reasoning_effort")
+            .is_none()
+    );
+    assert_eq!(
+        retried.entry.payload_hash,
+        hash_prompt_queue_payload(&retried.entry.payload)
+    );
+    assert_ne!(retried.entry.payload_hash, original_hash);
+
+    store
+        .claim_ownership("owner-1", 10, 140, 60_000, |_| true)
+        .expect("reclaim");
+    let requeued = store
+        .get_by_client_message_id("cm-controls")
+        .expect("get retried")
+        .expect("retried entry");
+    store
+        .mark_running(requeued.id, "owner-1", 150, 60_000)
+        .expect("running again");
+    store
+        .mark_failed(requeued.id, "temporary again", "owner-1", 160)
+        .expect("failed again");
+
+    let mut second_retry = prompt_input("cm-controls", 1, "another tampered prompt", 170);
+    second_retry.payload = payload(json!({
+        "text": "another tampered prompt",
+        "model": "model-c",
+        "modelReasoningEffort": "high",
+        "model_reasoning_effort": "stale-effort"
+    }));
+    second_retry.retry_failed = true;
+    second_retry.retry_original = true;
+    let retried_again = store
+        .enqueue(second_retry, 170)
+        .expect("retry with canonical effort");
+    assert_eq!(retried_again.entry.payload["model"], "model-c");
+    assert_eq!(retried_again.entry.payload["modelReasoningEffort"], "high");
+    assert!(
+        retried_again
+            .entry
+            .payload
+            .get("model_reasoning_effort")
+            .is_none()
+    );
+
+    store
+        .claim_ownership("owner-1", 10, 180, 60_000, |_| true)
+        .expect("reclaim again");
+    let requeued_again = store
+        .get_by_client_message_id("cm-controls")
+        .expect("get retried again")
+        .expect("retried entry again");
+    store
+        .mark_running(requeued_again.id, "owner-1", 190, 60_000)
+        .expect("running third attempt");
+    store
+        .mark_failed(requeued_again.id, "temporary third time", "owner-1", 200)
+        .expect("failed third time");
+
+    let mut invalid_retry = prompt_input("cm-controls", 1, "invalid controls", 210);
+    invalid_retry.payload = payload(json!({
+        "text": "invalid controls",
+        "model": 42,
+        "modelReasoningEffort": "   ",
+        "model_reasoning_effort": " low "
+    }));
+    invalid_retry.retry_failed = true;
+    invalid_retry.retry_original = true;
+    let retried_invalid = store
+        .enqueue(invalid_retry, 210)
+        .expect("ignore invalid retry controls");
+    assert_eq!(retried_invalid.entry.payload["model"], "model-c");
+    assert_eq!(retried_invalid.entry.payload["modelReasoningEffort"], "low");
+    assert!(
+        retried_invalid
+            .entry
+            .payload
+            .get("model_reasoning_effort")
+            .is_none()
+    );
+}
+
+#[test]
+fn explicit_original_retry_ignores_case_insensitive_auto_model_placeholders() {
+    let (_directory, _db, connection) = open_store();
+    let store = PromptQueueStore::new(&connection).expect("store");
+
+    for (index, retry_model) in ["auto", "AUTO"].into_iter().enumerate() {
+        let client_message_id = format!("cm-auto-{index}");
+        let mut initial = prompt_input(&client_message_id, 1, "original prompt", 100);
+        initial.payload = payload(json!({
+            "text": "original prompt",
+            "model": "original-model",
+            "modelReasoningEffort": "low"
+        }));
+        let original = store.enqueue(initial, 100).expect("original prompt");
+        store
+            .claim_ownership("owner-1", 10, 100, 60_000, |_| true)
+            .expect("claim");
+        let queued = store
+            .get_by_client_message_id(&client_message_id)
+            .expect("get original")
+            .expect("original entry");
+        store
+            .mark_running(queued.id, "owner-1", 110, 60_000)
+            .expect("running");
+        store
+            .mark_failed(queued.id, "temporary", "owner-1", 120)
+            .expect("failed");
+
+        let mut retry = prompt_input(&client_message_id, 1, "tampered prompt", 130);
+        retry.payload = payload(json!({
+            "text": "tampered prompt",
+            "model": retry_model,
+            "replay_incomplete": true,
+            "retry_original": true
+        }));
+        retry.retry_failed = true;
+        retry.retry_original = true;
+        let retried = store.enqueue(retry, 130).expect("retry original prompt");
+
+        assert!(!retried.duplicate);
+        assert_eq!(retried.entry.payload["model"], "original-model");
+        assert_eq!(retried.entry.payload["modelReasoningEffort"], "low");
+        assert_eq!(retried.entry.payload_hash, original.entry.payload_hash);
+    }
+}
+
+#[test]
 fn ownership_leases_and_interrupted_rows_are_fenced_by_owner() {
     let (_directory, _db, connection) = open_store();
     let store = PromptQueueStore::new(&connection).expect("store");
