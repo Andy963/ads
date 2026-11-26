@@ -8,19 +8,19 @@
 
 | 能力 | 实现位置 |
 |---|---|
-| 原生恢复后不再注入历史 | [`sessionState.ts`](../server/sessions/sessionState.ts) `resolveResumeState` 返回 `restoreMode: "thread_resumed"` |
-| 廉价可恢复性探测 | [`sessionPaths.ts`](../server/agents/sessions/sessionPaths.ts) `probeSessionOnDisk`、[`taskResumeProbe.ts`](../server/web/server/ws/taskResumeProbe.ts) |
-| 会话目录服务 | [`catalog.ts`](../server/agents/sessions/catalog.ts) `listAgentSessions` |
-| 一次性会话过滤与重名折叠 | [`catalog.ts`](../server/agents/sessions/catalog.ts) `collapseDuplicates`、各数据源的 `singleTurn` 判定 |
-| fork 链折叠（每个对话只留最新 session） | [`historyStore.ts`](../server/utils/historyStore.ts) `selectRecentSessionLinksStmt`、[`catalog.ts`](../server/agents/sessions/catalog.ts) `listLinkedSessions` |
-| 分页游标 | [`types.ts`](../server/agents/sessions/types.ts) `SessionListCursor` |
-| 默认恒恢复（无空闲超时） | [`sessionState.ts`](../server/sessions/sessionState.ts) `resolveResumeState`、`SessionManager.getOrCreate` 的 `resumeThread` 默认 `true` |
-| 恢复失败自愈降级 | [`missingProviderSession.ts`](../server/agents/adapters/missingProviderSession.ts)、Codex adapter 的 fresh 重试、[`handlePrompt.ts`](../server/web/server/ws/handlePrompt.ts) `onSessionFallback` |
-| Codex 数据源 | [`codexSessionSource.ts`](../server/agents/sessions/codexSessionSource.ts)（app-server + rollout 兜底） |
-| 预览文本提取 | [`promptPreview.ts`](../server/agents/sessions/promptPreview.ts) |
-| WS 协议 | [`handleSessionList.ts`](../server/web/server/ws/handleSessionList.ts)、[`messageControl.ts`](../server/web/server/ws/messageControl.ts) |
+| 原生恢复后不再注入历史 | [`sessionState.ts`](../ts-server/server/sessions/sessionState.ts) `resolveResumeState` 返回 `restoreMode: "thread_resumed"` |
+| 廉价可恢复性探测 | [`sessionPaths.ts`](../ts-server/server/agents/sessions/sessionPaths.ts) `probeSessionOnDisk`、[`taskResumeProbe.ts`](../ts-server/server/web/ws/taskResumeProbe.ts) |
+| 会话目录服务 | [`catalog.ts`](../ts-server/server/agents/sessions/catalog.ts) `listAgentSessions` |
+| 一次性会话过滤与重名折叠 | [`catalog.ts`](../ts-server/server/agents/sessions/catalog.ts) `collapseDuplicates`、各数据源的 `singleTurn` 判定 |
+| fork 链折叠（每个对话只留最新 session） | [`historyStore.ts`](../ts-server/server/utils/historyStore.ts) `selectRecentSessionLinksStmt`、[`catalog.ts`](../ts-server/server/agents/sessions/catalog.ts) `listLinkedSessions` |
+| 分页游标 | [`types.ts`](../ts-server/server/agents/sessions/types.ts) `SessionListCursor` |
+| 默认恒恢复（无空闲超时） | [`sessionState.ts`](../ts-server/server/sessions/sessionState.ts) `resolveResumeState`、`SessionManager.getOrCreate` 的 `resumeThread` 默认 `true` |
+| 恢复失败自愈降级 | [`missingProviderSession.ts`](../ts-server/server/agents/adapters/missingProviderSession.ts)、Codex adapter 的 fresh 重试、[`handlePrompt.ts`](../ts-server/server/web/ws/handlePrompt.ts) `onSessionFallback` |
+| Codex 数据源 | [`codexSessionSource.ts`](../ts-server/server/agents/sessions/codexSessionSource.ts)（app-server + rollout 兜底） |
+| 预览文本提取 | [`promptPreview.ts`](../ts-server/server/agents/sessions/promptPreview.ts) |
+| WS 协议 | [`handleSessionList.ts`](../ts-server/server/web/ws/handleSessionList.ts)、[`messageControl.ts`](../ts-server/server/web/ws/messageControl.ts) |
 | 前端选择器 | [`SessionResumePicker.vue`](../client/src/components/SessionResumePicker.vue) |
-| Connector 入口 | [`connectors/telegram/src/bot.ts`](../connectors/telegram/src/bot.ts) 通过 Core WebSocket 协议转发会话请求 |
+| Connector 入口 | [`ts-server/connectors/telegram/src/bot.ts`](../ts-server/connectors/telegram/src/bot.ts) 通过 Core WebSocket 协议转发会话请求 |
 
 用户操作路径：会话工具条上带文字标签的「历史会话」按钮（`data-testid="lane-resume-thread"`）→ 打开选择器 → 点击列表项。**用户不需要知道或输入任何 session ID**，前端从列表项取出 `sessionId` 填入 `task_resume` 的 payload。
 
@@ -43,20 +43,20 @@ ADS 目前的"恢复上下文"能力存在两条互相竞争的路径：
 
 | Agent | 实现位置 | 机制 |
 |---|---|---|
-| Codex | [`codexAppServerAdapter.ts`](../server/agents/adapters/codexAppServerAdapter.ts) | 通过 `thread/start` 或 `turn/start` 的 `threadId` 参数原生恢复；`thread/started` 事件回写新的 `threadId` |
+| Codex | [`codexAppServerAdapter.ts`](../ts-server/server/agents/adapters/codexAppServerAdapter.ts) | 通过 `thread/start` 或 `turn/start` 的 `threadId` 参数原生恢复；`thread/started` 事件回写新的 `threadId` |
 
 也就是说 **adapter 层没有缺口**，缺的是上面的编排与 UI。
 
 ### 2.2 Session ID 的持久化
 
-- `SessionManager` 为每个用户保存一个 Codex thread ID：[`sessionManager.ts`](../server/sessions/sessionManager.ts)（`saveThreadId`、`getSavedThreadId`、`getSavedResumeThreadId`）。
-- 每次 prompt 会把 `(historyKey, agentId, providerSessionId, cwd)` 写进 `history_session_links` 表：[`handlePrompt.ts`](../server/web/server/ws/handlePrompt.ts) → [`historyStore.ts`](../server/utils/historyStore.ts)（`linkAgentSession`）。历史记录中的旧非 Codex agent 标记仅作兼容数据，不参与恢复。
+- `SessionManager` 为每个用户保存一个 Codex thread ID：[`sessionManager.ts`](../ts-server/server/sessions/sessionManager.ts)（`saveThreadId`、`getSavedThreadId`、`getSavedResumeThreadId`）。
+- 每次 prompt 会把 `(historyKey, agentId, providerSessionId, cwd)` 写进 `history_session_links` 表：[`handlePrompt.ts`](../ts-server/server/web/ws/handlePrompt.ts) → [`historyStore.ts`](../ts-server/server/utils/historyStore.ts)（`linkAgentSession`）。历史记录中的旧非 Codex agent 标记仅作兼容数据，不参与恢复。
 
 **这是关键资产**：ADS 已经有一张"ADS 会话 ↔ provider 原生 session"的映射表，只是从来没有被读出来做列表展示。
 
 ### 2.3 Web 端恢复流程的三处限制（改造前的状态，均已修复）
 
-**限制 A — 只有一个按钮，没有列表。** `lane-resume-thread` 按钮直接调 `handleLaneResumeThread`，不传 `threadId`。协议层其实**已经**支持显式指定：[`taskResume.ts`](../server/web/server/ws/taskResume.ts) 的 `parseTaskResumeRequest` 接受 `threadId` / `thread_id` / `thread`，且 `selectTaskResumeThread` 把 `source: "explicit"` 排在最高优先级。协议就绪，只差前端——因此本次改造**没有新增 mode**。
+**限制 A — 只有一个按钮，没有列表。** `lane-resume-thread` 按钮直接调 `handleLaneResumeThread`，不传 `threadId`。协议层其实**已经**支持显式指定：[`taskResume.ts`](../ts-server/server/web/ws/taskResume.ts) 的 `parseTaskResumeRequest` 接受 `threadId` / `thread_id` / `thread`，且 `selectTaskResumeThread` 把 `source: "explicit"` 排在最高优先级。协议就绪，只差前端——因此本次改造**没有新增 mode**。
 
 > 已修复：按钮改为打开 [`SessionResumePicker.vue`](../client/src/components/SessionResumePicker.vue)，选中项由前端把 `sessionId` 填进 `task_resume` payload。
 
@@ -64,9 +64,9 @@ ADS 目前的"恢复上下文"能力存在两条互相竞争的路径：
 
 > 已修复：统一只创建 Codex adapter，并在恢复前忽略旧的非 Codex agent 标记。
 
-**限制 C — 恢复成功了还要再注入一遍历史。** `resolveResumeState` 的 `thread_resumed_with_history` 分支同时返回 `resumeThreadId` 和 `shouldInjectHistory: true`，`restoreMode` 却写成 `history_injection`——日志与返回值自相矛盾。下一次 prompt 时 [`handlePrompt.ts`](../server/web/server/ws/handlePrompt.ts) 的 `needsHistoryInjection` 命中，把同一段历史再喂一遍。模型因此看到"原生上下文 + 一份该上下文的文字复述"，这正是"效果并不好"的直接来源。
+**限制 C — 恢复成功了还要再注入一遍历史。** `resolveResumeState` 的 `thread_resumed_with_history` 分支同时返回 `resumeThreadId` 和 `shouldInjectHistory: true`，`restoreMode` 却写成 `history_injection`——日志与返回值自相矛盾。下一次 prompt 时 [`handlePrompt.ts`](../ts-server/server/web/ws/handlePrompt.ts) 的 `needsHistoryInjection` 命中，把同一段历史再喂一遍。模型因此看到"原生上下文 + 一份该上下文的文字复述"，这正是"效果并不好"的直接来源。
 
-> 已修复：两个持有 `resumeThreadId` 的分支改为 `shouldInjectHistory: false` / `restoreMode: "thread_resumed"`。回归护栏见 `tests/sessions/sessionState.test.ts` 与 `tests/sessions/sessionManager.test.ts`。
+> 已修复：两个持有 `resumeThreadId` 的分支改为 `shouldInjectHistory: false` / `restoreMode: "thread_resumed"`。回归护栏见 `ts-server/tests/sessions/sessionState.test.ts` 与 `ts-server/tests/sessions/sessionManager.test.ts`。
 
 ### 2.4 探活方式的代价（已修复）
 
@@ -78,17 +78,17 @@ stdinData: "Reply with exactly OK. Do not run any tools.\n",
 
 这意味着每次显式恢复都要付一次完整的模型往返、一次进程 spawn，并且会在目标 thread 上留下一轮真实对话记录。做成"列表 → 选择 → 恢复"之后，这个代价不可接受（列表里每一项都探活 = N 次模型调用）。
 
-> 已修复：模块替换为 [`taskResumeProbe.ts`](../server/web/server/ws/taskResumeProbe.ts)，改为文件系统查找，零模型调用。详见 §4.5。
+> 已修复：模块替换为 [`taskResumeProbe.ts`](../ts-server/server/web/ws/taskResumeProbe.ts)，改为文件系统查找，零模型调用。详见 §4.5。
 
 ### 2.5 可用的枚举数据源
 
 | 来源 | 位置 | 说明 |
 |---|---|---|
-| Codex app-server | `thread/list`、`thread/read`、`thread/resume` | 参数类型已生成：[`ThreadListParams.ts`](../server/codex/appServer/protocol/v2/ThreadListParams.ts) 支持 `cwd` 过滤、`searchTerm`、`limit`、`cursor`、`sortKey`、`useStateDbOnly`；[`ThreadResumeParams.ts`](../server/codex/appServer/protocol/v2/ThreadResumeParams.ts) 支持 `excludeTurns` |
+| Codex app-server | `thread/list`、`thread/read`、`thread/resume` | 参数类型已生成：[`ThreadListParams.ts`](../ts-server/server/codex/appServer/protocol/v2/ThreadListParams.ts) 支持 `cwd` 过滤、`searchTerm`、`limit`、`cursor`、`sortKey`、`useStateDbOnly`；[`ThreadResumeParams.ts`](../ts-server/server/codex/appServer/protocol/v2/ThreadResumeParams.ts) 支持 `excludeTurns` |
 | Codex rollout 文件 | `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` | app-server 不可用时的兜底 |
 | ADS 自有映射 | `history_session_links` 表 | 补充 Codex 会话标题与预览，含 `cwd` 与 `last_seen_at` |
 
-ADS 已经有 app-server 的 JSON-RPC 客户端与守护进程注册表：[`rpcClient.ts:106`](../server/codex/appServer/rpcClient.ts)（`CodexAppServerClient`）、[`daemonRegistry.ts:158`](../server/codex/appServer/daemonRegistry.ts)（`getSharedDaemonRegistry`）。**但目前全仓库没有任何地方调用 `thread/list` 或 `thread/resume`**——协议类型是生成好放在那儿的，客户端也在，只差接线。
+ADS 已经有 app-server 的 JSON-RPC 客户端与守护进程注册表：[`rpcClient.ts:106`](../ts-server/server/codex/appServer/rpcClient.ts)（`CodexAppServerClient`）、[`daemonRegistry.ts:158`](../ts-server/server/codex/appServer/daemonRegistry.ts)（`getSharedDaemonRegistry`）。**但目前全仓库没有任何地方调用 `thread/list` 或 `thread/resume`**——协议类型是生成好放在那儿的，客户端也在，只差接线。
 
 ## 3. 目标与非目标
 
@@ -132,7 +132,7 @@ ADS 已经有 app-server 的 JSON-RPC 客户端与守护进程注册表：[`rpcC
 ### 4.2 统一模型
 
 ```ts
-// server/agents/sessions/types.ts
+// ts-server/server/agents/sessions/types.ts
 export type AgentSessionSource = "app_server" | "rollout_file" | "ads_link";
 
 export interface AgentSessionRef {
@@ -200,7 +200,7 @@ Codex rollout 文件中也可能存在一次性会话与重复标题。它们并
 |---|---|---|---|
 | `…OBvnSGL8::main` | codex | 27 | 07-15 → 08-02 |
 
-更直接的证据：同一条 lane 在 **1.28 秒内**记录了两个不同的 claude session id，正是 [`handlePrompt.ts`](../server/web/server/ws/handlePrompt.ts) 在 send 前（`expectedThreadId`）与 send 后（`orchestrator.getThreadId()`）各记一次的结果——**一轮对话内 id 就变了**。也就是说 CLI 在 `--resume` 时 fork 出新 id，ADS 侧并没有漏传 `--resume`（`threadReset` 的判定逻辑本来就预期了这一点）。
+更直接的证据：同一条 lane 在 **1.28 秒内**记录了两个不同的 claude session id，正是 [`handlePrompt.ts`](../ts-server/server/web/ws/handlePrompt.ts) 在 send 前（`expectedThreadId`）与 send 后（`orchestrator.getThreadId()`）各记一次的结果——**一轮对话内 id 就变了**。也就是说 CLI 在 `--resume` 时 fork 出新 id，ADS 侧并没有漏传 `--resume`（`threadReset` 的判定逻辑本来就预期了这一点）。
 
 后果与处理：
 
@@ -229,7 +229,7 @@ const res = await client.request<ThreadListParams, ThreadListResponse>("thread/l
 
 `useStateDbOnly: true` 是列表场景的正确选择：它跳过 JSONL 回扫修复，代价是极少数元数据陈旧的 thread 标题可能为空——对列表展示可接受。
 
-**不要传 `cwd` 给 app-server。** 实测发现 `ThreadListParams.cwd` 是精确字符串匹配，而 ADS 发起的 Codex thread 常把 cwd 记成工作区根目录（`/home/andy/repos`），即使会话实际运行在子目录（`/home/andy/repos/ads`）。传 `cwd: "/home/andy/repos/ads"` 的实测结果是 **0 条**。因此改为取更大一页，再用 [`areSessionCwdsCompatible`](../server/sessions/sessionState.ts) 在本地过滤——该函数已经处理了嵌套目录与工作区根的等价关系。
+**不要传 `cwd` 给 app-server。** 实测发现 `ThreadListParams.cwd` 是精确字符串匹配，而 ADS 发起的 Codex thread 常把 cwd 记成工作区根目录（`/home/andy/repos`），即使会话实际运行在子目录（`/home/andy/repos/ads`）。传 `cwd: "/home/andy/repos/ads"` 的实测结果是 **0 条**。因此改为取更大一页，再用 [`areSessionCwdsCompatible`](../ts-server/server/sessions/sessionState.ts) 在本地过滤——该函数已经处理了嵌套目录与工作区根的等价关系。
 
 兜底：app-server 拉起失败时扫描 `~/.codex/sessions/**/rollout-*.jsonl`，按 mtime 排序，只读每个文件头部 256 KiB 取 `session_meta`（session_id / cwd / timestamp）与首条用户消息；扫描数量上限 200 个文件。
 
@@ -239,7 +239,7 @@ const res = await client.request<ThreadListParams, ThreadListResponse>("thread/l
 
 Codex 会话优先来自 app-server 的 `thread/list`，不可用时回退扫描 `~/.codex/sessions` rollout 文件；ADS 自有 `history_session_links` 仅用于补充标题和预览。旧的非 Codex provider 会话不会再出现在恢复列表中。
 
-**预览文本必须清洗。** 首条用户消息可能包含 ADS 拼装的前导（agent 指令、全局规则、skill 列表），直接展示会让每一条会话看起来一模一样。[`promptPreview.ts`](../server/agents/sessions/promptPreview.ts) 的 `extractUserFacingPrompt` 从 `**用户请求（…）：**` 标记之后取正文，剥掉 `<system-reminder>` / `<global_rules>` 等包裹块与 `【协作代理指令】` 尾块。
+**预览文本必须清洗。** 首条用户消息可能包含 ADS 拼装的前导（agent 指令、全局规则、skill 列表），直接展示会让每一条会话看起来一模一样。[`promptPreview.ts`](../ts-server/server/agents/sessions/promptPreview.ts) 的 `extractUserFacingPrompt` 从 `**用户请求（…）：**` 标记之后取正文，剥掉 `<system-reminder>` / `<global_rules>` 等包裹块与 `【协作代理指令】` 尾块。
 
 ### 4.5 可恢复性探测（替换原先的"真跑一轮"）
 
@@ -257,7 +257,7 @@ Codex 定位靠文件名（`rollout-<ts>-<threadId>.jsonl`），不需要打开�
 
 ### 4.6 协议
 
-新增一个 WS 请求（与既有 `task_resume` 同层，实现见 [`handleSessionList.ts`](../server/web/server/ws/handleSessionList.ts)）：
+新增一个 WS 请求（与既有 `task_resume` 同层，实现见 [`handleSessionList.ts`](../ts-server/server/web/ws/handleSessionList.ts)）：
 
 ```ts
 // client -> server
@@ -279,7 +279,7 @@ Codex 定位靠文件名（`rollout-<ts>-<threadId>.jsonl`），不需要打开�
 
 `agentId` 省略时用当前活跃 agent；`limit` 缺省 20、上限 100。该请求是只读的：不会启动任何 turn，也不改动已保存的 session 状态。`degraded` 列出取数失败的来源，前端据此提示"列表可能不完整"，而不是把残缺列表当完整结果展示。
 
-**分页游标是 catalog 自己的**，不是 app-server 的原样透传。原因见 [`types.ts`](../server/agents/sessions/types.ts) 的 `SessionListCursor`：只有 Codex app-server 有原生游标，而它的一页还要跟 ADS link 行合并、再按 cwd/搜索/降噪本地过滤，因此单靠 provider 游标无法定位到列表中的某个位置。游标编码 `{ providerCursor?, offset }`：`offset` 在同一个 provider 页产出的合并行里前进，`providerCursor` 翻到下一个 provider 页。ADS link 行**只在 `providerCursor` 为空时**参与，这正是它们不会在每一页重复出现的原因。游标解析失败时回到列表开头而不是报错。
+**分页游标是 catalog 自己的**，不是 app-server 的原样透传。原因见 [`types.ts`](../ts-server/server/agents/sessions/types.ts) 的 `SessionListCursor`：只有 Codex app-server 有原生游标，而它的一页还要跟 ADS link 行合并、再按 cwd/搜索/降噪本地过滤，因此单靠 provider 游标无法定位到列表中的某个位置。游标编码 `{ providerCursor?, offset }`：`offset` 在同一个 provider 页产出的合并行里前进，`providerCursor` 翻到下一个 provider 页。ADS link 行**只在 `providerCursor` 为空时**参与，这正是它们不会在每一页重复出现的原因。游标解析失败时回到列表开头而不是报错。
 
 恢复复用现有 `task_resume`，前端填入选中项的 `sessionId`：
 
@@ -332,14 +332,14 @@ Codex 定位靠文件名（`rollout-<ts>-<threadId>.jsonl`），不需要打开�
 
 #### 失败判据
 
-降级只接受一种失败——session 确实不在了。判据来自两个 CLI 的真实输出（见 [`missingProviderSession.ts`](../server/agents/adapters/missingProviderSession.ts)）：
+降级只接受一种失败——session 确实不在了。判据来自两个 CLI 的真实输出（见 [`missingProviderSession.ts`](../ts-server/server/agents/adapters/missingProviderSession.ts)）：
 
 ```text
 codex   Error: thread/resume: thread/resume failed: no rollout found for thread id <id> (code -32600)
 claude  No conversation found with session ID: <id>
 ```
 
-其余失败（上游 529、模型不匹配、网络中断）**必须保留 session id**：吞掉它们会因为一个下一轮就会自愈的原因永久丢掉整段对话。判据同时要避开同形异义的字符串——`file not found: /tmp/image.png`、`command not found: rg` 都不得命中，`tests/agents/missingProviderSession.test.ts` 对此有专门断言。
+其余失败（上游 529、模型不匹配、网络中断）**必须保留 session id**：吞掉它们会因为一个下一轮就会自愈的原因永久丢掉整段对话。判据同时要避开同形异义的字符串——`file not found: /tmp/image.png`、`command not found: rg` 都不得命中，`ts-server/tests/agents/missingProviderSession.test.ts` 对此有专门断言。
 
 #### 降级时序
 
@@ -386,16 +386,16 @@ rollout 文件兜底原计划在 P4，实际已随 P1 一并落地。逐条收�
 
 已落地：
 
-- `tests/agents/sessionCatalog.test.ts`（23 项）：预览提取、slug 推导、limit 归一、游标编解码与损坏游标回退、catalog 合并/去重/排序/搜索/cwd 过滤，以及一次性会话隐藏与计数、`includeNoise` 放行、搜索豁免、当前会话豁免、重名折叠、`stale` 标记、fork 链只保留最新一条。
-- `tests/state/historyMaintenance.test.ts`：`listAgentSessionLinks` 每条对话只返回一行，且 bare column 取自 `last_seen_at` 最新的 fork（同毫秒并列时由 `id` 决定）。
-- `tests/web/sessionList.test.ts`（5 项）：`session_list` 请求解析（含 `includeNoise`、`cursor`）、默认 agent、错误不抛出、翻页与 `appended` 标记。
-- `tests/web/taskResumeProbe.test.ts`（7 项）：三态探测、`unknown` 不被判为永久失败、错误消息能被 `isPermanentTaskResumeFailure` 识别。
+- `ts-server/tests/agents/sessionCatalog.test.ts`（23 项）：预览提取、slug 推导、limit 归一、游标编解码与损坏游标回退、catalog 合并/去重/排序/搜索/cwd 过滤，以及一次性会话隐藏与计数、`includeNoise` 放行、搜索豁免、当前会话豁免、重名折叠、`stale` 标记、fork 链只保留最新一条。
+- `ts-server/tests/state/historyMaintenance.test.ts`：`listAgentSessionLinks` 每条对话只返回一行，且 bare column 取自 `last_seen_at` 最新的 fork（同毫秒并列时由 `id` 决定）。
+- `ts-server/tests/web/sessionList.test.ts`（5 项）：`session_list` 请求解析（含 `includeNoise`、`cursor`）、默认 agent、错误不抛出、翻页与 `appended` 标记。
+- `ts-server/tests/web/taskResumeProbe.test.ts`（7 项）：三态探测、`unknown` 不被判为永久失败、错误消息能被 `isPermanentTaskResumeFailure` 识别。
 - Connector session tests：callback data 编解码与 64 字节上限、空列表文案、按钮与状态标注、折叠/隐藏/降级的回传、长标题按字符截断。
-- `tests/sessions/sessionState.test.ts`、`tests/sessions/sessionManager.test.ts`：原生恢复分支断言 `shouldInjectHistory === false` / `restoreMode === "thread_resumed"`（P0 回归护栏）。
-- `tests/web/handleTaskResume.test.ts`：Codex session 原生恢复、磁盘缺失的 saved id 清理、降级文案与未尝试原生恢复时的原有措辞。
+- `ts-server/tests/sessions/sessionState.test.ts`、`ts-server/tests/sessions/sessionManager.test.ts`：原生恢复分支断言 `shouldInjectHistory === false` / `restoreMode === "thread_resumed"`（P0 回归护栏）。
+- `ts-server/tests/web/handleTaskResume.test.ts`：Codex session 原生恢复、磁盘缺失的 saved id 清理、降级文案与未尝试原生恢复时的原有措辞。
 - `client/src/__tests__/session-resume-picker.test.ts`（19 项）：挂载即拉列表、点击派发 `sessionId`、快捷项派发 `undefined`、busy 时不派发、空态、搜索防抖、cwd 开关重新拉取、错误展示、隐藏计数提示、`×N` 折叠标记、禁用原因展示，以及「加载更多」的出现条件与并发抑制、`stale` 标记不影响可点击、fork 折叠说明。
 
-校验命令：`npm test`（926 通过）、`npm run test:web`（417 通过）、`npm run lint`、`npm run build`。
+校验命令：`npm --prefix ts-server test`、`npm --prefix client test`、两个 package 的 `lint` 与 `build`。
 
 手工验证清单见 §11。
 

@@ -36,6 +36,40 @@
   min-width: 0;
   overflow: hidden;
 }
+.activeProjectContext {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  max-width: 100%;
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+.activeProjectContextName {
+  flex: 0 10 auto;
+  min-width: 0;
+  overflow: hidden;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.activeProjectBranchBadge {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: min(280px, 100%);
+  overflow: hidden;
+  padding: 2px 7px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .projectAdd {
   flex-shrink: 0;
   width: 24px;
@@ -692,12 +726,13 @@
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
   box-sizing: border-box;
   overflow: hidden;
+  justify-content: center;
 }
 
 .laneTabGroup {
   display: inline-flex;
   align-items: center;
-  flex: 2 1 0;
+  flex: 1 1 auto;
   gap: 2px;
   min-width: 0;
 }
@@ -799,29 +834,12 @@
 
 .laneTabStatusDot--busy-acopilot {
   background: #a855f7;
-  --lane-pulse-color: 168, 85, 247;
-  animation: laneDotPulse 1.6s ease-in-out infinite;
-  will-change: transform, box-shadow;
+  box-shadow: 0 0 0 2px rgba(168, 85, 247, 0.35);
 }
 
 .laneTabStatusDot--busy-actions {
   background: #10b981;
-  --lane-pulse-color: 16, 185, 129;
-  animation: laneDotPulse 1.6s ease-in-out infinite;
-  will-change: transform, box-shadow;
-}
-
-@keyframes laneDotPulse {
-  0%, 100% {
-    transform: scale(1);
-    box-shadow: 0 0 0 2px rgba(var(--lane-pulse-color), 0.45);
-    opacity: 0.9;
-  }
-  50% {
-    transform: scale(1.5);
-    box-shadow: 0 0 0 6px rgba(var(--lane-pulse-color), 0.55);
-    opacity: 1;
-  }
+  box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.35);
 }
 
 .laneTab.active {
@@ -986,6 +1004,17 @@
     transform: translateX(-50%);
     white-space: nowrap;
     pointer-events: none;
+  }
+  .activeProjectContext {
+    position: absolute;
+    left: 50%;
+    width: max-content;
+    max-width: calc(100% - 180px);
+    transform: translateX(-50%);
+    pointer-events: none;
+  }
+  .activeProjectBranchBadge {
+    max-width: 150px;
   }
   .mobileContextMenu {
     position: absolute;
@@ -1201,21 +1230,24 @@
     flex-direction: row;
     flex: 1 1 auto;
     min-height: 0;
-    width: 200%;
+    width: 300%;
     transform: translate3d(0, 0, 0);
     transition: transform 0.36s cubic-bezier(0.25, 1, 0.5, 1);
     will-change: transform;
     touch-action: pan-y;
   }
   .lanePanelsTrack--worker {
-    transform: translate3d(-50%, 0, 0);
+    transform: translate3d(-33.333333%, 0, 0);
+  }
+  .lanePanelsTrack--prs {
+    transform: translate3d(-66.666667%, 0, 0);
   }
   .lanePanelsTrack--dragging {
     transition: none;
   }
   .lanePanelsTrack > .lanePanel {
-    flex: 0 0 50%;
-    width: 50%;
+    flex: 0 0 33.333333%;
+    width: 33.333333%;
   }
   .projectTree {
     flex: 1 1 0;
@@ -1350,7 +1382,7 @@
   .laneTabGroup {
     position: relative;
     display: inline-grid;
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
     align-items: center;
     padding: 0;
     gap: 0;
@@ -1367,7 +1399,7 @@
     bottom: 0;
     left: 0;
     z-index: 0;
-    width: 50%;
+    width: 33.333333%;
     border-radius: 9px;
     background: white;
     box-shadow: 0 1px 3px rgba(15, 23, 42, 0.14);
@@ -1377,6 +1409,9 @@
   }
   .laneTabGroup:has([data-testid="lane-tab-actions"].active)::before {
     transform: translateX(calc(var(--lane-pill-progress, 1) * 100%));
+  }
+  .laneTabGroup:has([data-testid="lane-tab-prs"].active)::before {
+    transform: translateX(calc(var(--lane-pill-progress, 2) * 100%));
   }
   .laneTab {
     position: relative;

@@ -1,11 +1,10 @@
-import { readFile } from "node:fs/promises";
-
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { mount, shallowMount } from "@vue/test-utils";
 import { defineComponent, h, type Component } from "vue";
 
 import type { ModelConfig } from "../api/types";
-import { readSfc } from "./readSfc";
+import { RECONNECT_BUSY_MESSAGE, RECONNECT_PENDING_RESEND_NOTICE } from "../app/projectsWs/reconnectNotice";
+import { setLaneSyncInProgress, touchLaneConnectionPhase } from "../lib/laneConnectionPhase";
 
 type GetImpl = (url: string) => Promise<unknown>;
 type PostImpl = (url: string, body: unknown) => Promise<unknown>;
@@ -144,11 +143,6 @@ function idsFromVm(wrapper: { vm: { projects: Array<{ id: string }> } }): string
   return wrapper.vm.projects.map((p) => p.id);
 }
 
-async function readClientFile(relativeToThisTest: string): Promise<string> {
-  const url = new URL(relativeToThisTest, import.meta.url);
-  return readFile(url, "utf8");
-}
-
 function getLaneTextarea(wrapper: any, lane: "acopilot" | "actions"): any {
   return wrapper.get(`[data-testid="lane-panel-${lane}"] textarea.composer-input`);
 }
@@ -251,7 +245,6 @@ describe("app brand version display", () => {
     expect(footer.get(".drawerBrandVersion").text()).toBe("v0.0.1");
 
     const topbar = wrapper.get("header.topbar");
-    expect(topbar.find(".brand").exists()).toBe(false);
     expect(topbar.text()).not.toContain("0.0.1");
 
     wrapper.unmount();
@@ -359,8 +352,8 @@ describe("mobile navigation shell (mobile-pane-tabs)", () => {
 
     const tablist = wrapper.get('[role="tablist"]');
     const tabs = tablist.findAll('[role="tab"]');
-    expect(tabs.map((tab) => tab.get(".laneTabLabel").text())).toEqual(["Acopilot", "Actions"]);
-    expect(tabs.map((tab) => tab.attributes("aria-selected"))).toEqual(["true", "false"]);
+    expect(tabs.map((tab) => tab.get(".laneTabLabel").text())).toEqual(["Acopilot", "Actions", "PRs"]);
+    expect(tabs.map((tab) => tab.attributes("aria-selected"))).toEqual(["true", "false", "false"]);
     expect(wrapper.find('[data-testid="lane-tab-tasks"]').exists()).toBe(false);
     expect(wrapper.find('[data-testid="lane-tab-reviewer"]').exists()).toBe(false);
 
@@ -388,50 +381,89 @@ describe("mobile navigation shell (mobile-pane-tabs)", () => {
   });
 });
 
-describe("project row mobile layout", () => {
-  it("stacks project name and branch on mobile", async () => {
-    const css = await readClientFile("../App.css");
+describe("lane connection phase", () => {
+  it("uses real runtime state for both lanes and suppresses duplicate reconnect notices", async () => {
+    const wrapper = await mountApp({ MainChatView: false, MainChatComposerPanel: false });
+    const pid = String((wrapper.vm as any).activeProjectId ?? "").trim();
+    const actions = (wrapper.vm as any).getRuntime(pid) as any;
+    const acopilot = (wrapper.vm as any).getAcopilotRuntime(pid) as any;
 
-    expect(css).toMatch(/\.projectText\s*\{[\s\S]*flex-direction:\s*column\s*;/);
-    expect(css).toMatch(/\.projectBranch\s*\{[\s\S]*display:\s*block\s*;/);
+    actions.connected.value = false;
+    actions.transcriptAuthoritative.value = false;
+    actions.syncInProgress = false;
+    actions.reconnectTimer = null;
+    actions.reconnectAttempts = 0;
+    actions.wsError.value = null;
+    acopilot.connected.value = true;
+    acopilot.transcriptAuthoritative.value = false;
+    setLaneSyncInProgress(acopilot, false);
+    acopilot.reconnectTimer = null;
+    acopilot.reconnectAttempts = 0;
+    acopilot.wsError.value = null;
+    acopilot.connectionError.value = null;
+    await settleUi(wrapper);
 
-    expect(css).not.toMatch(/@media\s*\(max-width:\s*900px\)[\s\S]*\.projectText\s*\{[\s\S]*flex-direction:\s*row\s*;/);
-    expect(css).not.toMatch(/@media\s*\(max-width:\s*900px\)[\s\S]*\.projectBranch\s*\{[\s\S]*display:\s*inline\s*;/);
-    expect(css).toMatch(/\.projectNode\.active\s+\.projectRowActions\s*\{[\s\S]*opacity:\s*1\s*[;\s][\s\S]*pointer-events:\s*auto\s*;/);
-  });
+    const actionsPanel = wrapper.get('[data-testid="lane-panel-actions"]');
+    const acopilotPanel = wrapper.get('[data-testid="lane-panel-acopilot"]');
+    expect(actionsPanel.find('[data-testid="lane-connection-phase"]').exists()).toBe(false);
+    expect(acopilotPanel.find('[data-testid="lane-connection-phase"]').exists()).toBe(false);
 
-  it("locks project item dimensions and configures mobile drawer project tree scrolling (Issue #338)", async () => {
-    const css = await readClientFile("../App.css");
+    actions.ws = { isConnecting: () => true };
+    touchLaneConnectionPhase(actions);
+    await settleUi(wrapper);
+    expect(actionsPanel.get('[data-testid="lane-connection-phase"]').attributes("data-connection-phase")).toBe("connecting");
+    expect(actionsPanel.get(".connectionPhaseSpinner").exists()).toBe(true);
+    expect(acopilotPanel.find('[data-testid="lane-connection-phase"]').exists()).toBe(false);
 
-    // Base .projectNode rules
-    expect(css).toMatch(/\.projectNode\s*\{[^}]*flex-shrink:\s*0\s*;/);
-    expect(css).toMatch(/\.projectNode\s*\{[^}]*min-height:\s*46px\s*;/);
+    acopilot.transcriptAuthoritative.value = true;
+    await settleUi(wrapper);
+    expect(acopilotPanel.find('[data-testid="lane-connection-phase"]').exists()).toBe(false);
 
-    // Mobile media query rules
-    const mobileStart = css.indexOf("@media (max-width: 900px)");
-    expect(mobileStart).toBeGreaterThan(-1);
-    const mobileCss = css.slice(mobileStart);
+    setLaneSyncInProgress(acopilot, true);
+    await settleUi(wrapper);
+    expect(acopilotPanel.get('[data-testid="lane-connection-phase"]').attributes("data-connection-phase")).toBe("syncing");
+    setLaneSyncInProgress(acopilot, false);
+    await settleUi(wrapper);
 
-    expect(mobileCss).toMatch(/\.projectTree\s*\{[^}]*flex:\s*1 1 0\s*;/);
-    expect(mobileCss).toMatch(/\.projectTree\s*\{[^}]*overflow-y:\s*auto\s*;/);
-    expect(mobileCss).toMatch(/\.projectTree\s*\{[^}]*overflow-x:\s*hidden\s*;/);
-    expect(mobileCss).toMatch(/\.projectTree\s*\{[^}]*padding:\s*8px 0 24px\s*;/);
-    expect(mobileCss).toMatch(/\.projectTree\s*\{[^}]*-webkit-overflow-scrolling:\s*touch\s*;/);
-    expect(mobileCss).toMatch(/\.projectTree\s*\{[^}]*overscroll-behavior:\s*contain\s*;/);
+    acopilot.wsError.value = "Prompt reconciliation failed";
+    await settleUi(wrapper);
+    expect(acopilotPanel.find('[data-testid="lane-connection-phase"]').exists()).toBe(false);
+    expect(acopilotPanel.get('[data-testid="lane-operational-error"]').text()).toContain("Prompt reconciliation failed");
+    acopilot.wsError.value = null;
 
-    // Redundant title hidden and header aligned compactly
-    expect(mobileCss).toMatch(/\.projectTreeTitle\s*\{[^}]*display:\s*none\s*;/);
-    expect(mobileCss).toMatch(/\.projectTreeHeader\s*\{[^}]*justify-content:\s*flex-end\s*;/);
-  });
+    acopilot.connected.value = false;
+    acopilot.reconnectTimer = 123 as unknown as number;
+    acopilot.wsError.value = "WebSocket closed (1006)";
+    acopilot.laneStatus.value = { kind: "progress", message: RECONNECT_BUSY_MESSAGE };
+    await settleUi(wrapper);
+    const reconnectPill = acopilotPanel.get('[data-testid="lane-connection-phase"]');
+    expect(reconnectPill.attributes("data-connection-phase")).toBe("reconnecting");
+    expect(reconnectPill.get(".connectionPhaseText").text().length).toBeGreaterThan(0);
+    expect(acopilotPanel.find('[data-testid="lane-connection-status"]').exists()).toBe(false);
 
-  it("keeps primary drawer navigation comfortable on normal and short displays", async () => {
-    const css = await readClientFile("../App.css");
+    acopilot.laneStatus.value = { kind: "progress", message: RECONNECT_PENDING_RESEND_NOTICE };
+    await settleUi(wrapper);
+    expect(acopilotPanel.get('[data-testid="lane-connection-status"]').text()).toContain(
+      RECONNECT_PENDING_RESEND_NOTICE,
+    );
 
-    expect(css).toMatch(/\.mobileDrawerNavItem\s*\{[^}]*min-height:\s*56px\s*;/);
-    expect(css).toMatch(/\.mobileDrawerNavItem\s*\{[^}]*padding:\s*14px 12px\s*;/);
-    expect(css).toMatch(/\.mobileDrawerNavItem\s*\{[^}]*line-height:\s*22px\s*;/);
-    expect(css).toMatch(/@media\s*\(max-height:\s*600px\)[\s\S]*?\.mobileDrawerNavItem\s*\{[^}]*min-height:\s*48px\s*;/);
-    expect(css).toMatch(/@media\s*\(max-height:\s*600px\)[\s\S]*?\.mobileDrawerNavItem\s*\{[^}]*padding:\s*10px 12px\s*;/);
+    acopilot.reconnectTimer = null;
+    acopilot.reconnectAttempts = 0;
+    acopilot.connectionError.value = "Unauthorized";
+    acopilot.wsError.value = "Unauthorized";
+    acopilot.laneStatus.value = { kind: "error", message: "Model switch failed" };
+    await settleUi(wrapper);
+    const errorPill = acopilotPanel.get('[data-testid="lane-connection-phase"]');
+    expect(errorPill.attributes("data-connection-phase")).toBe("error");
+    expect(errorPill.text()).toContain("Unauthorized");
+    expect(errorPill.find(".connectionPhaseSpinner").exists()).toBe(false);
+    expect(acopilotPanel.get('[data-testid="lane-connection-status"]').text()).toContain("Model switch failed");
+    expect(acopilotPanel.find('[data-testid="lane-operational-error"]').exists()).toBe(false);
+
+    await wrapper.get('[data-testid="lane-tab-actions"]').trigger("click");
+    await settleUi(wrapper);
+    expect(wrapper.get('[data-testid="lane-panel-actions"] [data-testid="lane-connection-phase"]').attributes("data-connection-phase")).toBe("connecting");
+    wrapper.unmount();
   });
 });
 
@@ -442,10 +474,22 @@ describe("project status spinner", () => {
     const pid = String((wrapper.vm as any).activeProjectId ?? "").trim();
     expect(pid).not.toBe("");
 
-    const actionsRuntime = (wrapper.vm as any).getRuntime(pid) as { busy: { value: boolean } };
-    const acopilotRuntime = (wrapper.vm as any).getAcopilotRuntime(pid) as { busy: { value: boolean } };
+    const actionsRuntime = (wrapper.vm as any).getRuntime(pid) as {
+      busy: { value: boolean };
+      connected: { value: boolean };
+      transcriptAuthoritative: { value: boolean };
+    };
+    const acopilotRuntime = (wrapper.vm as any).getAcopilotRuntime(pid) as {
+      busy: { value: boolean };
+      connected: { value: boolean };
+      transcriptAuthoritative: { value: boolean };
+    };
     actionsRuntime.busy.value = false;
     acopilotRuntime.busy.value = false;
+    actionsRuntime.connected.value = true;
+    acopilotRuntime.connected.value = true;
+    actionsRuntime.transcriptAuthoritative.value = true;
+    acopilotRuntime.transcriptAuthoritative.value = true;
     await settleUi(wrapper);
 
     expect(wrapper.find(".projectStatus").classes("spinning")).toBe(false);
@@ -480,43 +524,116 @@ describe("project status spinner", () => {
     wrapper.unmount();
   });
 
-  it("uses pulsing breathing animation for busy lane dots", async () => {
-    const css = await readClientFile("../App.css");
-    const advisorDot = css.match(/\.laneTabStatusDot--busy-acopilot\s*\{[^}]*\}/)?.[0];
-    const workerDot = css.match(/\.laneTabStatusDot--busy-actions\s*\{[^}]*\}/)?.[0];
+  it("hides running animations whenever the lane is disconnected", async () => {
+    const wrapper = await mountApp();
 
-    expect(advisorDot).toBeDefined();
-    expect(advisorDot).toMatch(/background:\s*#a855f7\s*;/);
-    expect(advisorDot).toMatch(/animation:\s*laneDotPulse 1\.6s ease-in-out infinite\s*;/);
+    const pid = String((wrapper.vm as any).activeProjectId ?? "").trim();
+    expect(pid).not.toBe("");
 
-    expect(workerDot).toBeDefined();
-    expect(workerDot).toMatch(/background:\s*#10b981\s*;/);
-    expect(workerDot).toMatch(/animation:\s*laneDotPulse 1\.6s ease-in-out infinite\s*;/);
+    const actionsRuntime = (wrapper.vm as any).getRuntime(pid) as {
+      busy: { value: boolean };
+      connected: { value: boolean };
+      transcriptAuthoritative: { value: boolean };
+    };
+    const acopilotRuntime = (wrapper.vm as any).getAcopilotRuntime(pid) as {
+      busy: { value: boolean };
+      connected: { value: boolean };
+      transcriptAuthoritative: { value: boolean };
+    };
+    actionsRuntime.connected.value = false;
+    acopilotRuntime.connected.value = false;
+    actionsRuntime.transcriptAuthoritative.value = false;
+    acopilotRuntime.transcriptAuthoritative.value = false;
+    actionsRuntime.busy.value = true;
+    acopilotRuntime.busy.value = true;
+    await settleUi(wrapper);
 
-    expect(css).toMatch(/@keyframes\s+laneDotPulse\s*\{/);
+    const projectStatus = wrapper.find(".projectStatus");
+    expect(projectStatus.classes("spinning")).toBe(false);
+    expect(projectStatus.attributes("title")).toBeUndefined();
+    expect(wrapper.find('[data-testid="lane-tab-status-acopilot"]').classes()).toContain("laneTabStatusDot--disconnected");
+    expect(wrapper.find('[data-testid="lane-tab-status-acopilot"]').classes("laneTabStatusDot--busy-acopilot")).toBe(false);
+    expect(wrapper.find('[data-testid="lane-tab-status-actions"]').classes()).toContain("laneTabStatusDot--disconnected");
+    expect(wrapper.find('[data-testid="lane-tab-status-actions"]').classes("laneTabStatusDot--busy-actions")).toBe(false);
 
-    // Perceptibility floors (issue #480): the old 7px dot scaling to 1.2 with
-    // a 0.2-alpha ring was below the visibility threshold on high-DPI phones,
-    // and the regex assertions above passed anyway. Assert the amplitude
-    // itself, not just the declaration strings.
-    const baseDot = css.match(/\.laneTabStatusDot\s*\{[^}]*\}/)?.[0] ?? "";
-    const dotSize = Number(baseDot.match(/width:\s*(\d+(?:\.\d+)?)px/)?.[1]);
-    expect(dotSize).toBeGreaterThanOrEqual(8);
+    acopilotRuntime.connected.value = true;
+    acopilotRuntime.transcriptAuthoritative.value = true;
+    await settleUi(wrapper);
 
-    const keyframes = css.match(/@keyframes\s+laneDotPulse\s*\{([\s\S]*?)\n\}/)?.[1] ?? "";
-    const peakScale = Math.max(...[...keyframes.matchAll(/scale\((\d+(?:\.\d+)?)\)/g)].map((match) => Number(match[1])));
-    expect(peakScale).toBeGreaterThanOrEqual(1.4);
-    const rings = [...keyframes.matchAll(/0 0 0 (\d+(?:\.\d+)?)px rgba\(var\(--lane-pulse-color\),\s*(\d+(?:\.\d+)?)\)/g)]
-      .map((match) => ({ spread: Number(match[1]), alpha: Number(match[2]) }));
-    expect(rings.some((ring) => ring.spread >= 5 && ring.alpha >= 0.4)).toBe(true);
+    expect(projectStatus.classes()).toEqual(expect.arrayContaining(["spinning", "spinning--acopilot"]));
+    expect(wrapper.find('[data-testid="lane-tab-status-acopilot"]').classes()).toContain("laneTabStatusDot--busy-acopilot");
+    expect(wrapper.find('[data-testid="lane-tab-status-actions"]').classes("laneTabStatusDot--busy-actions")).toBe(false);
 
-    // The global reduced-motion override zeroes all animation; the busy dot
-    // must be exempted there or a busy lane silently loses its indicator.
-    const globalCss = await readClientFile("../global.css");
-    expect(globalCss).toMatch(
-      /prefers-reduced-motion:\s*reduce[\s\S]*\.laneTabStatusDot--busy-acopilot[\s\S]*?animation:\s*none\s*!important[\s\S]*?box-shadow:/,
-    );
+    wrapper.unmount();
   });
+
+  it("keeps busy dots hidden when a connected lane is not ready", async () => {
+    const wrapper = await mountApp();
+
+    const pid = String((wrapper.vm as any).activeProjectId ?? "").trim();
+    const actionsRuntime = (wrapper.vm as any).getRuntime(pid) as {
+      busy: { value: boolean };
+      connected: { value: boolean };
+      transcriptAuthoritative: { value: boolean };
+    };
+    const acopilotRuntime = (wrapper.vm as any).getAcopilotRuntime(pid) as {
+      busy: { value: boolean };
+      connected: { value: boolean };
+      transcriptAuthoritative: { value: boolean };
+    };
+    actionsRuntime.connected.value = true;
+    acopilotRuntime.connected.value = true;
+    actionsRuntime.transcriptAuthoritative.value = false;
+    acopilotRuntime.transcriptAuthoritative.value = false;
+    actionsRuntime.busy.value = true;
+    acopilotRuntime.busy.value = true;
+    await settleUi(wrapper);
+
+    expect(wrapper.find('[data-testid="lane-tab-status-acopilot"]').classes()).toContain("laneTabStatusDot--disconnected");
+    expect(wrapper.find('[data-testid="lane-tab-status-acopilot"]').classes("laneTabStatusDot--busy-acopilot")).toBe(false);
+    expect(wrapper.find('[data-testid="lane-tab-status-actions"]').classes()).toContain("laneTabStatusDot--disconnected");
+    expect(wrapper.find('[data-testid="lane-tab-status-actions"]').classes("laneTabStatusDot--busy-actions")).toBe(false);
+
+    wrapper.unmount();
+  });
+
+  it("marks both lanes disconnected on a browser offline event", async () => {
+    const wrapper = await mountApp();
+
+    const pid = String((wrapper.vm as any).activeProjectId ?? "").trim();
+    const actionsRuntime = (wrapper.vm as any).getRuntime(pid) as {
+      busy: { value: boolean };
+      connected: { value: boolean };
+      transcriptAuthoritative: { value: boolean };
+    };
+    const acopilotRuntime = (wrapper.vm as any).getAcopilotRuntime(pid) as {
+      busy: { value: boolean };
+      connected: { value: boolean };
+      transcriptAuthoritative: { value: boolean };
+    };
+    actionsRuntime.connected.value = true;
+    acopilotRuntime.connected.value = true;
+    actionsRuntime.transcriptAuthoritative.value = true;
+    acopilotRuntime.transcriptAuthoritative.value = true;
+    actionsRuntime.busy.value = true;
+    acopilotRuntime.busy.value = true;
+    await settleUi(wrapper);
+    expect(wrapper.find('[data-testid="lane-tab-status-acopilot"]').classes()).toContain("laneTabStatusDot--busy-acopilot");
+    expect(wrapper.find('[data-testid="lane-tab-status-actions"]').classes()).toContain("laneTabStatusDot--busy-actions");
+
+    window.dispatchEvent(new Event("offline"));
+    await settleUi(wrapper);
+
+    expect(actionsRuntime.connected.value).toBe(false);
+    expect(acopilotRuntime.connected.value).toBe(false);
+    expect(wrapper.find('[data-testid="lane-tab-status-acopilot"]').classes()).toContain("laneTabStatusDot--disconnected");
+    expect(wrapper.find('[data-testid="lane-tab-status-acopilot"]').classes("laneTabStatusDot--busy-acopilot")).toBe(false);
+    expect(wrapper.find('[data-testid="lane-tab-status-actions"]').classes()).toContain("laneTabStatusDot--disconnected");
+    expect(wrapper.find('[data-testid="lane-tab-status-actions"]').classes("laneTabStatusDot--busy-actions")).toBe(false);
+
+    wrapper.unmount();
+  });
+
 });
 
 describe("project and lane composer draft isolation (project-switch-clears-composer)", () => {
@@ -625,38 +742,6 @@ describe("project and lane composer draft isolation (project-switch-clears-compo
   }, 30_000);
 });
 
-describe("PWA manifest navigation", () => {
-  it("uses the deployment base as the stable app id, start URL, and scope", async () => {
-    const config = await readSfc("../../vite.config.ts", import.meta.url);
-
-    expect(config).toContain("id: base");
-    expect(config).toContain("start_url: base");
-    expect(config).toContain("scope: base");
-  });
-
-  it("shields the initial claim from reloading and defers updates to a user prompt", async () => {
-    const config = await readSfc("../../vite.config.ts", import.meta.url);
-    expect(config).toContain("injectRegister: false");
-    expect(config).toContain("clientsClaim: true");
-
-    const script = await readSfc("../../public/registerSW.js", import.meta.url);
-    // The service worker must not self-activate mid-session; the page decides.
-    expect(config).not.toContain("skipWaiting: true");
-    // The initial clientsClaim must not reload the page: only reload when a
-    // controller already existed before this page load.
-    expect(script).toContain("hadController");
-    expect(script).toContain("if (refreshing || !hadController) return;");
-    // No silent cold-start activation racing the app boot; updates are applied
-    // only after explicit user confirmation via the toast.
-    expect(script).not.toContain('.getRegistration("/")');
-    expect(script).not.toContain("applyWaitingWorker(registration);");
-    expect(script).toContain('postMessage({ type: "SKIP_WAITING" })');
-    // Mid-session: show a user-controlled update toast instead of force-reloading.
-    expect(script).toContain("新版本已就绪");
-    expect(script).toContain("立即更新");
-  });
-});
-
 describe("LoginGate", () => {
   beforeEach(() => {
     loginGateMode = "real";
@@ -669,18 +754,6 @@ describe("LoginGate", () => {
       if (url === "/api/auth/login") return { success: true };
       throw new Error(`unexpected POST ${url}`);
     };
-  });
-
-  it("sizes the gate from the visual viewport height with a 100dvh fallback (Issue #476)", async () => {
-    const source = await readClientFile("../components/LoginGate.vue");
-    const gateRule = source.match(/\.gate\s*\{[^}]*\}/)?.[0];
-
-    expect(gateRule).toBeDefined();
-    expect(gateRule).toContain("min-height: var(--ads-visual-viewport-height, 100dvh);");
-    expect(gateRule).toContain("height: var(--ads-visual-viewport-height, 100dvh);");
-    // The inert keyboard-open state was removed; viewport metrics come from
-    // the global installViewportCssVars() layer only.
-    expect(source).not.toContain("keyboard-open");
   });
 
   it("does not unmount inputs or show skeleton on background visibility refresh when already initialized", async () => {

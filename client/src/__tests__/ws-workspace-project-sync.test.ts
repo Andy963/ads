@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { ref, toRaw } from "vue";
 
 import { createWsMessageHandler } from "../app/projectsWs/wsMessage";
 
@@ -58,6 +59,9 @@ function createHandler(args: { projects: any[]; pid: string; rt: any; updateProj
     projects: { value: args.projects },
     pid: args.pid,
     rt: args.rt,
+    // These cases describe the interactive chat lane, which still renders
+    // context restoration notices. The Actions lane suppresses them.
+    preferenceLane: "acopilot",
     wsInstance: { send: vi.fn() },
     maxTurnCommands: 64,
     randomId,
@@ -481,6 +485,83 @@ describe("ws workspace project sync", () => {
     handler({ type: "context_injection" });
 
     expect(pushMessageBeforeLive).not.toHaveBeenCalled();
+  });
+
+  it("retires both history-injection warnings once an injection arrives", () => {
+    for (const warning of [
+      "没有可复用的原生会话，下一轮发送时会注入最近聊天历史来延续上下文。",
+      "上下文线程已重置（预期=thread-old，实际=thread-new）。下一轮将注入聊天历史继续上下文。",
+    ]) {
+      const rt = createRuntime();
+      rt.threadWarning.value = warning;
+      const { handler } = createHandler({ projects: [], pid: "default", rt, updateProject: vi.fn() });
+
+      handler({ type: "context_injection", entryCount: 3, earliestTs: 1000 });
+
+      expect(rt.threadWarning.value).toBeNull();
+      expect(rt.laneStatus.value?.message).toMatch(/^已注入最近 3 条聊天历史/);
+    }
+  });
+
+  it("keeps unrelated thread warnings when an injection arrives", () => {
+    const rt = createRuntime();
+    const warning = "后端线程已变化但没有显式重置标记（原=thread-a，现=thread-b）。当前界面已保留，但模型上下文可能与聊天历史不一致。";
+    rt.threadWarning.value = warning;
+    const { handler } = createHandler({ projects: [], pid: "default", rt, updateProject: vi.fn() });
+
+    handler({ type: "context_injection", entryCount: 3, earliestTs: 1000 });
+
+    expect(rt.threadWarning.value).toBe(warning);
+  });
+
+  it("dismisses the injection status after a short interval without clobbering newer status", () => {
+    vi.useFakeTimers();
+    try {
+      const rt = createRuntime();
+      const { handler } = createHandler({ projects: [], pid: "default", rt, updateProject: vi.fn() });
+
+      handler({ type: "context_injection", entryCount: 2, earliestTs: 1000 });
+      expect(rt.laneStatus.value?.message).toMatch(/^已注入最近 2 条聊天历史/);
+
+      vi.advanceTimersByTime(3000);
+      expect(rt.laneStatus.value).not.toBeNull();
+
+      const newer = { kind: "info" as const, message: "newer status" };
+      rt.laneStatus.value = newer;
+      vi.advanceTimersByTime(4000);
+      expect(rt.laneStatus.value).toBe(newer);
+
+      const nextRt = createRuntime();
+      const next = createHandler({ projects: [], pid: "default", rt: nextRt, updateProject: vi.fn() });
+      next.handler({ type: "context_injection", entryCount: 1, earliestTs: 1000 });
+      vi.advanceTimersByTime(6000);
+      expect(nextRt.laneStatus.value).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("dismisses the injection status when laneStatus is a Vue ref", () => {
+    vi.useFakeTimers();
+    try {
+      const rt = createRuntime();
+      rt.laneStatus = ref(null);
+      const { handler } = createHandler({ projects: [], pid: "default", rt, updateProject: vi.fn() });
+
+      handler({ type: "context_injection", entryCount: 2, earliestTs: 1000 });
+      expect(rt.laneStatus.value?.message).toMatch(/^已注入最近 2 条聊天历史/);
+
+      vi.advanceTimersByTime(6000);
+      expect(rt.laneStatus.value).toBeNull();
+
+      handler({ type: "context_injection", entryCount: 3, earliestTs: 1000 });
+      const newer = { kind: "info" as const, message: "newer status" };
+      rt.laneStatus.value = newer;
+      vi.advanceTimersByTime(6000);
+      expect(toRaw(rt.laneStatus.value)).toBe(newer);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("restores user execution metadata from replayed history", () => {

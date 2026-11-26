@@ -30,7 +30,7 @@ Historically, the Telegram Bot was deeply coupled within ADS Core (`server/teleg
 
 ## Verification
 
-- Core builds with zero Telegram dependencies: `npm run lint`, `npm run build`, `npm test`, `npm run test:web` pass.
+- Core builds with zero Telegram dependencies: `npm --prefix client run lint`, `npm --prefix ts-server run lint`, `npm --prefix client run build`, `npm --prefix ts-server run build`, `npm --prefix client run test`, and `npm --prefix ts-server run test` pass.
 - Connector test suite (`connectors/telegram/tests/`) validates client WebSocket communication, MarkdownV2 rendering, chunking, and configuration.
 - Middleware tests (`tests/middleware/`) prove channel propagation, memory injection, security blocking, and output/error delivery hooks.
 - Absence tests (`tests/connectors/absence.test.ts`) verify that core boots and runs turns with zero Telegram configuration.

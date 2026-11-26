@@ -1,3 +1,5 @@
+import { toRaw } from "vue";
+
 import { stripStreamingDisconnectNotice } from "../../lib/chat_sync";
 import { assistantMessageId, applyAssistantItem, reconcileAssistantItems } from "../assistantItems";
 import type { ChatActions } from "../chat";
@@ -24,7 +26,7 @@ import {
 } from "../../lib/preferencesStore";
 import { splitUnifiedDiffByPath } from "../../lib/patchDiff";
 import { normalizeTurnSemanticOrder } from "../../lib/chat_sync";
-import { isUserAbortFailure, upsertTurnFailureCard } from "../../lib/turnFailure";
+import { isNoActiveTurnNotice, isUserAbortFailure, upsertTurnFailureCard } from "../../lib/turnFailure";
 import { diagAlert } from "../../lib/diagAlert";
 import { crumb } from "../../lib/diagBreadcrumbs";
 import type { ExecuteBlockUpdate } from "../chatExecute";
@@ -38,6 +40,21 @@ type Ref<T> = { value: T };
 const HISTORY_EXECUTE_PREVIEW_LINES = 3;
 const THREAD_RESUMED_NOTICE = "已恢复后端上下文线程。";
 const HISTORY_INJECTION_NOTICE = "没有可复用的原生会话，下一轮发送时会注入最近聊天历史来延续上下文。";
+const HISTORY_INJECTION_RESET_MARKER = "下一轮将注入聊天历史继续上下文";
+const CONTEXT_INJECTION_STATUS_TTL_MS = 6000;
+
+function isHistoryInjectionWarning(value: string | null | undefined): boolean {
+  const text = String(value ?? "").trim();
+  if (!text) return false;
+  return text === HISTORY_INJECTION_NOTICE || text.includes(HISTORY_INJECTION_RESET_MARKER);
+}
+
+// The Actions lane runs every Reviewer job on a fresh message list, so these
+// interactive-chat restoration notices describe state that lane never uses.
+const CONTEXT_RESTORE_STATUS_MESSAGES = new Set([
+  THREAD_RESUMED_NOTICE,
+  "后端线程未直接恢复；下一轮发送时会注入最近聊天历史来延续上下文。",
+]);
 const TRANSIENT_RETRY_NOTICE_ID = "transient-retry-notice";
 const BACKEND_WAITING_STATUS_MESSAGES = new Set([
   "上一轮仍在执行，正在等待后端结果。",
@@ -134,6 +151,41 @@ function parseClientMessageIdFromHistoryKind(kind: string): string {
   return (separator >= 0 ? tail.slice(0, separator) : tail).trim();
 }
 
+function isSystemOriginHistoryKind(kind: string): boolean {
+  return promptOriginFromHistoryKind(kind) === "system";
+}
+
+function promptOriginFromHistoryKind(kind: string): "system" | "agent" | "" {
+  const marker = ";prompt_meta:";
+  const markerIndex = kind.indexOf(marker);
+  if (markerIndex < 0) return "";
+  for (const part of kind.slice(markerIndex + marker.length).split(",")) {
+    const [keyRaw, valueRaw = ""] = part.split("=");
+    if (String(keyRaw ?? "").trim() !== "origin") continue;
+    const origin = decodeHistoryKindValue(valueRaw).trim();
+    return origin === "system" || origin === "agent" ? origin : "";
+  }
+  return "";
+}
+
+function agentHandoffFromHistory(kind: string, text: string, messageId: string): ChatItem | null {
+  if (promptOriginFromHistoryKind(kind) !== "agent") return null;
+  return {
+    id: messageId.includes("-") ? messageId : `h-agent-${messageId}`,
+    role: "system",
+    kind: "agent_handoff",
+    content: text,
+    agentHandoff: {
+      messageId,
+      status: "unknown",
+      fromLane: "actions",
+      fromRole: "reviewer",
+      toLane: "acopilot",
+      toRole: "acopilot",
+    },
+  };
+}
+
 function parseFileChangeHistory(text: string): ChatPatchFile[] {
   return String(text ?? "")
     .replace(/\r\n/g, "\n")
@@ -170,6 +222,12 @@ function replayedLaneStatus(kind: string, content: string): LaneStatus | null {
     return { kind: "info", message: content };
   }
   return null;
+}
+
+function isLegacyReviewInspectionStep(role: string, kind: string, text: string): boolean {
+  return role === "status"
+    && (kind === "action_step" || kind.startsWith("action_step:"))
+    && text.startsWith("Reviewer step:");
 }
 
 function hasTerminalHistoryTail(items: unknown[]): boolean {
@@ -277,6 +335,7 @@ export type WsMessageHandlerArgs = {
   finalizeAssistant: ChatActions["finalizeAssistant"];
   finalizeCommandBlock: ChatActions["finalizeCommandBlock"];
   flushQueuedPrompts: ChatActions["flushQueuedPrompts"];
+  enqueuePrompt: ChatActions["enqueuePrompt"];
   ingestCommand: ChatActions["ingestCommand"];
   ingestCommandActivity: ChatActions["ingestCommandActivity"];
   ingestExploredActivity: ChatActions["ingestExploredActivity"];
@@ -323,6 +382,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     replaceStreamingText,
   } = args;
   const preferenceLane = args.preferenceLane ?? (normalizeLaneId(rt.chatSessionId) === "acopilot" ? "acopilot" : "actions");
+  const showsContextRestoreNotices = preferenceLane === "acopilot";
   rt.inputLocked ??= { value: false };
   rt.laneStatus ??= { value: null };
   rt.retiredExecuteKeys ??= new Set<string>();
@@ -973,6 +1033,23 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     }
   };
 
+  let transientLaneStatusTimer: number | null = null;
+  const showTransientLaneStatus = (status: LaneStatus, ttlMs: number): void => {
+    if (transientLaneStatusTimer !== null) {
+      try {
+        clearTimeout(transientLaneStatusTimer);
+      } catch {
+        // ignore
+      }
+      transientLaneStatusTimer = null;
+    }
+    rt.laneStatus.value = status;
+    transientLaneStatusTimer = window.setTimeout(() => {
+      transientLaneStatusTimer = null;
+      if (toRaw(rt.laneStatus.value) === toRaw(status)) rt.laneStatus.value = null;
+    }, ttlMs);
+  };
+
   const annotatePendingUserMessageExecution = (payload: Record<string, unknown>): void => {
     const pendingId = String(rt.pendingAckClientMessageId ?? "").trim();
     if (!pendingId) return;
@@ -1005,6 +1082,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       Boolean(String(rt.activeThreadId.value ?? "").trim()) ||
       Boolean(String(rt.pendingAckClientMessageId ?? "").trim()) ||
       rt.queuedPrompts.value.length > 0 ||
+      (rt.pendingAgentHandoffs?.value.length ?? 0) > 0 ||
       rt.turnInFlight ||
       rt.busy.value;
 
@@ -1015,6 +1093,9 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     rt.awaitingBootstrapHistory = false;
     rt.pendingAckClientMessageId = null;
     rt.queuedPrompts.value = [];
+    if (rt.pendingAgentHandoffs) {
+      rt.pendingAgentHandoffs.value = [];
+    }
     clearStreamTracking();
     resetTurnPatchSummary();
     clearPendingPrompt(rt);
@@ -1041,6 +1122,137 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     const typeValue = msg.type;
     if (typeof typeValue !== "string") return;
     const type = typeValue;
+
+    if (type === "review_verdict_ready") return;
+
+    if (type === "agent_message" || type === "agent_message_snapshot") {
+      if (preferenceLane !== "acopilot") return;
+      const entries = type === "agent_message_snapshot"
+        ? (Array.isArray((msg as Record<string, unknown>).entries) ? (msg as Record<string, unknown>).entries as unknown[] : [])
+        : [msg];
+      const snapshotPendingIds = new Set<string>();
+      const removePendingHandoff = (id: string): void => {
+        const pendingRef = rt.pendingAgentHandoffs;
+        if (!pendingRef) return;
+        if (pendingRef.value.some((item) => item.messageId === id)) {
+          pendingRef.value = pendingRef.value.filter((item) => item.messageId !== id);
+        }
+      };
+      const insertHandoffChronologically = (card: ChatItem): void => {
+        const cardTs = Number(card.ts ?? 0);
+        if (!Number.isFinite(cardTs) || cardTs <= 0) {
+          pushMessageBeforeLive(card, rt);
+          return;
+        }
+        const existing = rt.messages.value;
+        const insertIndex = existing.findIndex((message) => {
+          const messageTs = Number(message.ts ?? 0);
+          return Number.isFinite(messageTs) && messageTs > cardTs;
+        });
+        if (insertIndex < 0) {
+          pushMessageBeforeLive(card, rt);
+          return;
+        }
+        rt.messages.value = [
+          ...existing.slice(0, insertIndex),
+          card,
+          ...existing.slice(insertIndex),
+        ];
+      };
+      for (const entry of entries) {
+        if (!isRecord(entry)) continue;
+        const messageId = String(entry.messageId ?? "").trim();
+        if (!messageId) continue;
+        const statusRaw = String(entry.status ?? "unknown").trim().toLowerCase();
+        const status = ["pending", "running", "delivered", "failed", "superseded"].includes(statusRaw)
+          ? statusRaw as "pending" | "running" | "delivered" | "failed" | "superseded"
+          : "unknown";
+        const issueId = Number(entry.issueId);
+        const prNumber = Number(entry.prNumber);
+        const attemptsRaw = Number(entry.attempts);
+        const content = String(entry.text ?? "").trim() || `Reviewer → Acopilot handoff ${messageId}`;
+        const transitionRevision = Number(entry.transitionRevision);
+        const createdAt = Number(entry.createdAt);
+        const updatedAt = Number(entry.updatedAt);
+        const cardTs = (Number.isFinite(createdAt) && createdAt > 0 ? createdAt : (Number.isFinite(updatedAt) && updatedAt > 0 ? updatedAt : Date.now()));
+        const agentHandoff: NonNullable<ChatItem["agentHandoff"]> = {
+          messageId,
+          status,
+          ...(Number.isSafeInteger(transitionRevision) && transitionRevision > 0 ? { transitionRevision } : {}),
+          ...(Number.isSafeInteger(attemptsRaw) && attemptsRaw >= 0 ? { attempts: attemptsRaw } : {}),
+          fromLane: String(entry.fromLane ?? "actions"),
+          fromRole: String(entry.fromRole ?? "reviewer"),
+          toLane: String(entry.toLane ?? "acopilot"),
+          toRole: String(entry.toRole ?? "acopilot"),
+          ...(Number.isSafeInteger(issueId) && issueId > 0 ? { issueId } : {}),
+          ...(String(entry.issueTitle ?? "").trim() ? { issueTitle: String(entry.issueTitle).trim() } : {}),
+          ...(String(entry.issueUrl ?? "").trim() ? { issueUrl: String(entry.issueUrl).trim() } : {}),
+          ...(Number.isSafeInteger(prNumber) && prNumber > 0 ? { prNumber } : {}),
+          ...(String(entry.baseSha ?? "").trim() ? { baseSha: String(entry.baseSha).trim() } : {}),
+          ...(String(entry.headSha ?? "").trim() ? { headSha: String(entry.headSha).trim() } : {}),
+          ...(String(entry.correlationId ?? "").trim() ? { correlationId: String(entry.correlationId).trim() } : {}),
+          ...(String(entry.lastError ?? "").trim() ? { lastError: String(entry.lastError).trim() } : {}),
+        };
+        const card: ChatItem = {
+          id: messageId,
+          role: "system",
+          kind: "agent_handoff",
+          content,
+          ts: cardTs,
+          agentHandoff,
+        };
+        const existingIndex = rt.messages.value.findIndex((message) => message.id === messageId);
+        if (existingIndex >= 0) {
+          removePendingHandoff(messageId);
+          const currentRevision = Number(rt.messages.value[existingIndex]?.agentHandoff?.transitionRevision ?? 0);
+          const incomingRevision = Number(card.agentHandoff?.transitionRevision ?? 0);
+          if (incomingRevision >= currentRevision) {
+            const preservedTs = rt.messages.value[existingIndex]?.ts;
+            const nextCard = preservedTs ? { ...card, ts: preservedTs } : card;
+            rt.messages.value = rt.messages.value.map((message, index) => index === existingIndex ? nextCard : message);
+          }
+        } else if (status === "pending") {
+          snapshotPendingIds.add(messageId);
+          const pendingRef = rt.pendingAgentHandoffs;
+          if (pendingRef) {
+            const pendingItem = { ...agentHandoff, content, ts: cardTs };
+            const pendingIndex = pendingRef.value.findIndex((item) => item.messageId === messageId);
+            if (pendingIndex >= 0) {
+              const currentRevision = Number(pendingRef.value[pendingIndex]?.transitionRevision ?? 0);
+              const incomingRevision = Number(agentHandoff.transitionRevision ?? 0);
+              if (incomingRevision >= currentRevision) {
+                pendingRef.value = pendingRef.value.map((item, index) =>
+                  index === pendingIndex ? pendingItem : item,
+                );
+              }
+            } else {
+              pendingRef.value = [...pendingRef.value, pendingItem];
+            }
+          }
+        } else if (status === "superseded") {
+          removePendingHandoff(messageId);
+        } else {
+          removePendingHandoff(messageId);
+          if (type === "agent_message_snapshot" && status !== "running") {
+            insertHandoffChronologically(card);
+          } else {
+            pushMessageBeforeLive(card, rt);
+          }
+        }
+      }
+      if (type === "agent_message_snapshot") {
+        const pendingRef = rt.pendingAgentHandoffs;
+        if (pendingRef) {
+          const nextPending = pendingRef.value.filter((item) =>
+            snapshotPendingIds.has(item.messageId),
+          );
+          if (nextPending.length !== pendingRef.value.length) {
+            pendingRef.value = nextPending;
+          }
+        }
+      }
+      return;
+    }
 
     if (type === "agents") {
       const rec = msg as Record<string, unknown>;
@@ -1194,6 +1406,13 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       return;
     }
 
+    if (type === "agent_message_retry_error") {
+      rt.wsError.value = String(msg.message ?? "Agent handoff retry failed");
+      return;
+    }
+
+    if (type === "agent_message_retry_ack") return;
+
     if (type === "prompt_queue_cancelled") {
       const clientMessageId = String(msg.clientMessageId ?? msg.client_message_id ?? "").trim();
       if (!clientMessageId) return;
@@ -1275,7 +1494,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
             : prompt);
           continue;
         }
-        if (!shouldSuppressQueueCard(rt, clientMessageId, acknowledged, status, lastError)) {
+        if (record.origin !== "system" && !shouldSuppressQueueCard(rt, clientMessageId, acknowledged, status, lastError)) {
           const text = firstWireText(
             rt.messages.value.find((message) => message.id === clientMessageId)?.content,
             record.text,
@@ -1403,7 +1622,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
           source: "welcome_reset",
         });
       } else if (contextMode === "history_injection" && hasStaleLocalContinuity) {
-        rt.threadWarning.value = HISTORY_INJECTION_NOTICE;
+        if (showsContextRestoreNotices) rt.threadWarning.value = HISTORY_INJECTION_NOTICE;
       } else if (prevThreadId && serverThreadId && prevThreadId !== serverThreadId) {
         rt.threadWarning.value =
           `后端线程已变化但没有显式重置标记（原=${prevThreadId}，现=${serverThreadId}）。` +
@@ -1533,20 +1752,25 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     }
 
     if (type === "context_injection") {
+      if (!showsContextRestoreNotices) return;
       const rec = msg as Record<string, unknown>;
       const entryCount = Number(rec.entryCount);
       if (!Number.isFinite(entryCount) || entryCount <= 0) return;
+      if (isHistoryInjectionWarning(rt.threadWarning.value)) {
+        rt.threadWarning.value = null;
+      }
       const earliestRaw = Number(rec.earliestTs);
       const earliestTs = Number.isFinite(earliestRaw) && earliestRaw > 0 ? earliestRaw : null;
       const sinceLabel = earliestTs ? ` (起自 ${new Date(earliestTs).toLocaleString()})` : "";
       const content = `已注入最近 ${Math.floor(entryCount)} 条聊天历史作为本轮上下文${sinceLabel}。`;
-      rt.laneStatus.value = { kind: "info", message: content };
+      showTransientLaneStatus({ kind: "info", message: content }, CONTEXT_INJECTION_STATUS_TTL_MS);
       return;
     }
 
     if (type === "status") {
       const content = firstWireText(msg.message, msg.output, msg.text).trim();
       if (!content) return;
+      if (!showsContextRestoreNotices && CONTEXT_RESTORE_STATUS_MESSAGES.has(content)) return;
       if (recoveredBackendActivitySeen && BACKEND_WAITING_STATUS_MESSAGES.has(content)) return;
       const kind = String(msg.kind ?? "").trim() === "error"
         ? "error"
@@ -1602,7 +1826,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       }
       const historyThreadId = String((msg as { threadId?: unknown }).threadId ?? "").trim();
       const historyContextMode = String((msg as { contextMode?: unknown }).contextMode ?? "").trim();
-      const restoreNotice = contextModeNotice(historyContextMode);
+      const restoreNotice = showsContextRestoreNotices ? contextModeNotice(historyContextMode) : "";
       const restoredContextStatus: LaneStatus | null = restoreNotice && !resumeReplacePending
         ? { kind: "info", message: restoreNotice }
         : null;
@@ -1630,6 +1854,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
         if (!trimmed) continue;
         const historyText = role === "status" && kind !== "error" ? stripSelectionChangeNotices(trimmed) : trimmed;
         if (!historyText) continue;
+        if (isLegacyReviewInspectionStep(role, kind, historyText)) continue;
         if (kind === "file_change") {
           const files = parseFileChangeHistory(historyText);
           if (files.length > 0) {
@@ -1722,9 +1947,12 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
           });
           continue;
         }
+        if (role === "status" && kind.startsWith("agent_message_error:")) {
+          continue;
+        }
         if (role === "status") {
           restoredHistoryStatus = replayedLaneStatus(kind, historyText);
-          if (kind === "error" && !isUserAbortFailure(historyText)) {
+          if (kind === "error" && !isUserAbortFailure(historyText) && !isNoActiveTurnNotice(historyText)) {
             // Anchor persisted turn failures to their user prompt so the
             // failed turn keeps a retry target after reconnects and reloads
             // instead of vanishing with the transient lane banner.
@@ -1733,9 +1961,15 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
           continue;
         }
         if (role === "user") {
+          if (isSystemOriginHistoryKind(kind)) continue;
+          const clientMessageId = parseClientMessageIdFromHistoryKind(kind);
+          const handoff = agentHandoffFromHistory(kind, historyText, clientMessageId);
+          if (handoff) {
+            next.push({ ...handoff, ts: ts ?? undefined });
+            continue;
+          }
           restoredHistoryStatus = null;
           const execution = parseExecutionFromHistoryKind(kind);
-          const clientMessageId = parseClientMessageIdFromHistoryKind(kind);
           next.push({
             id: clientMessageId.includes("-") ? clientMessageId : `h-u-${idx}`,
             role: "user",
@@ -1805,7 +2039,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
         const alreadyHas = clientMessageId
           ? existing.some((m) => m.id === clientMessageId)
           : Boolean(lastUser && lastUser.content === text && lastUser.ts === eventTs);
-        if (!alreadyHas && text) {
+        if (!alreadyHas && text && !isSystemOriginHistoryKind(kind)) {
           pushMessageBeforeLive({
             id: clientMessageId || randomId("u"),
             role: "user",
@@ -1830,6 +2064,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
         }
       } else if (role === "status") {
         if (text) {
+          if (isLegacyReviewInspectionStep(role, kind, text)) return;
           if (kind.startsWith("action_step:")) {
             const stepIdentity = kind.slice("action_step:".length).trim();
             const stepId = stepIdentity ? `action-step:${stepIdentity}` : String(rec.id ?? randomId("action-step"));
@@ -1891,7 +2126,13 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       const alreadyHas = clientMessageId
         ? existing.some((m) => m.id === clientMessageId)
         : Boolean(lastUser && lastUser.content === text && lastUser.ts === eventTs);
-      if (!alreadyHas && text) {
+      const historyKind = String(msg.kind ?? "");
+      if (promptOriginFromHistoryKind(historyKind) === "agent") {
+        const handoff = agentHandoffFromHistory(historyKind, text, clientMessageId);
+        if (handoff && !alreadyHas) pushMessageBeforeLive(handoff, rt);
+        return;
+      }
+      if (!alreadyHas && text && !isSystemOriginHistoryKind(historyKind)) {
         const execution = parseExecutionFromHistoryKind(String(msg.kind ?? ""));
         pushMessageBeforeLive({
           id: clientMessageId || randomId("u"),
@@ -2265,6 +2506,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
         return;
       }
 
+      const turnWasInFlight = rt.turnInFlight;
       markTurnTerminal(msg as Record<string, unknown>);
       clearTransientRetryNotice();
       recoveredBackendActivitySeen = false;
@@ -2291,6 +2533,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
 
       const userMessage = normalizeWireText(msg.message) || "error";
       const isUserAbort = isUserAbortFailure(userMessage, (msg as { aborted?: unknown }).aborted);
+      const isNoActiveTurn = errorInfo?.code === "no_active_turn" || isNoActiveTurnNotice(userMessage);
       const errorContent = errorInfo
         ? `⚠️ ${userMessage}\n\n` +
           `错误类型: ${errorInfo.code ?? "unknown"}\n` +
@@ -2298,25 +2541,34 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
           (errorInfo.needsReset ? "⚠️ 建议使用 /reset 重置会话\n" : "")
         : userMessage;
 
-      rt.laneStatus.value = { kind: "error", message: errorContent };
+      rt.laneStatus.value = isNoActiveTurn ? null : { kind: "error", message: errorContent };
       // Persist genuine failures on the user turn so the error survives lane
       // status cleanup and page reloads, and so the turn can be retried in
       // place. Intentional user aborts remain lane status only. The record
       // content mirrors the history entry persisted by the server (`[code]
       // hint`) so replay and live events converge on one retry target.
-      if (!isUserAbort) {
+      if (!isUserAbort && !isNoActiveTurn) {
         const failureCardContent = errorInfo?.code ? `[${errorInfo.code}] ${userMessage}` : userMessage;
+        const runningPromptId = firstWireText(
+          rt.queuedPrompts.value.find((prompt) => prompt.deliveryStatus === "running")?.clientMessageId,
+        ).trim();
         const failedTurnId = firstWireText(
           (msg as { clientMessageId?: unknown }).clientMessageId,
           (msg as { client_message_id?: unknown }).client_message_id,
           terminalPromptId,
+          runningPromptId,
         ).trim();
-        rt.messages.value = upsertTurnFailureCard(
-          rt.messages.value,
-          failureCardContent,
-          finiteTimestamp((msg as { ts?: unknown }).ts),
-          failedTurnId || undefined,
-        );
+        // Without an explicit identity only an in-flight turn can own the
+        // failure. Attaching to the newest user message otherwise put retry
+        // buttons on prompts that had never run.
+        if (failedTurnId || turnWasInFlight) {
+          rt.messages.value = upsertTurnFailureCard(
+            rt.messages.value,
+            failureCardContent,
+            finiteTimestamp((msg as { ts?: unknown }).ts),
+            failedTurnId || undefined,
+          );
+        }
       }
       if (isUserAbort) discardAbortedPromptCard(rt, removeQueuedPrompt);
       if (errorInfo?.code === "conversation_model_unavailable") refreshUnavailableModel(userMessage);

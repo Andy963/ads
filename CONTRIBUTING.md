@@ -20,7 +20,8 @@ By participating in this project, you agree to maintain a respectful and inclusi
 
 ### Prerequisites
 
-- Node.js 18 or newer
+- Rust 1.85 or newer (`cargo`, `rustfmt`, `clippy`)
+- Node.js 24 or newer (for `client/`)
 - npm or yarn
 - Git
 
@@ -32,14 +33,15 @@ By participating in this project, you agree to maintain a respectful and inclusi
    git clone https://github.com/YOUR_USERNAME/ads.git
    cd ads
    ```
-3. Install dependencies:
+3. Install package-local dependencies:
    ```bash
-   npm install
+   npm ci --prefix client
    ```
 4. Create a `.env` file based on `.env.example` (shared by Telegram/Web)
 5. Build the project:
    ```bash
-   npm run build
+   npm --prefix client run build
+   cargo build --manifest-path rust-server/Cargo.toml -p ads-server -p ads-telegram
    ```
 
 ## Development Workflow
@@ -47,21 +49,24 @@ By participating in this project, you agree to maintain a respectful and inclusi
 ### Running in Development Mode
 
 ```bash
-npm run dev
+cargo run --manifest-path rust-server/Cargo.toml -p ads-server
+npm --prefix client run dev
 ```
 
-This runs the server in watch mode, automatically rebuilding on file changes.
+This starts the Rust backend alongside the Vite hot-reload client dev server.
 
 ### Running Tests
 
 ```bash
-npm test
+cargo test --manifest-path rust-server/Cargo.toml --workspace -- --test-threads=2
+npm --prefix client test
 ```
 
 ### Building
 
 ```bash
-npm run build
+npm --prefix client run build
+cargo build --manifest-path rust-server/Cargo.toml --release -p ads-server -p ads-telegram
 ```
 
 ## Pull Request Process
@@ -79,8 +84,9 @@ npm run build
 
 3. **Test your changes**:
    ```bash
-   npm test
-   npm run build
+   cargo test --manifest-path rust-server/Cargo.toml --workspace -- --test-threads=2
+   npm --prefix client test
+   npm --prefix client run build
    ```
 
 4. **Push to your fork**:
@@ -137,7 +143,7 @@ export function loadConfig(path: string): UserConfig {
 ## Testing
 
 - Write tests for new features and bug fixes
-- Place tests in the `tests/` directory
+- Place backend tests under `rust-server/crates/<crate>/tests/` and client tests under `client/src/__tests__/`
 - Use descriptive test names
 - Aim for high code coverage on critical paths
 
@@ -173,14 +179,8 @@ describe('Feature Name', () => {
 
 ```
 ads/
-├── server/        # Backend (Node.js, TypeScript)
-│   ├── graph/     # Graph/workflow logic
-│   ├── workspace/ # Workspace management
-│   ├── telegram/  # Telegram bot
-│   └── web/       # Web Console backend
-├── client/        # Frontend (Vue 3, Vite)
-├── tests/         # Test files
-├── scripts/       # Build and utility scripts
+├── client/        # Shared frontend (Vue 3, Vite)
+├── rust-server/   # Active Rust backend and connector crates
 └── docs/          # Documentation
 ```
 

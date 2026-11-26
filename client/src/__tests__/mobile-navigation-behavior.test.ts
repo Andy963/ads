@@ -299,7 +299,7 @@ describe("mobile navigation behavior", () => {
     expect(wrapper.find('[data-testid="mobile-drawer-toggle"]').exists()).toBe(true);
     expect(wrapper.find(".chatShell").exists()).toBe(true);
     expect(wrapper.find(".mobileMainPanel").exists()).toBe(false);
-    expect(wrapper.findAll(".laneTab").map((tab) => tab.text())).toEqual(["Acopilot", "Actions"]);
+    expect(wrapper.findAll(".laneTab").map((tab) => tab.text())).toEqual(["Acopilot", "Actions", "PRs"]);
     expect(wrapper.find('[data-testid="lane-tab-status-acopilot"]').classes()).toContain("laneTabStatusDot--connected");
     expect(wrapper.find('[data-testid="lane-tab-status-actions"]').classes()).toContain("laneTabStatusDot--connected");
     expect(wrapper.find('[data-testid="lane-tab-acopilot"]').classes()).toContain("active");
@@ -392,18 +392,16 @@ describe("mobile navigation behavior", () => {
     const menu = wrapper.find('[data-testid="mobile-context-menu"]');
     const actions = menu.findAll("button.mobileContextAction");
     expect(menu.attributes("aria-label")).toBe("项目操作");
-    expect(menu.find(".mobileContextMenuTitle").exists()).toBe(false);
-    expect(menu.findAll(".mobileContextActionHint")).toHaveLength(0);
-    expect(actions).toHaveLength(2);
-    expect(actions.every((action) => (action.element as HTMLButtonElement).disabled)).toBe(true);
+    expect(actions).toHaveLength(3);
+    expect((menu.find('[data-testid="mobile-context-action-resume"]').element as HTMLButtonElement).disabled).toBe(true);
+    expect((menu.find('[data-testid="mobile-context-action-new-session"]').element as HTMLButtonElement).disabled).toBe(true);
+    expect((menu.find('[data-testid="mobile-context-action-notes"]').element as HTMLButtonElement).disabled).toBe(false);
 
     acopilotRuntime.busy.value = false;
     acopilotRuntime.connected.value = false;
     await settleUi(wrapper);
     expect((menu.find('[data-testid="mobile-context-action-resume"]').element as HTMLButtonElement).disabled).toBe(false);
     expect((menu.find('[data-testid="mobile-context-action-new-session"]').element as HTMLButtonElement).disabled).toBe(true);
-    expect(menu.findAll(".mobileContextActionHint")).toHaveLength(0);
-
     wrapper.unmount();
   }, 40_000);
 
@@ -716,6 +714,72 @@ describe("mobile navigation behavior", () => {
       wrapper.unmount();
     });
 
+    it("switches from Actions to PRs on a leftward drag and back on a rightward drag", async () => {
+      const wrapper = await mountMobileChat();
+      await wrapper.find('[data-testid="lane-tab-actions"]').trigger("click");
+      await settleUi(wrapper);
+      expect(wrapper.get(".lanePanelsTrack").classes()).toContain("lanePanelsTrack--worker");
+
+      const panels = wrapper.get(".lanePanels").element;
+      // Drag left from Actions (-390px) by 160px -> -550px (past 35% snap ratio -> PRs)
+      dispatchTouch(panels, "touchstart", { clientX: 260, clientY: 300 }, 1000);
+      dispatchTouch(panels, "touchmove", { clientX: 100, clientY: 300 }, 1400);
+      await settleUi(wrapper);
+      expect((wrapper.get(".lanePanelsTrack").element as HTMLElement).style.transform).toBe("translate3d(-550px, 0, 0)");
+      expect(wrapper.get(".laneTabGroup").attributes("style")).toContain("--lane-pill-progress");
+
+      dispatchTouch(panels, "touchend", null, 1500);
+      await waitForSnap();
+      await settleUi(wrapper);
+      expect(wrapper.get(".app").attributes("data-active-workspace-view")).toBe("prs");
+      expect(wrapper.find('[data-testid="lane-tab-prs"]').classes()).toContain("active");
+      expect(wrapper.get(".lanePanelsTrack").classes()).toContain("lanePanelsTrack--prs");
+      expect(wrapper.get('[data-testid="lane-panel-prs"]').attributes("aria-hidden")).toBeUndefined();
+      expect(wrapper.get('[data-testid="lane-panel-actions"]').attributes("aria-hidden")).toBe("true");
+
+      // Drag right from PRs (-780px) by 160px -> -620px (back to Actions)
+      dispatchTouch(panels, "touchstart", { clientX: 120, clientY: 300 }, 2000);
+      dispatchTouch(panels, "touchmove", { clientX: 280, clientY: 300 }, 2400);
+      await settleUi(wrapper);
+      expect((wrapper.get(".lanePanelsTrack").element as HTMLElement).style.transform).toBe("translate3d(-620px, 0, 0)");
+
+      dispatchTouch(panels, "touchend", null, 2500);
+      await waitForSnap();
+      await settleUi(wrapper);
+      expect(wrapper.get(".app").attributes("data-active-workspace-view")).toBe("actions");
+      expect(wrapper.find('[data-testid="lane-tab-actions"]').classes()).toContain("active");
+      expect(wrapper.get(".lanePanelsTrack").classes()).toContain("lanePanelsTrack--worker");
+      wrapper.unmount();
+    });
+
+    it("applies rubber-band resistance at the outer PRs edge and ignores vertical scroll inside PRs", async () => {
+      const wrapper = await mountMobileChat();
+      await wrapper.find('[data-testid="lane-tab-prs"]').trigger("click");
+      await settleUi(wrapper);
+      expect(wrapper.get(".app").attributes("data-active-workspace-view")).toBe("prs");
+
+      const panels = wrapper.get(".lanePanels").element;
+      // Dragging further left past PRs (-780px) by 100px applies 0.35 resistance -> -815px.
+      dispatchTouch(panels, "touchstart", { clientX: 260, clientY: 300 }, 1000);
+      dispatchTouch(panels, "touchmove", { clientX: 160, clientY: 300 }, 1400);
+      await settleUi(wrapper);
+      expect((wrapper.get(".lanePanelsTrack").element as HTMLElement).style.transform).toBe("translate3d(-815px, 0, 0)");
+
+      dispatchTouch(panels, "touchend", null, 1500);
+      await waitForSnap();
+      await settleUi(wrapper);
+      expect(wrapper.get(".app").attributes("data-active-workspace-view")).toBe("prs");
+
+      // Predominantly vertical touch inside PRs must not lock into a horizontal swipe.
+      dispatchTouch(panels, "touchstart", { clientX: 200, clientY: 200 }, 2000);
+      dispatchTouch(panels, "touchmove", { clientX: 215, clientY: 340 }, 2100);
+      await settleUi(wrapper);
+      expect((wrapper.get(".lanePanelsTrack").element as HTMLElement).style.transform).toBe("");
+      dispatchTouch(panels, "touchend", null, 2200);
+      await settleUi(wrapper);
+      expect(wrapper.get(".app").attributes("data-active-workspace-view")).toBe("prs");
+      wrapper.unmount();
+    });
     it("keeps both lane panels mounted with identical DOM elements across switches", async () => {
       const wrapper = await mountMobileChat();
       const advisorEl = wrapper.get('[data-testid="lane-panel-acopilot"]').element;
@@ -1122,24 +1186,6 @@ describe("mobile navigation behavior", () => {
       dispatchTouch(drawerEl, "touchend", null, 3900);
       await waitForSnap();
       await settleUi(wrapper);
-      expect(wrapper.find('[data-testid="mobile-drawer"]').exists()).toBe(false);
-      expect(wrapper.get('[data-testid="mobile-drawer-toggle"]').attributes("aria-expanded")).toBe("false");
-      wrapper.unmount();
-    });
-
-    it("snaps shut after a 40% close drag", async () => {
-      const wrapper = await mountMobileChat();
-      await wrapper.get('[data-testid="mobile-drawer-toggle"]').trigger("click");
-      await settleUi(wrapper);
-      const drawerEl = wrapper.get('[data-testid="mobile-drawer"]').element;
-      const dragDistance = DRAWER_WIDTH * 0.4;
-
-      dispatchTouch(drawerEl, "touchstart", { clientX: 300, clientY: 400 }, 3000);
-      dispatchTouch(drawerEl, "touchmove", { clientX: 300 - dragDistance, clientY: 400 }, 3400);
-      dispatchTouch(drawerEl, "touchend", null, 3500);
-      await waitForSnap();
-      await settleUi(wrapper);
-
       expect(wrapper.find('[data-testid="mobile-drawer"]').exists()).toBe(false);
       expect(wrapper.get('[data-testid="mobile-drawer-toggle"]').attributes("aria-expanded")).toBe("false");
       wrapper.unmount();

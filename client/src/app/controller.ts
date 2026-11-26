@@ -131,6 +131,7 @@ export function createAppContext() {
       rt.connected.value = false;
       rt.transcriptAuthoritative.value = false;
       rt.queuedPrompts.value = [];
+      if (rt.pendingAgentHandoffs) rt.pendingAgentHandoffs.value = [];
       rt.pendingImages.value = [];
       rt.composerDraft.value = "";
       for (const timer of [rt.connectionWatchdogTimer, rt.reconnectTimer, rt.noticeTimer, rt.liveActivityTtlTimer]) {
@@ -489,6 +490,12 @@ export function createAppController() {
       if (!ctx.loggedIn.value) return;
       void activateProject(ctx.activeProjectId.value);
     };
+    const handleConnectivityLost = (): void => {
+      for (const runtime of [...ctx.runtimeByProjectId.values(), ...ctx.acopilotRuntimeByProjectId.values()]) {
+        runtime.connected.value = false;
+        runtime.transcriptAuthoritative.value = false;
+      }
+    };
     const handleVisibilityChange = (): void => {
       if (document.visibilityState === "visible") {
         handleConnectivityRestored();
@@ -499,11 +506,13 @@ export function createAppController() {
     window.addEventListener("pagehide", ctx.transcriptCache.flush);
     window.addEventListener("pageshow", handleConnectivityRestored);
     window.addEventListener("online", handleConnectivityRestored);
+    window.addEventListener("offline", handleConnectivityLost);
     document.addEventListener("visibilitychange", handleVisibilityChange);
     (ctx as AppContext & {
       __connectivityCleanup?: () => void;
     }).__connectivityCleanup = () => {
       window.removeEventListener("online", handleConnectivityRestored);
+      window.removeEventListener("offline", handleConnectivityLost);
       window.removeEventListener("pageshow", handleConnectivityRestored);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
       window.removeEventListener("pagehide", ctx.transcriptCache.flush);

@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { defineConfig } from "vitest/config";
 
 const webRoot = path.dirname(fileURLToPath(import.meta.url));
-const repoRoot = path.resolve(webRoot, "..");
+const repositoryRoot = path.resolve(webRoot, "..");
 const frontendMaxWorkers =
   process.env.ADS_VITEST_MAX_WORKERS?.trim() ||
   process.env.VITEST_MAX_WORKERS?.trim() ||
@@ -12,8 +12,13 @@ const frontendMaxWorkers =
 
 export default defineConfig({
   root: webRoot,
-  cacheDir: path.resolve(repoRoot, "node_modules", ".vite", "client-vitest"),
+  cacheDir: path.resolve(webRoot, "node_modules", ".vite", "vitest"),
   plugins: [vue()],
+  server: {
+    fs: {
+      allow: [repositoryRoot],
+    },
+  },
   define: {
     __APP_VERSION__: JSON.stringify("0.0.1"),
   },

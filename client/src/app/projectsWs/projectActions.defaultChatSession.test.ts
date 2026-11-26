@@ -23,10 +23,8 @@ describe("projectActions.loadProjectsFromServer", () => {
     await projects.startNewChatSession();
 
     expect(ctx.activeRuntime.value.inputLocked.value).toBe(false);
-    expect(ctx.activeRuntime.value.laneStatus.value).toEqual({
-      kind: "info",
-      message: "New session active: clean context (previous history is not included).",
-    });
+    expect(ctx.activeRuntime.value.laneStatus.value).toBeNull();
+    expect(ctx.activeRuntime.value.messages.value).toHaveLength(0);
 
     const before = ctx.projects.value.find((p) => p.id === "default")?.chatSessionId ?? null;
     expect(before).not.toBeNull();

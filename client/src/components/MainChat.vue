@@ -3,7 +3,8 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue"
 import MainChatComposerPanel from "./MainChatComposerPanel.vue";
 import MainChatMessageList from "./MainChatMessageList.vue";
 
-import type { ChatMessage, IncomingImage, QueuedPrompt } from "./mainChat/types";
+import type { ChatMessage, IncomingImage, PendingAgentHandoff, QueuedPrompt } from "./mainChat/types";
+import type { ModelConfig } from "../api/types";
 import { useCopyMessage } from "./mainChat/useCopyMessage";
 import { loadMarkdown, loadedMarkdown } from "../lib/markdown/loader";
 import { createTapActivation } from "../lib/tapActivation";
@@ -15,6 +16,7 @@ const props = withDefaults(defineProps<{
   viewport?: TranscriptViewport | null;
   transcriptAlignSeq?: number;
   queuedPrompts: QueuedPrompt[];
+  pendingAgentHandoffs?: PendingAgentHandoff[];
   pendingImages: IncomingImage[];
   draft?: string;
   latestPromptKey?: string;
@@ -25,6 +27,11 @@ const props = withDefaults(defineProps<{
   readOnly?: boolean;
   apiToken?: string;
   runningTaskCount?: number;
+  agents?: Array<{ id: string; name: string; ready: boolean; error?: string }>;
+  activeAgentId?: string;
+  models?: ModelConfig[];
+  modelId?: string;
+  modelReasoningEffort?: string;
   workspaceRoot?: string | null;
   viewportScopeKey?: string;
   transcriptScopeKey?: string;
@@ -34,7 +41,10 @@ const props = withDefaults(defineProps<{
   threadWarning?: string | null;
   connectionStatusKind?: "info" | "progress" | "disconnected" | "error" | null;
   connectionStatusMessage?: string | null;
-}>(), { voiceInputActive: true, transcriptAlignSeq: 0, transcriptAuthoritativeSeq: 0, transcriptResetSeq: 0 });
+  connectionPhase?: "connecting" | "syncing" | "reconnecting" | "error" | null;
+  connectionPhaseMessage?: string | null;
+  operationalError?: string | null;
+}>(), { voiceInputActive: true, transcriptAlignSeq: 0, transcriptAuthoritativeSeq: 0, transcriptResetSeq: 0, pendingAgentHandoffs: () => [] });
 
 const emit = defineEmits<{
   (e: "update:draft", value: string): void;
@@ -42,6 +52,7 @@ const emit = defineEmits<{
   (e: "update:viewport", value: TranscriptViewport): void;
   (e: "send", content: string): void;
   (e: "retryMessage", message: ChatMessage): void;
+  (e: "retryAgentHandoff", messageId: string): void;
   (e: "interrupt"): void;
   (e: "clear"): void;
   (e: "addImages", images: IncomingImage[]): void;
@@ -49,6 +60,9 @@ const emit = defineEmits<{
   (e: "removeImage", index: number): void;
   (e: "removeQueued", id: string): void;
   (e: "retryQueued", id: string): void;
+  (e: "switchAgent", agentId: string): void;
+  (e: "setModel", modelId: string): void;
+  (e: "setReasoningEffort", effort: string): void;
 }>();
 
 const listRef = ref<HTMLElement | null>(null);
@@ -344,14 +358,17 @@ function scrollHostTowards(host: HTMLElement, top: number, smooth: boolean): voi
 // The one and only alignment of the reading lock: scroll so the answer row's
 // top sits READING_LOCK_TOP_OFFSET_PX below the viewport top. After this runs
 // the content grows downward on its own; no per-frame correction follows.
-function alignAnswerToViewportTop(row: HTMLElement, smooth: boolean): void {
+function alignAnswerToViewportTop(row: HTMLElement, smooth: boolean): number | null {
   const host = listRef.value;
-  if (!host || !row.isConnected) return;
+  if (!host || !row.isConnected) return null;
   const delta =
     row.getBoundingClientRect().top - host.getBoundingClientRect().top - READING_LOCK_TOP_OFFSET_PX;
-  if (Math.abs(delta) < 1) return;
-  scrollHostTowards(host, host.scrollTop + delta, smooth);
+  if (Math.abs(delta) < 1) return host.scrollTop;
+  const maxScrollTop = Math.max(0, host.scrollHeight - host.clientHeight);
+  const target = Math.max(0, Math.min(host.scrollTop + delta, maxScrollTop));
+  scrollHostTowards(host, target, smooth);
   scheduleViewportSave();
+  return target;
 }
 
 // Attempt the one-shot alignment. The answer owns the reading state even when
@@ -366,8 +383,8 @@ function tryLockAnswerRow(row: HTMLElement, smooth: boolean): boolean {
   readingLockEl = row;
   readingLockPendingId = "";
   autoScroll.value = false;
-  showScrollToBottom.value = true;
-  alignAnswerToViewportTop(row, smooth);
+  const targetTop = alignAnswerToViewportTop(row, smooth);
+  updateScrollToBottomVisibility(targetTop ?? undefined);
   return true;
 }
 
@@ -429,7 +446,7 @@ function pauseChatAutoScroll(): void {
   readingLockAligning = false;
   cancelBottomSettlement();
   autoScroll.value = false;
-  showScrollToBottom.value = true;
+  updateScrollToBottomVisibility();
 }
 
 function onChatScrollIntent(): void {
@@ -485,9 +502,10 @@ function clearChatTouchStart(): void {
 
 async function refreshAfterVisibility(): Promise<void> {
   await nextTick();
-  if (!listRef.value || !autoScroll.value) return;
-  listRef.value.scrollTop = listRef.value.scrollHeight;
-  showScrollToBottom.value = false;
+  const host = listRef.value;
+  if (!host) return;
+  if (autoScroll.value) host.scrollTop = host.scrollHeight;
+  updateScrollToBottomVisibility();
 }
 
 defineExpose({ refreshAfterVisibility });
@@ -509,7 +527,10 @@ function scheduleChatScrollToBottom(): void {
       if (readingLockAligning) return;
       // While the reading lock holds, the answer grows downward on its own;
       // never re-pin the bottom or correct the scroll position per frame.
-      if (readingLockEl) return;
+      if (readingLockEl) {
+        updateScrollToBottomVisibility();
+        return;
+      }
       const host = listRef.value;
       if (!host) return;
       if (readingLockPendingId && autoScroll.value) {
@@ -534,7 +555,10 @@ function scheduleChatScrollToBottom(): void {
 
 function onVisualViewportChange(): void {
   markChatKeyboardLayoutTransition();
-  if (!autoScroll.value || readingLockEl || readingLockAligning) return;
+  if (!autoScroll.value || readingLockEl || readingLockAligning) {
+    updateScrollToBottomVisibility();
+    return;
+  }
   scheduleChatScrollToBottom();
 }
 
@@ -690,6 +714,18 @@ const liveStepCanToggleExpanded = computed(() => {
 });
 const { copiedMessageId, onCopyMessage, formatMessageTs } = useCopyMessage();
 
+function updateScrollToBottomVisibility(scrollTop?: number): void {
+  const host = listRef.value;
+  if (!host) {
+    showScrollToBottom.value = false;
+    return;
+  }
+  const top = scrollTop ?? host.scrollTop;
+  showScrollToBottom.value =
+    host.scrollHeight > host.clientHeight &&
+    host.scrollHeight - top - host.clientHeight >= CHAT_STICKY_THRESHOLD_PX;
+}
+
 function handleScroll() {
   if (!listRef.value) return;
   const physicalScrollIntent = chatPhysicalScrollIntent;
@@ -706,7 +742,7 @@ function handleScroll() {
     // from physical input (wheel/touch/key release the lock earlier), so keep
     // the lock and leave the viewport untouched.
     autoScroll.value = false;
-    showScrollToBottom.value = true;
+    updateScrollToBottomVisibility();
     scheduleViewportSave();
     return;
   }
@@ -724,7 +760,7 @@ function handleScroll() {
     markViewportUserControlled();
   }
   autoScroll.value = distance < CHAT_STICKY_THRESHOLD_PX;
-  showScrollToBottom.value = distance >= CHAT_STICKY_THRESHOLD_PX;
+  updateScrollToBottomVisibility();
   scheduleViewportSave();
 }
 
@@ -751,7 +787,7 @@ function restoreInitialViewport(): void {
     initialViewportRestoreFrame = null;
     suppressInitialViewportScroll = false;
   });
-  showScrollToBottom.value = true;
+  updateScrollToBottomVisibility();
 }
 
 function escapeSelectorValue(value: string): string {
@@ -833,6 +869,7 @@ onMounted(() => {
     chatResizeObserver = new ResizeObserver(() => {
       markChatViewportLayoutTransition();
       restoreInitialViewport();
+      updateScrollToBottomVisibility();
       // If the chat pane is initially hidden (e.g. mobile tab), scrollHeight can be 0.
       // Once the pane becomes visible, ensure we still land at the bottom.
       scheduleChatScrollToBottom();
@@ -1020,7 +1057,7 @@ watch(
   () => {
     if (readingLockEl || readingLockAligning) return;
     if (autoScroll.value) scheduleChatScrollToBottom();
-    else showScrollToBottom.value = true;
+    else updateScrollToBottomVisibility();
   },
 );
 
@@ -1187,6 +1224,7 @@ onBeforeUnmount(() => {
           :workspace-root="workspaceRoot"
           @copy-message="onCopyMessage($event)"
           @retry-message="emit('retryMessage', $event)"
+          @retry-agent-handoff="emit('retryAgentHandoff', $event)"
           @toggle-live-step-expanded="toggleLiveStepExpanded"
           @before-history-prepend="pauseChatAutoScroll"
         />
@@ -1210,14 +1248,23 @@ onBeforeUnmount(() => {
       :latest-prompt-key="latestPromptKey"
       :voice-input-active="voiceInputActive"
       :queued-prompts="queuedPrompts"
+      :pending-agent-handoffs="pendingAgentHandoffs"
       :pending-images="pendingImages"
       :connected="connected"
       :busy="busy"
       :input-locked="inputLocked"
       :api-token="apiToken"
       :running-task-count="runningTaskCount"
+      :agents="agents"
+      :active-agent-id="activeAgentId"
+      :models="models"
+      :model-id="modelId"
+      :model-reasoning-effort="modelReasoningEffort"
       :connection-status-kind="connectionStatusKind"
       :connection-status-message="connectionStatusMessage"
+      :connection-phase="connectionPhase"
+      :connection-phase-message="connectionPhaseMessage"
+      :operational-error="operationalError"
       @update:draft="emit('update:draft', $event)"
       @send="handleSend"
       @interrupt="emit('interrupt')"
@@ -1226,6 +1273,9 @@ onBeforeUnmount(() => {
       @remove-image="emit('removeImage', $event)"
       @remove-queued="emit('removeQueued', $event)"
       @retry-queued="emit('retryQueued', $event)"
+      @switch-agent="emit('switchAgent', $event)"
+      @set-model="emit('setModel', $event)"
+      @set-reasoning-effort="emit('setReasoningEffort', $event)"
     />
   </div>
 </template>

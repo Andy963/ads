@@ -9,10 +9,10 @@
 新增生产构建回归覆盖 WebKit 和 Chromium 的逐字输入、软换行、缩短后收起、依赖展开状态的尺寸故障注入、组合输入和五行上限；报告记录所测资源哈希。此检查使用隔离的 HTTP/WS 固定数据，不能替代下方真实 WebSocket 回归或 iPhone PWA 验收。
 
 ```bash
-npm run build
-npm run test:web -- client/src/__tests__/composer-layout-feedback.test.ts
-npm run test:composer-layout-browser
-npm run test:chat-browser
+npm --prefix client run build
+npm --prefix client test -- src/__tests__/composer-layout-feedback.test.ts
+npm --prefix client run test:composer-layout-browser
+npm --prefix client run test:chat-browser
 ```
 
 真机重点复查：更新后不重开页面，连续输入跨越软换行边界，删短、清空、重新输入，再发送并继续输入；分别覆盖中文候选词期间和回复进行中。若仍报错，保留版本号及最早一条诊断。
@@ -30,7 +30,7 @@ v0.2.13 追加：真机报告"输入时"出现 Vue 渲染器崩溃（`Maximum ca
 
 ## 自动化范围
 
-`npm run test:chat-browser` 使用构建后的前端、真实 ADS WebSocket 路由和临时 SQLite 历史存储。只有认证/配置 HTTP 响应及模型适配器使用固定测试数据；不连接生产服务，不调用真实模型，不读取真实对话。
+`npm --prefix client run test:chat-browser` 使用构建后的前端、真实 ADS WebSocket 路由和临时 SQLite 历史存储。只有认证/配置 HTTP 响应及模型适配器使用固定测试数据；不连接生产服务，不调用真实模型，不读取真实对话。
 
 WebKit 覆盖移动触摸、两路非空历史、发送后清空、组合输入、草稿隔离和键盘视口变化；Chromium 覆盖桌面回归。刷新后的历史必须由服务端重放，而不是在浏览器中直接注入。
 
@@ -39,13 +39,16 @@ WebKit 覆盖移动触摸、两路非空历史、发送后清空、组合输入�
 回归还会先安装旧 Service Worker，再保持旧页面打开进行更新，要求新 Worker 不依赖旧页面发送升级消息就能完成激活与接管。自定义注册脚本下必须显式设置 `skipWaiting` 和 `clientsClaim`，不能只依赖插件的 `autoUpdate` 标志。
 
 ```bash
-npm ci
-npx playwright install --with-deps webkit chromium
-npm run lint
-npm run build
-npm test
-npm run test:web
-npm run test:chat-browser
+npm ci --prefix client
+npm ci --prefix ts-server
+npm --prefix client exec --no -- playwright install --with-deps webkit chromium
+npm --prefix client run lint
+npm --prefix ts-server run lint
+npm --prefix client run build
+npm --prefix ts-server run build
+npm --prefix ts-server test
+npm --prefix client test
+npm --prefix client run test:chat-browser
 ```
 
 报告与截图保存在命令输出指向的临时目录。可以用 `ADS_CHAT_BROWSER=webkit` 或 `ADS_CHAT_BROWSER=chromium` 单独运行一个引擎；`ADS_CHAT_BUILD_DIR` 可指定待检验的前端构建产物。失败用例会返回非零退出码。

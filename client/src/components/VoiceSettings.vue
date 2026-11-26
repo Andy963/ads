@@ -3,8 +3,8 @@ import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import type { ApiClient } from "../api/client";
 import ModelServicePicker from "./ModelServicePicker.vue";
 import SettingsSheet from "./SettingsSheet.vue";
-import type { VoiceConfig, VoiceSettingsResponse, VoiceTranscriptionResponse } from "../../../shared/voice";
-import { DEFAULT_CORRECTION_SYSTEM_PROMPT } from "../../../shared/voice";
+import type { VoiceConfig, VoiceSettingsResponse, VoiceTranscriptionResponse } from "../shared/voice";
+import { DEFAULT_CORRECTION_SYSTEM_PROMPT } from "../shared/voice";
 
 const props = withDefaults(defineProps<{ api: ApiClient; section?: "transcription" | "correction" }>(), { section: "transcription" });
 const emit = defineEmits<{ (e: "changed"): void }>();

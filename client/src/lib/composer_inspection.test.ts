@@ -31,7 +31,7 @@ describe("temporary composer inspection", () => {
   });
 
   async function install(): Promise<Inspection> {
-    const source = await readSfc("../../../scripts/inspect-composer.js", import.meta.url);
+    const source = await readSfc("../../scripts/inspect-composer.js", import.meta.url);
     new Function(source)();
     const inspection = inspectionWindow.ADSComposerInspection;
     if (!inspection) throw new Error("Inspection was not installed");

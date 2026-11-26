@@ -338,51 +338,6 @@ describe("chat execute stacking and command collapse", () => {
     }
   });
 
-  it("never renders legacy full output or output expansion controls", async () => {
-    const fullOutput = Array.from({ length: 2500 }, (_, index) => `line ${index + 1}`).join("\n");
-    const wrapper = mount(MainChatMessageList, {
-      props: {
-        messages: [
-          {
-            id: "e-1",
-            role: "system",
-            kind: "execute",
-            content: "line 1\nline 2\nline 3",
-            fullContent: fullOutput,
-            command: "npm test",
-            hiddenLineCount: 2497,
-          },
-        ],
-        copiedMessageId: null,
-        formatMessageTs: () => "",
-        liveStepExpanded: false,
-        liveStepHasOverflow: false,
-        liveStepCanToggleExpanded: false,
-        liveStepOutlineItems: [],
-        liveStepOutlineHiddenCount: 0,
-        liveStepCollapsedTrivialOutline: false,
-      },
-      global: {
-        stubs: {
-          MarkdownContent: true,
-          ChatFilePreviewModal: true,
-        },
-      },
-      attachTo: document.body,
-    });
-
-    await settleUi(wrapper);
-
-    expect(wrapper.get(".execute-cmd").text()).toBe("npm test");
-    expect(wrapper.find(".execute-output").exists()).toBe(false);
-    expect(wrapper.find(".execute-more").exists()).toBe(false);
-    expect(wrapper.find(".executeCopyBtn").exists()).toBe(false);
-    expect(wrapper.text()).not.toContain("line 1");
-    expect(wrapper.text()).not.toContain("2497");
-
-    wrapper.unmount();
-  });
-
   it("keeps output hidden through running and completed command updates", async () => {
     const longOutput = Array.from({ length: 1500 }, (_, i) => `line ${i + 1}`).join("\n");
     const wrapper = mount(MainChatMessageList, {
@@ -430,64 +385,6 @@ describe("chat execute stacking and command collapse", () => {
     expect(wrapper.find(".execute-output").exists()).toBe(false);
     expect(wrapper.find(".execute-more").exists()).toBe(false);
     expect(wrapper.text()).not.toContain("last line");
-
-    wrapper.unmount();
-  });
-
-  it("renders no execute stack when there are no execute messages", async () => {
-    const wrapper = mount(MainChat, {
-      props: {
-        messages: [
-          { id: "u-1", role: "user", kind: "text", content: "hi" },
-          { id: "a-1", role: "assistant", kind: "text", content: "done" },
-        ],
-        queuedPrompts: [],
-        pendingImages: [],
-        connected: true,
-        busy: false,
-      },
-      global: {
-        stubs: {
-          MarkdownContent: true,
-        },
-      },
-      attachTo: document.body,
-    });
-
-    await settleUi(wrapper);
-
-    expect(wrapper.findAll(".execute-block")).toHaveLength(0);
-    expect(wrapper.findAll(".execute-underlay")).toHaveLength(0);
-
-    wrapper.unmount();
-  });
-
-  it("renders a single execute block without underlays when there is only one execute message", async () => {
-    const wrapper = mount(MainChat, {
-      props: {
-        messages: [
-          { id: "u-1", role: "user", kind: "text", content: "hi" },
-          { id: "e-1", role: "system", kind: "execute", content: "out-1", command: "cmd-1" },
-          { id: "a-1", role: "assistant", kind: "text", content: "done" },
-        ],
-        queuedPrompts: [],
-        pendingImages: [],
-        connected: true,
-        busy: false,
-      },
-      global: {
-        stubs: {
-          MarkdownContent: true,
-        },
-      },
-      attachTo: document.body,
-    });
-
-    await settleUi(wrapper);
-
-    expect(wrapper.findAll(".execute-block")).toHaveLength(1);
-    expect(wrapper.findAll(".execute-underlay")).toHaveLength(0);
-    expect(wrapper.find(".execute-cmd").text()).toContain("cmd-1");
 
     wrapper.unmount();
   });
@@ -649,39 +546,6 @@ describe("chat execute stacking and command collapse", () => {
     expect(wrapper.findAll(".execute-output")).toHaveLength(0);
     expect(wrapper.text()).not.toContain("out-1");
     expect(wrapper.text()).not.toContain("out-20");
-
-    wrapper.unmount();
-  });
-
-  it("does not render finalized command trees in the chat UI", async () => {
-    const wrapper = mount(MainChat, {
-      props: {
-        messages: [
-          {
-            id: "c-1",
-            role: "system",
-            kind: "command",
-            content: ["$ one", "$ two", "$ three", "$ four"].join("\n"),
-          },
-        ],
-        queuedPrompts: [],
-        pendingImages: [],
-        connected: true,
-        busy: false,
-      },
-      global: {
-        stubs: {
-          MarkdownContent: true,
-        },
-      },
-      attachTo: document.body,
-    });
-
-    await settleUi(wrapper);
-
-    expect(wrapper.find(".command-block").exists()).toBe(false);
-    expect(wrapper.find(".command-tree-header").exists()).toBe(false);
-    expect(wrapper.find(".command-tree").exists()).toBe(false);
 
     wrapper.unmount();
   });

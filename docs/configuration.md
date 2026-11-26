@@ -42,7 +42,7 @@ ADS 会在启动时从当前工作目录向上查找 `.env` 文件，并自动�
 | `ADS_ADVISOR_CODEX_MODEL` | 未设置 | Advisor Lane 专用的 Codex 模型覆盖（旧名 `ADS_PLANNER_CODEX_MODEL` 仍兼容，已弃用） |
 | `ADS_ADVISOR_SANDBOX_MODE` | `danger-full-access` | Codex/Advisor Lane 沙箱权限覆盖；用于需要调用 GitHub CLI 的场景。非法值安全回退为 `workspace-write`（旧名 `ADS_PLANNER_SANDBOX_MODE` 仍兼容，已弃用）；不影响 Native Runtime 的直接宿主机执行语义 |
 | `ADS_SCHEDULER_MODEL` | 未设置 | Scheduler 执行定时 Prompt 时使用的模型覆盖 |
-| `ADS_REVIEW_TEST_COMMAND` | `npm test` | Actions Reviewer 队列在评审前执行的验证命令；非 Node 仓库需覆盖为仓库实际的检查命令 |
+| `ADS_REVIEW_TEST_COMMAND` | 已由 Reviewer 自主选择替代 | 历史兼容配置；当前由 Reviewer 按 diff 自主选择验证命令（见 ADR 0060 / ADR 0066） |
 
 ---
 
@@ -143,7 +143,7 @@ Chat Completions 的 `max_tokens` 使用同一个有效上限。输入预算等�
 
 ## 7. Optional Telegram Connector
 
-Telegram variables belong to the standalone `connectors/telegram` package and are not read by ADS Core.
+Telegram variables belong to the standalone `ads-telegram` connector (`rust-server/crates/ads-telegram`) and are not read by ADS Core.
 
 | 变量名 | 默认值 | 说明 |
 |---|---|---|
@@ -154,6 +154,8 @@ Telegram variables belong to the standalone `connectors/telegram` package and ar
 | `ADS_CONNECTOR_TOKEN` | 必填 | Core connector bearer token；Connector 与 Core 必须配置为同一值 |
 | `ADS_CONNECTOR_USER_ID` | 首个启用的 Web 用户 | Bearer connector 使用的凭据 owner 覆盖值；未设置或保持 `connector` 时使用首个启用的 Web 用户 |
 | `TELEGRAM_MAX_REQUESTS_PER_MINUTE` | `30` | 每分钟最高请求频率限制 |
+| `TELEGRAM_PROMPT_IDLE_TIMEOUT_MS` | `180000` | 连续多久没有收到同一 prompt 的任何事件时发送一次“仍在执行”提醒；不会终止 turn |
+| `TELEGRAM_PROMPT_MAX_DURATION_MS` | `1800000` | 单个 prompt 的绝对等待上限，超过后 Connector 停止等待并报错；必须不小于 idle 超时 |
 | `TELEGRAM_PROXY_URL` | 未设置 | 网络代理地址（如 `http://127.0.0.1:7890`） |
 | `TELEGRAM_SILENT_NOTIFICATIONS` | `true` | 是否静默推送任务完成通知 |
 | `TELEGRAM_NOTIFICATION_CHAT_ID` | 未设置 | 接收异步任务终态通知的 Chat ID |
@@ -216,4 +218,4 @@ Reviewer 执行或输出协议错误会显示具体原因并返回操作失败�
 
 Reviewer 的模型、推理强度和 system prompt 来自角色配置；连接使用任务所有者的 HTTP 模型配置和凭据。仅配置 Codex CLI 登录而无可用 HTTP 连接不能保证 Reviewer 可用。检查对象是精确被审查提交，不是未提交工作区；不支持写入、shell、符号链接或子模块检查。详见 ADR 0033。
 
-Acopilot 会话中的 `review_action` 将当前 Issue-backed PR 派入 Actions Reviewer 队列，并等待结构化结果。队列先运行 `ADS_REVIEW_TEST_COMMAND`（默认 `npm test`），再调用只读 Reviewer；PR、Issue 条件、相关 ADR、base/head 与验证报告会绑定到同一任务，并显示在 Actions 队列和会话中。Reviewer 角色必须启用并配置可用模型，否则任务以操作失败结束。只有对精确目标产生的 PASS 才是该提交的评审结果；head、base 或 Issue 条件变化后须重新派审。PASS 不会自动合并，合并仍需用户明确授权。
+Acopilot 会话中的 `review_action` 将当前 Issue-backed PR 派入 Actions Reviewer 队列并立即返回 job id，不等待裁决。Reviewer 通过当前活跃运行时（`CodexAppServer` 或 `Native`，见 ADR 0066）在只读审查边界内自主选择并执行验证命令（见 ADR 0060）；PR、Issue 条件、相关 ADR、base/head 与验证报告会绑定到同一任务。任务结束后裁决写成 Issue comment（`<!-- ads:review-verdict -->`），并由服务端创建持久的 Reviewer-to-Acopilot `agent_message`；它不会进入用户 `prompt_queue`。Acopilot 泳道显示明确的 agent handoff 卡片，并以独立 lease 和 lane 执行串行化消费该消息。Reviewer 角色必须启用并配置可用模型，否则任务以操作失败结束。只有对精确目标产生的 PASS 才是该提交的评审结果；head、base 或 Issue 条件变化后须重新派审。PASS 不会自动合并，合并仍需用户明确授权。

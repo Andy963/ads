@@ -34,6 +34,7 @@ class FakeWebSocket {
 
 afterEach(() => {
   FakeWebSocket.instances = [];
+  fakeDocument.visibilityState = "hidden";
   vi.unstubAllGlobals();
 });
 
@@ -218,6 +219,9 @@ describe("project WebSocket lane multiplexing", () => {
     };
     const actions = getProjectWebSocketLane({ projectId: "project-probe-timeout-test", sessionId: "session", lane: "actions", configs });
     const acopilot = getProjectWebSocketLane({ projectId: "project-probe-timeout-test", sessionId: "session", lane: "acopilot", configs });
+    const closeCodes: number[] = [];
+    actions.onClose = (event) => closeCodes.push(event.code);
+    acopilot.onClose = (event) => closeCodes.push(event.code);
     actions.connect();
     acopilot.connect();
     const baseline = FakeWebSocket.instances.length;
@@ -234,6 +238,7 @@ describe("project WebSocket lane multiplexing", () => {
     vi.advanceTimersByTime(4_000);
 
     expect(frozenSocket.readyState).toBe(3);
+    expect(closeCodes).toEqual([4000, 4000]);
     const replacements = FakeWebSocket.instances
       .slice(baseline)
       .filter((socket) => new URL(socket.url).searchParams.get("afterSeq.main") === "99");
@@ -309,17 +314,57 @@ describe("project WebSocket lane multiplexing", () => {
     acopilot.close();
   });
 
-  it("sends no application-level keepalive frames while the socket stays open", () => {
+  it("probes on a foreground heartbeat and reconnects when the socket stops answering", () => {
     vi.useFakeTimers();
     vi.stubGlobal("WebSocket", FakeWebSocket);
     vi.stubGlobal("location", { protocol: "http:", host: "localhost" });
     vi.stubGlobal("window", { setInterval, clearInterval, setTimeout, clearTimeout });
+    vi.stubGlobal("document", fakeDocument);
+    fakeDocument.visibilityState = "visible";
     const configs = {
       actions: { chatSessionId: "main" },
       acopilot: { chatSessionId: "acopilot" },
     };
-    const actions = getProjectWebSocketLane({ projectId: "project-keepalive-test", sessionId: "session", lane: "actions", configs });
-    const acopilot = getProjectWebSocketLane({ projectId: "project-keepalive-test", sessionId: "session", lane: "acopilot", configs });
+    const actions = getProjectWebSocketLane({ projectId: "project-heartbeat-test", sessionId: "session", lane: "actions", configs });
+    const acopilot = getProjectWebSocketLane({ projectId: "project-heartbeat-test", sessionId: "session", lane: "acopilot", configs });
+    const closeCodes: number[] = [];
+    actions.onClose = (event) => closeCodes.push(event.code);
+    acopilot.onClose = (event) => closeCodes.push(event.code);
+    actions.connect();
+    acopilot.connect();
+    const baseline = FakeWebSocket.instances.length;
+    const socket = FakeWebSocket.instances.at(-1)!;
+    socket.readyState = FakeWebSocket.OPEN;
+    socket.onopen?.();
+
+    vi.advanceTimersByTime(15_000);
+
+    expect(JSON.parse(socket.sent.at(-1)!).type).toBe("ping");
+    expect(socket.readyState).toBe(FakeWebSocket.OPEN);
+
+    vi.advanceTimersByTime(4_000);
+
+    expect(socket.readyState).toBe(3);
+    expect(closeCodes).toEqual([4000, 4000]);
+    expect(FakeWebSocket.instances.length).toBeGreaterThan(baseline);
+    actions.close();
+    acopilot.close();
+    vi.useRealTimers();
+  });
+
+  it("pauses foreground heartbeats while the document is hidden", () => {
+    vi.useFakeTimers();
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+    vi.stubGlobal("location", { protocol: "http:", host: "localhost" });
+    vi.stubGlobal("window", { setInterval, clearInterval, setTimeout, clearTimeout });
+    vi.stubGlobal("document", fakeDocument);
+    fakeDocument.visibilityState = "hidden";
+    const configs = {
+      actions: { chatSessionId: "main" },
+      acopilot: { chatSessionId: "acopilot" },
+    };
+    const actions = getProjectWebSocketLane({ projectId: "project-heartbeat-hidden-test", sessionId: "session", lane: "actions", configs });
+    const acopilot = getProjectWebSocketLane({ projectId: "project-heartbeat-hidden-test", sessionId: "session", lane: "acopilot", configs });
     actions.connect();
     acopilot.connect();
     const socket = FakeWebSocket.instances.at(-1)!;
@@ -330,6 +375,11 @@ describe("project WebSocket lane multiplexing", () => {
 
     expect(socket.sent).toEqual([]);
     expect(socket.closeCodes).toEqual([]);
+
+    fakeDocument.visibilityState = "visible";
+    fakeDocument.dispatchEvent(new Event("visibilitychange"));
+    expect(JSON.parse(socket.sent.at(-1)!).type).toBe("ping");
+
     actions.close();
     acopilot.close();
     vi.useRealTimers();

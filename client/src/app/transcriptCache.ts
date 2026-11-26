@@ -170,17 +170,17 @@ export function createTranscriptCache() {
     previous?.flush();
     previous?.dispose();
     if (previous) {
-      // A new worker session retains the old conversation above its divider.
-      // The server copies that review-only history into the new lane too.
       const sameProject = previous.scope.projectId === scope.projectId &&
         previous.scope.sessionId === scope.sessionId && previous.scope.workspace === scope.workspace &&
         (previous.scope.lane ?? "actions") === (scope.lane ?? "actions");
-      if (!sameProject) {
+      const sameChatSession = previous.scope.chatSessionId === scope.chatSessionId;
+      // A new chat session starts with an empty transcript. The previous
+      // session keeps its own record under its own cache key.
+      if (!sameProject || !sameChatSession) {
         rt.messages.value = [];
       }
-      // A viewport belongs to one chat session only. Keep the review-only
-      // messages above the new divider, but never restore its scroll position
-      // into a different session scope.
+      // A viewport belongs to one chat session only. Never restore its scroll
+      // position into a different session scope.
       rt.transcriptViewport.value = null;
       rt.transcriptAuthoritative.value = false;
       rt.transcriptReady = false;

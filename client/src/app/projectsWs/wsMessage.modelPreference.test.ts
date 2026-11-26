@@ -42,6 +42,7 @@ function setup(options: {
     finalizeAssistant: chat.finalizeAssistant,
     finalizeCommandBlock: chat.finalizeCommandBlock,
     flushQueuedPrompts: chat.flushQueuedPrompts,
+    enqueuePrompt: chat.enqueuePrompt,
     ingestCommand: chat.ingestCommand,
     ingestCommandActivity: chat.ingestCommandActivity,
     ingestExploredActivity: chat.ingestExploredActivity,

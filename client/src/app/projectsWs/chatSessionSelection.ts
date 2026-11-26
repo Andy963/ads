@@ -1,6 +1,7 @@
 import type { AppContext, ProjectRuntime } from "../controller";
 import type { ChatActions } from "../chat";
 import { createOutboxStore, legacyPendingPromptStorageKey, outboxStorageKey } from "../outbox";
+import { setLaneSyncInProgress } from "../../lib/laneConnectionPhase";
 
 type SessionSwitchIntent = { chatSessionId: string; sentOn?: ProjectRuntime["ws"] };
 
@@ -11,7 +12,7 @@ const switchIntents = new WeakMap<ProjectRuntime, SessionSwitchIntent>();
 export function requestChatSessionSwitch(rt: ProjectRuntime, chatSessionId: string): SessionSwitchIntent {
   const intent = { chatSessionId };
   switchIntents.set(rt, intent);
-  rt.syncInProgress = true;
+  setLaneSyncInProgress(rt, true);
   return intent;
 }
 
@@ -60,6 +61,7 @@ export function clearPreviousSessionInputs(ctx: ChatActions & Pick<AppContext, "
   // Clear while the runtime still names the OLD session: queue watchers and
   // clearPendingPrompt persist synchronously using that identity.
   rt.queuedPrompts.value = [];
+  if (rt.pendingAgentHandoffs) rt.pendingAgentHandoffs.value = [];
   rt.pendingAckClientMessageId = null;
   ctx.clearPendingPrompt(rt);
   rt.promptReconciliationPending = false;

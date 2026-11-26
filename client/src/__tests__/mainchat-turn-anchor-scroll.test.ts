@@ -446,6 +446,46 @@ describe("MainChat two-phase reading viewport", () => {
     remounted.wrapper.unmount();
   });
 
+  it("hides the scroll-to-bottom control when a cached viewport restores at the bottom", async () => {
+    const state: ScrollState = { top: 0, height: 2000, clientHeight: 600 };
+    const rowOffsets: Record<string, number> = { "u-1": 1400, "a-1": 1440 };
+    const messages = [msg("u-1", "user", "question"), msg("a-1", "assistant", "answer")];
+    const wrapper = mount(MainChat, {
+      props: {
+        messages,
+        viewport: {
+          following: false,
+          tailMessageId: "a-1",
+          firstLoadedId: "u-1",
+          anchorId: "a-1",
+          anchorOffset: 0,
+          scrollTop: 1400,
+          userControlled: true,
+        },
+        queuedPrompts: [],
+        pendingImages: [],
+        connected: true,
+        busy: false,
+      },
+      global: { stubs: { MarkdownContent: true, ChatFilePreviewModal: true } },
+      attachTo: document.body,
+    });
+    const host = wrapper.get(".chat").element as HTMLElement;
+    installLayoutMocks(host, state, rowOffsets);
+    await settleUi(wrapper);
+
+    expect(state.top).toBe(1400);
+    expect(wrapper.find(".scrollToBottom").exists()).toBe(false);
+
+    // Moving away from the bottom makes the control useful again.
+    state.top = 200;
+    host.dispatchEvent(new Event("scroll"));
+    await settleUi(wrapper);
+    expect(wrapper.find(".scrollToBottom").exists()).toBe(true);
+
+    wrapper.unmount();
+  });
+
   it("does not lock while an initial transcript is hydrated", async () => {
     const state: ScrollState = { top: 0, height: 2000 };
     const rowOffsets: Record<string, number> = {};
@@ -511,7 +551,9 @@ describe("MainChat two-phase reading viewport", () => {
     });
     await settleUi(wrapper);
 
-    expect(wrapper.find(".scrollToBottom").exists()).toBe(true);
+    // The lock aligned to a clamped position at the bottom, so there is
+    // nothing left below to scroll to.
+    expect(wrapper.find(".scrollToBottom").exists()).toBe(false);
     expect(host.style.getPropertyValue("overflow-anchor")).toBe("none");
 
     wrapper.unmount();
@@ -559,7 +601,9 @@ describe("MainChat two-phase reading viewport", () => {
     await settleUi(wrapper);
     expect(state.top).toBe(1080 - 600);
     expect(host.style.getPropertyValue("overflow-anchor")).toBe("none");
-    expect(wrapper.find(".scrollToBottom").exists()).toBe(true);
+    // The ideal lock target is unreachable while the answer is short, so the
+    // viewport sits at the bottom without needing a scroll-to-bottom control.
+    expect(wrapper.find(".scrollToBottom").exists()).toBe(false);
 
     // Once the answer grows, the earlier lock remains authoritative and no
     // second alignment follows the new height.
@@ -617,7 +661,9 @@ describe("MainChat two-phase reading viewport", () => {
     host.dispatchEvent(new Event("scroll"));
     await settleUi(wrapper);
     expect(state.top).toBe(1040 - LOCK_OFFSET);
-    expect(wrapper.find(".scrollToBottom").exists()).toBe(true);
+    // This answer is only 72px short of the bottom, inside the sticky
+    // threshold, so the control stays hidden while the lock holds.
+    expect(wrapper.find(".scrollToBottom").exists()).toBe(false);
 
     // Native layout shifts (e.g. an execute block above finishing) move the
     // viewport: no per-frame correction pulls it back to the anchor.
@@ -748,7 +794,7 @@ describe("MainChat two-phase reading viewport", () => {
     // lock is established immediately even though its ideal target is not
     // reachable.
     expect(state.top).toBe(0);
-    expect(wrapper.find(".scrollToBottom").exists()).toBe(true);
+    expect(wrapper.find(".scrollToBottom").exists()).toBe(false);
     expect(host.style.getPropertyValue("overflow-anchor")).toBe("none");
 
     // The reply grows beyond one screen: the one-shot alignment does not run a
@@ -1038,7 +1084,8 @@ describe("MainChat two-phase reading viewport", () => {
     });
     await settleUi(wrapper);
     expect(state.top).toBe(1700 - 600 - 20);
-    expect(wrapper.find(".scrollToBottom").exists()).toBe(true);
+    // 20px from the bottom is inside the sticky threshold.
+    expect(wrapper.find(".scrollToBottom").exists()).toBe(false);
     expect(host.style.getPropertyValue("overflow-anchor")).toBe("none");
 
     wrapper.unmount();

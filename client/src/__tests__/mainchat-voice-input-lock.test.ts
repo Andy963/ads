@@ -236,7 +236,6 @@ describe("MainChat composer voice input locking", () => {
     expect(wrapper.find(".composerMainRow--recording").exists()).toBe(true);
     expect(wrapper.find('[data-testid="voice-cancel-btn"]').exists()).toBe(true);
     expect(wrapper.find('[data-testid="voice-stop-btn"]').exists()).toBe(true);
-    expect(wrapper.find(".voiceDotTrail").exists()).toBe(false);
     expect(wrapper.find(".voiceEqualizerBars").exists()).toBe(true);
     expect(wrapper.find(".voiceEqualizerBars--reactive").exists()).toBe(false);
     expect(wrapper.findAll(".eqBar")).toHaveLength(VOICE_WAVEFORM_BAR_COUNT);

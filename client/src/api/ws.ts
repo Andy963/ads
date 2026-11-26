@@ -64,6 +64,7 @@ type WsMessage =
 const SESSION_UNSCOPED_MESSAGES = new Set(["ping", "pong"]);
 
 const PROBE_TIMEOUT_MS = 4_000;
+const HEARTBEAT_INTERVAL_MS = 15_000;
 
 export type WebSocketLane = "actions" | "acopilot";
 
@@ -77,6 +78,7 @@ type SharedLane = { socket: AdsWebSocket; chatSessionId: string };
 class ProjectWebSocketTransport {
   private socket: WebSocket | null = null;
   private probeTimer: number | null = null;
+  private heartbeatTimer: number | null = null;
   private socketStartedAt = 0;
   private readonly lanes = new Map<WebSocketLane, SharedLane>();
   private readonly pendingMessages = new Map<WebSocketLane, WsMessage[]>();
@@ -110,6 +112,7 @@ class ProjectWebSocketTransport {
     }
     this.connectIfNeeded();
     if (this.socket?.readyState === WebSocket.OPEN) {
+      this.startHeartbeat();
       socket.notifyOpen();
       const pending = this.pendingMessages.get(lane) ?? [];
       this.pendingMessages.delete(lane);
@@ -124,6 +127,7 @@ class ProjectWebSocketTransport {
     if (this.lanes.size > 0) return;
 
     this.clearProbe();
+    this.stopHeartbeat();
     const current = this.socket;
     this.socket = null;
     this.onIdle();
@@ -148,18 +152,31 @@ class ProjectWebSocketTransport {
    */
   probe(): void {
     const socket = this.socket;
-    if (!socket) return;
+    if (!socket) {
+      this.stopHeartbeat();
+      return;
+    }
     if (socket.readyState !== WebSocket.OPEN) {
       if (socket.readyState === WebSocket.CONNECTING && Date.now() - this.socketStartedAt < PROBE_TIMEOUT_MS) return;
-      this.restart();
+      this.restartForUnhealthyTransport();
       return;
     }
     if (this.probeTimer !== null) return;
     this.probeTimer = window.setTimeout(() => {
       this.probeTimer = null;
-      this.restart();
+      this.restartForUnhealthyTransport();
     }, PROBE_TIMEOUT_MS);
     this.send(JSON.stringify({ type: "ping", payload: { ts: Date.now() } }));
+  }
+
+  setForeground(visible: boolean): void {
+    if (!visible) {
+      this.clearProbe();
+      this.stopHeartbeat();
+      return;
+    }
+    this.startHeartbeat();
+    this.probe();
   }
 
   updateLaneChatSession(lane: WebSocketLane, socket: AdsWebSocket, chatSessionId: string): void {
@@ -200,6 +217,33 @@ class ProjectWebSocketTransport {
     this.connectIfNeeded();
   }
 
+  private restartForUnhealthyTransport(): void {
+    const lanes = [...this.lanes.values()];
+    const current = this.socket;
+    this.socket = null;
+    this.pendingMessages.clear();
+    this.clearProbe();
+    this.closeSocket(current);
+    const event = { code: 4000, reason: "transport unresponsive" } as CloseEvent;
+    for (const { socket: laneSocket } of lanes) laneSocket.notifyClose(event);
+    this.connectIfNeeded();
+  }
+
+  private startHeartbeat(): void {
+    if (this.heartbeatTimer !== null || this.socket?.readyState !== WebSocket.OPEN) return;
+    if (typeof document !== "undefined" && document.visibilityState !== "visible") return;
+    this.heartbeatTimer = window.setInterval(() => {
+      if (typeof document !== "undefined" && document.visibilityState !== "visible") return;
+      this.probe();
+    }, HEARTBEAT_INTERVAL_MS);
+  }
+
+  private stopHeartbeat(): void {
+    if (this.heartbeatTimer === null) return;
+    window.clearInterval(this.heartbeatTimer);
+    this.heartbeatTimer = null;
+  }
+
   private connectIfNeeded(): void {
     if (this.socket && this.socket.readyState < WebSocket.CLOSING) return;
 
@@ -230,6 +274,7 @@ class ProjectWebSocketTransport {
       }
       if (this.socket !== socket) return;
       for (const { socket: laneSocket } of this.lanes.values()) laneSocket.notifyOpen();
+      this.startHeartbeat();
     };
     socket.onerror = () => {
       if (this.socket !== socket) return;
@@ -240,6 +285,7 @@ class ProjectWebSocketTransport {
       if (this.socket !== socket) return;
       this.socket = null;
       this.clearProbe();
+      this.stopHeartbeat();
       const lanes = [...this.lanes.values()];
       this.lanes.clear();
       this.pendingMessages.clear();
@@ -300,8 +346,8 @@ const projectTransports = new Map<string, ProjectWebSocketTransport>();
 
 let probeListenerDocument: EventTarget | null = null;
 
-function probeProjectWebSockets(): void {
-  for (const transport of projectTransports.values()) transport.probe();
+function setProjectWebSocketForeground(visible: boolean): void {
+  for (const transport of projectTransports.values()) transport.setForeground(visible);
 }
 
 function ensureProbeListener(): void {
@@ -310,8 +356,9 @@ function ensureProbeListener(): void {
   probeListenerDocument = target;
   target.addEventListener("visibilitychange", () => {
     // Reconnect bookkeeping cannot see a socket the browser froze in the
-    // background, so every foreground resume proves liveness explicitly.
-    if (target.visibilityState === "visible") probeProjectWebSockets();
+    // background, so foreground resumes both restart the heartbeat and prove
+    // liveness immediately.
+    setProjectWebSocketForeground(target.visibilityState === "visible");
   });
 }
 

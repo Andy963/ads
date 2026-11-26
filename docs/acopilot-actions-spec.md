@@ -11,11 +11,11 @@
 ## 2. 标准工作流
 
 1. Acopilot 调查需求，并先创建英文 GitHub Issue，内容包含 Problem Description、Root Cause Analysis、Scope of Work 与 Acceptance Criteria。
-2. 开始修改前，Acopilot 校验当前项目工作区和仓库任务槽。在 Web Acopilot 回合中，如果注入了 `begin_implementation(issue_id)`，必须调用。当前执行环境未注入该动态工具时，读取当前分支、工作区状态与开放 PR 做等价校验。工具缺失本身不是阻塞原因。
-3. Acopilot 在 `codex/issue-<id>` 分支实现、验证并准备对应 PR。未经用户明确授权，不得推送、合并或部署。
-4. PR 创建后，Acopilot 调用 `review_action`。服务端固定 PR、Issue 条件、base/head 提交与相关 ADR，创建 `pull_request_review` 队列任务。
-5. Actions 队列按项目串行运行验证命令，再由只读 Reviewer 检查固定的 Issue/ADR、PR diff 与验证报告。任务及进度显示在 Actions 队列和会话中。
-6. PASS 或 REJECT 与该任务固定的 PR、base/head、Issue 与 ADR 快照绑定。`review_action` 把结构化结果返回 Acopilot；REJECT 时由 Acopilot 修复并为新提交再次派审。
+2. Acopilot 决定任务边界和改动范围。`review_action` 是常驻内置工具；服务端从已认证的会话解析项目、工作区与用户身份。
+3. Acopilot 从最新 `dev` 切出语义特性分支（推荐 `<type>/<issue-id>-<short-slug>`，如 `fix/681-turn-timeout`、`feat/700-ws-reconnect`，同时兼容旧 `codex/issue-<id>`）实现、验证并准备对应 PR，并在 PR 正文中以唯一的 `Closes #<id>` 绑定对应 Issue。未经用户明确授权，不得推送、合并或部署。
+4. PR 创建后，Acopilot 调用 `review_action`。该调用只把 `pull_request_review` 任务入队并立即返回 job id，不等待评审结果；PR、Issue 条件、base/head 提交与相关 ADR 在任务到达队首时固定。
+5. Actions 队列按项目串行运行验证命令，再把完整验证报告交给只读 Reviewer，由它结合固定的 Issue/ADR 与 PR diff 评估。命令正常结束后，退出码非零不会阻止 Reviewer 运行。Actions 会话只记录命令、退出码与简短摘要，原始输出保留在任务记录和 Reviewer 输入中。
+6. 任务结束后，服务端用统一 `gh` 身份把结构化裁决写成 Issue comment，标记为 `<!-- ads:review-verdict -->`，内容含状态、PR、base/head、job id、摘要与 findings；随后在 `agent_messages` 中创建一条持久 Reviewer-to-Acopilot handoff。Issue comment 是权威 artifact，agent message 是跨 role 交互，Acopilot turn 只是消费该消息后的执行状态。三者不能合并成用户 prompt。PASS、REJECT、INCOMPLETE 与该任务固定的 PR、base/head、Issue 与 ADR 快照绑定；REJECT 时由 Acopilot 修复并为新提交再次派审。
 7. PR 的 head、base、Issue 或所需证据在任务执行期间变化时，任务不得生成权威 PASS/REJECT；必须重新派发当前目标。
 
 ## 3. 边界与保证
@@ -24,17 +24,21 @@
 - Reviewer 只读；它无法写入文件、运行 shell、切换分支、提交、推送、合并或创建 Issue/PR。
 - 验证报告与 Issue 条件、相关 ADR、PR 编号和精确 base/head 一同保存。旧 head 或 base 的 PASS 不适用于新目标。
 - 每个项目的评审任务串行执行，避免共享工作区上的并发验证或 Reviewer 执行。
-- 队列结果通过 Actions 会话持久化并同步展示，同时返回发起该任务的 Acopilot 调用。
+- 固定新 head 时，同一 PR（无 PR 号时按分支）下其它 head 的未取消评审任务会被标记为 superseded；旧任务保留审计记录，但不会继续入队、认领、写裁决 comment 或唤醒 Acopilot。
+- 项目评审队列通过 `review_queue_leases` 建立租约，同一项目同时只有一个 owner 执行队列；非 owner 进程不得把其它进程正在运行的 `verifying` 或 `reviewing` 任务标记为中断。
+- 队列结果通过 Issue comment 持久化，并通过可见、可重放的 `agent_message` handoff 交付 Acopilot；Actions 会话只展示过程与可读摘要，不承担裁决存档。用户 `prompt_queue` 只承载用户 turn。
 - 用户明确授权之前不得合并、关闭 Issue、删除分支或部署。
 
 ## 4. 配置前提
 
 - Reviewer 角色必须启用并配置可用模型和系统指令。
-- `ADS_REVIEW_TEST_COMMAND` 指定队列评审前的验证命令，默认值为 `npm test`；非 Node 项目应覆盖为适用命令。
+- 验证命令由 Reviewer 根据 diff 自主选择并在只读审查上下文中执行（见 ADR 0060 / ADR 0066），ADS 仓库覆盖 `rust-server/`（`cargo test`）与 `client/`（`npm --prefix client test`）。
 - Acopilot 泳道需要保留实现代码所需的工作区写权限；Actions Reviewer 保持只读。
 
 ## 5. 失败语义
 
-- GitHub 查询、目标固定、验证命令或 Reviewer 协议失败属于操作失败，不伪装成代码缺陷。
+- GitHub 查询、目标固定、验证命令无法启动、超时或中断，以及 Reviewer 协议失败属于操作失败，不伪装成代码缺陷。
+- 验证命令正常结束但退出码非零时，完整报告作为 Reviewer 的评审证据，不构成提前终止任务的理由。
 - 只有 Reviewer 返回的合法 REJECT 才表示需要修复代码。
 - 任务执行失败、服务重启或目标漂移都不能生成 PASS；Acopilot 应先恢复前置条件，再对当前 PR 重新派审。
+- 可恢复的前置条件（head/base 漂移、PR 未同步、Issue 缺少验收标准、工作区未提交）产出 `INCOMPLETE`；真正的运行时崩溃产出 `ERROR`。两者都写入 Issue comment 并唤醒 Acopilot，不再以空裁决收场。

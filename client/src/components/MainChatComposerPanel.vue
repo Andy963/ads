@@ -2,8 +2,10 @@
 import { computed, nextTick, onBeforeUnmount, ref, useId, watch } from "vue";
 
 import MainChatPendingImageViewer from "./MainChatPendingImageViewer.vue";
+import MainChatModelSelectors from "./MainChatModelSelectors.vue";
+import type { ModelConfig } from "../api/types";
 import { resolveComposerImagePreview } from "./mainChat/attachmentPreview";
-import type { IncomingImage, QueuedPrompt } from "./mainChat/types";
+import type { IncomingImage, PendingAgentHandoff, QueuedPrompt } from "./mainChat/types";
 import { useMainChatComposer } from "./mainChat/useComposer";
 import { useComposerActionMenu } from "./mainChat/useComposerActionMenu";
 import { createTapActivation } from "../lib/tapActivation";
@@ -31,6 +33,7 @@ const props = withDefaults(defineProps<{
   draft?: string;
   latestPromptKey?: string;
   queuedPrompts: QueuedPrompt[];
+  pendingAgentHandoffs?: PendingAgentHandoff[];
   pendingImages: IncomingImage[];
   connected: boolean;
   busy: boolean;
@@ -38,9 +41,17 @@ const props = withDefaults(defineProps<{
   voiceInputActive?: boolean;
   apiToken?: string;
   runningTaskCount?: number;
+  agents?: Array<{ id: string; name: string; ready: boolean; error?: string }>;
+  activeAgentId?: string;
+  models?: ModelConfig[];
+  modelId?: string;
+  modelReasoningEffort?: string;
   connectionStatusKind?: "info" | "progress" | "disconnected" | "error" | null;
   connectionStatusMessage?: string | null;
-}>(), { voiceInputActive: true });
+  connectionPhase?: "connecting" | "syncing" | "reconnecting" | "error" | null;
+  connectionPhaseMessage?: string | null;
+  operationalError?: string | null;
+}>(), { voiceInputActive: true, pendingAgentHandoffs: () => [] });
 
 const emit = defineEmits<{
   (e: "update:draft", value: string): void;
@@ -51,9 +62,31 @@ const emit = defineEmits<{
   (e: "removeImage", index: number): void;
   (e: "removeQueued", id: string): void;
   (e: "retryQueued", id: string): void;
+  (e: "switchAgent", agentId: string): void;
+  (e: "setModel", modelId: string): void;
+  (e: "setReasoningEffort", effort: string): void;
 }>();
 
 const canInterrupt = computed(() => props.busy && props.connected);
+const visibleQueuedPrompts = computed(() => props.queuedPrompts.filter((prompt) => prompt.origin !== "system"));
+const visiblePendingAgentHandoffs = computed(() =>
+  (props.pendingAgentHandoffs ?? []).filter((handoff) => handoff.status === "pending"),
+);
+
+function pendingHandoffTarget(handoff: PendingAgentHandoff): string {
+  const issue = handoff.issueId ? `Issue #${handoff.issueId}` : "当前 Issue";
+  const pr = handoff.prNumber ? ` · PR #${handoff.prNumber}` : "";
+  return `${issue}${pr}`;
+}
+
+function pendingHandoffIssueUrl(handoff: PendingAgentHandoff): string {
+  const value = String(handoff.issueUrl ?? "").trim();
+  return value.startsWith("https://github.com/") ? value : "";
+}
+
+function pendingHandoffShortSha(value: string | undefined): string {
+  return String(value ?? "").trim().slice(0, 12);
+}
 
 const normalizedConnectionStatusKind = computed(() => props.connectionStatusKind ?? "info");
 const latestPrompt = ref("");
@@ -357,6 +390,30 @@ function attachFromActionMenu(): void {
   triggerFileInput();
 }
 
+const modelSelectorsRef = ref<InstanceType<typeof MainChatModelSelectors> | null>(null);
+
+const canChangeModel = computed(() => {
+  if (props.inputLocked || !props.connected || props.busy) return false;
+  return Boolean(modelSelectorsRef.value?.compatibleModelOptions?.length);
+});
+
+const modelActionSummary = computed(() => {
+  if (!props.connected) return "未连接";
+  const label = modelSelectorsRef.value?.capsuleLabel;
+  if (!label || label === "No models") return "无可用模型";
+  return label;
+});
+
+function openModelPickerFromActionMenu(): void {
+  releaseActionMenuSelection();
+  closeActionMenu();
+  modelSelectorsRef.value?.openPicker();
+}
+
+function onModelPickerClose(): void {
+  actionMenuTrigger.value?.focus({ preventScroll: true });
+}
+
 async function restoreFromActionMenu(): Promise<void> {
   releaseActionMenuSelection();
   closeActionMenu();
@@ -442,6 +499,20 @@ onBeforeUnmount(() => {
 <template>
   <div ref="composerRoot" class="composer">
     <div
+      v-if="connectionPhase && connectionPhaseMessage"
+      class="connectionPhasePill"
+      :class="`connectionPhasePill--${connectionPhase}`"
+      :data-connection-phase="connectionPhase"
+      data-testid="lane-connection-phase"
+      role="status"
+      aria-live="polite"
+      aria-atomic="true"
+    >
+      <span v-if="connectionPhase !== 'error'" class="connectionPhaseSpinner" aria-hidden="true" />
+      <span class="connectionPhaseText">{{ connectionPhaseMessage }}</span>
+    </div>
+
+    <div
       v-if="connectionStatusMessage"
       class="laneStatusBar"
       :class="`laneStatusBar--${normalizedConnectionStatusKind}`"
@@ -453,8 +524,52 @@ onBeforeUnmount(() => {
       <span class="laneStatusText">{{ connectionStatusMessage }}</span>
     </div>
 
-    <div v-if="queuedPrompts.length" class="queue" aria-label="排队消息">
-      <div v-for="(q, idx) in queuedPrompts" :key="q.id" class="queue-item">
+    <div
+      v-if="operationalError"
+      class="laneStatusBar laneStatusBar--error"
+      role="alert"
+      data-testid="lane-operational-error"
+    >
+      <span class="laneStatusDot" aria-hidden="true" />
+      <span class="laneStatusText">{{ operationalError }}</span>
+    </div>
+
+    <div
+      v-if="visiblePendingAgentHandoffs.length"
+      class="pendingHandoffs"
+      aria-label="待执行交付"
+      data-testid="pending-agent-handoff-inbox"
+    >
+      <div
+        v-for="handoff in visiblePendingAgentHandoffs"
+        :key="handoff.messageId"
+        class="pendingHandoffItem"
+        :data-message-id="handoff.messageId"
+        data-testid="pending-agent-handoff-item"
+      >
+        <div class="pendingHandoffHeader">
+          <span class="pendingHandoffRoute">Reviewer <span aria-hidden="true">→</span> Acopilot</span>
+          <span class="pendingHandoffStatus">等待执行</span>
+        </div>
+        <div class="pendingHandoffMetaRow">
+          <a
+            v-if="pendingHandoffIssueUrl(handoff)"
+            class="pendingHandoffTarget"
+            :href="pendingHandoffIssueUrl(handoff)"
+            target="_blank"
+            rel="noopener noreferrer"
+          >{{ pendingHandoffTarget(handoff) }}</a>
+          <span v-else class="pendingHandoffTarget">{{ pendingHandoffTarget(handoff) }}</span>
+          <span v-if="handoff.headSha" class="pendingHandoffSha">
+            head {{ pendingHandoffShortSha(handoff.headSha) }}
+          </span>
+        </div>
+        <div v-if="handoff.content" class="pendingHandoffSummary">{{ handoff.content }}</div>
+      </div>
+    </div>
+
+    <div v-if="visibleQueuedPrompts.length" class="queue" aria-label="排队消息">
+      <div v-for="(q, idx) in visibleQueuedPrompts" :key="q.id" class="queue-item">
         <span class="queue-badge" :title="`第 ${idx + 1} 条排队消息`">#{{ idx + 1 }}</span>
         <span class="queue-controls">
           <button
@@ -538,6 +653,23 @@ onBeforeUnmount(() => {
         :disabled="inputLocked"
         @change="onFileInputChange"
       />
+      <div class="composerHiddenModelSelectors" aria-hidden="true">
+        <MainChatModelSelectors
+          ref="modelSelectorsRef"
+          :connected="connected"
+          :busy="busy"
+          :input-locked="inputLocked"
+          :agents="agents"
+          :active-agent-id="activeAgentId"
+          :models="models"
+          :model-id="modelId"
+          :model-reasoning-effort="modelReasoningEffort"
+          @switch-agent="emit('switchAgent', $event)"
+          @set-model="emit('setModel', $event)"
+          @set-reasoning-effort="emit('setReasoningEffort', $event)"
+          @picker-close="onModelPickerClose"
+        />
+      </div>
       <div
         ref="composerRowEl"
         class="composerMainRow"
@@ -744,6 +876,20 @@ onBeforeUnmount(() => {
             <span class="actionSheetIcon" aria-hidden="true">↺</span>
             <span>恢复上一条输入</span>
           </button>
+          <button
+            class="actionSheetItem actionSheetItem--model"
+            type="button"
+            role="menuitem"
+            data-testid="action-model-settings"
+            :disabled="!canChangeModel"
+            @click="openModelPickerFromActionMenu"
+          >
+            <span class="actionSheetIcon" aria-hidden="true">⚙️</span>
+            <span class="actionSheetContent">
+              <span class="actionSheetTitle">Model & reasoning</span>
+              <small class="actionSheetDetail" data-testid="action-model-summary">{{ modelActionSummary }}</small>
+            </span>
+          </button>
         </div>
       </Teleport>
       <div
@@ -792,6 +938,58 @@ onBeforeUnmount(() => {
   background: var(--app-bg, #ffffff);
   position: relative;
   z-index: 20;
+}
+
+.connectionPhasePill {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  max-width: min(100%, 32rem);
+  min-height: 28px;
+  box-sizing: border-box;
+  padding: 5px 10px;
+  border: 1px solid rgba(96, 165, 250, 0.42);
+  border-radius: 999px;
+  background: rgba(239, 246, 255, 0.96);
+  color: #1d4ed8;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.connectionPhasePill--error {
+  border-color: rgba(248, 113, 113, 0.45);
+  background: rgba(254, 242, 242, 0.96);
+  color: #b91c1c;
+}
+
+.connectionPhaseSpinner {
+  width: 12px;
+  height: 12px;
+  box-sizing: border-box;
+  flex: 0 0 12px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 999px;
+  animation: connectionPhaseSpin 0.8s linear infinite;
+}
+
+.connectionPhaseText {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+@keyframes connectionPhaseSpin {
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .connectionPhaseSpinner {
+    animation: none;
+    border-right-color: currentColor;
+    opacity: 0.65;
+  }
 }
 
 .laneStatusBar {
@@ -844,6 +1042,81 @@ onBeforeUnmount(() => {
 .laneStatusText {
   min-width: 0;
   line-height: 1.35;
+  word-break: break-word;
+}
+
+.pendingHandoffs {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 180px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+}
+
+.pendingHandoffItem {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 12px;
+  border-radius: var(--radius);
+  border: 1px solid rgba(99, 102, 241, 0.32);
+  background: rgba(99, 102, 241, 0.08);
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+
+.pendingHandoffHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.pendingHandoffRoute {
+  font-size: 11.5px;
+  font-weight: 700;
+  color: #4f46e5;
+}
+
+.pendingHandoffStatus {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: rgba(79, 70, 229, 0.12);
+  color: #4338ca;
+}
+
+.pendingHandoffMetaRow {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.pendingHandoffTarget {
+  font-weight: 600;
+  color: var(--text);
+  text-decoration: none;
+}
+
+.pendingHandoffTarget:hover {
+  text-decoration: underline;
+}
+
+.pendingHandoffSha {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.pendingHandoffSummary {
+  color: var(--muted);
+  white-space: pre-line;
   word-break: break-word;
 }
 
@@ -980,6 +1253,15 @@ onBeforeUnmount(() => {
   pointer-events: none;
 }
 
+.composerHiddenModelSelectors {
+  position: absolute;
+  width: 0;
+  height: 0;
+  overflow: hidden;
+  opacity: 0;
+  pointer-events: none;
+}
+
 .composerMainRow {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
@@ -989,6 +1271,16 @@ onBeforeUnmount(() => {
   flex-shrink: 0;
   column-gap: 2px;
   row-gap: 2px;
+}
+.composerMetadataRow {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  padding: 6px 8px 0;
+}
+.composerMetadataRow :deep(.modelSelectors) {
+  min-width: 0;
+  max-width: 100%;
 }
 
 .composerMainRow--expanded {
@@ -1238,6 +1530,29 @@ onBeforeUnmount(() => {
   font-size: 11px;
   font-weight: 900;
   letter-spacing: -1px;
+}
+
+.actionSheetContent {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.actionSheetTitle {
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1.3;
+  color: var(--text);
+}
+
+.actionSheetDetail {
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.3;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .voiceIndicator {

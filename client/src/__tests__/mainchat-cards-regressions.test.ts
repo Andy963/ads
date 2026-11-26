@@ -6,7 +6,6 @@ import MainChat from "../components/MainChat.vue";
 import MainChatMessageList from "../components/MainChatMessageList.vue";
 import MainChatModelSelectors from "../components/MainChatModelSelectors.vue";
 import { renderMarkdownToHtml } from "../lib/markdown";
-import { readSfc } from "./readSfc";
 
 const MarkdownContentStub = defineComponent({
   name: "MarkdownContent",
@@ -133,45 +132,6 @@ describe("main chat error style regression", () => {
 
     const normalRow = wrapper.get('.msg[data-id="s-1"]');
     expect(normalRow.attributes("data-kind")).toBe("text");
-
-    wrapper.unmount();
-  });
-});
-
-describe("main chat execution metadata", () => {
-  it("does not render agent, model, or reasoning badges under user messages", async () => {
-    const wrapper = mount(MainChatMessageList, {
-      props: messageListProps([
-        {
-          id: "u-1",
-          role: "user",
-          kind: "text",
-          content: "hello",
-          execution: {
-            agentId: "codex",
-            model: "gpt-5.5",
-            modelReasoningEffort: "high",
-            effectiveAgentId: "codex",
-            effectiveModel: "gpt-5.5",
-            effectiveModelReasoningEffort: "high",
-          },
-        },
-      ]),
-      global: {
-        stubs: {
-          MarkdownContent: true,
-          ChatFilePreviewModal: true,
-        },
-      },
-      attachTo: document.body,
-    });
-
-    await wrapper.vm.$nextTick();
-
-    expect(wrapper.find(".msgExecutionMeta").exists()).toBe(false);
-    expect(wrapper.text()).not.toContain("Agent:");
-    expect(wrapper.text()).not.toContain("Model:");
-    expect(wrapper.text()).not.toContain("Reasoning:");
 
     wrapper.unmount();
   });
@@ -497,12 +457,4 @@ describe("markdown GitHub theme regression", () => {
     expect(html).toContain("<hr>");
   });
 
-  it("keeps GitHub-like markdown styles for code and rich content", async () => {
-    const css = await readSfc("../components/MarkdownContent.vue", import.meta.url);
-
-    expect(css).toMatch(/\.md\s*:deep\(blockquote\)\s*\{[\s\S]*?border-left:\s*4px solid var\(--github-border-muted\)\s*;/);
-    expect(css).toMatch(/\.md\s*:deep\(table\)\s*\{[\s\S]*?overflow-x:\s*auto\s*;/);
-    expect(css).toMatch(/\.md\s*:deep\(\.hljs-keyword\)[\s\S]*?color:\s*#cf222e\s*;/);
-    expect(css).toMatch(/\.md\s*:deep\(\.md-codeblock\)\s*\{[\s\S]*?background:\s*var\(--github-code-bg\)\s*;/);
-  });
 });

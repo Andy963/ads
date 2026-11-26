@@ -3,7 +3,7 @@ import {
   ACTIONS_LANE_ID,
   normalizeLaneId,
   type CanonicalLaneId,
-} from "../../../shared/terminology.js";
+} from "../shared/terminology.js";
 
 /**
  * Chat session ids as they travel over the WebSocket.

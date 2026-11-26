@@ -56,6 +56,7 @@ describe("ws session state", () => {
         finalizeAssistant: vi.fn(),
         finalizeCommandBlock: vi.fn(),
         flushQueuedPrompts: vi.fn(),
+        enqueuePrompt: vi.fn(),
         ingestCommand: vi.fn(),
         ingestCommandActivity: vi.fn(),
         ingestExploredActivity: vi.fn(),

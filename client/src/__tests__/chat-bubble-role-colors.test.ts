@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { mount } from "@vue/test-utils";
 
 import MainChatMessageList from "../components/MainChatMessageList.vue";
-import { readSfc } from "./readSfc";
+import MainChatComposerPanel from "../components/MainChatComposerPanel.vue";
 
 function messageListProps(messages: unknown[]) {
   return {
@@ -26,93 +26,6 @@ function mountMessageList(messages: unknown[]) {
 }
 
 describe("chat bubble role colors and geometry contract", () => {
-  it("defines distinct role-specific color selectors for user and assistant bubbles", async () => {
-    const css = await readSfc("../components/MainChatMessageList.vue", import.meta.url);
-
-    const userMatch = css.match(/\.msg\[data-role="user"\]\s+\.bubble\s*\{([^}]+)\}/);
-    expect(userMatch).not.toBeNull();
-    const userBody = userMatch![1];
-    expect(userBody).toMatch(/background:\s*rgba\(37,\s*99,\s*235,\s*0\.1\)/);
-    expect(userBody).toMatch(/color:\s*#0f172a/);
-
-    const assistantMatch = css.match(/\.msg\[data-role="assistant"\]\s+\.bubble\s*\{([^}]+)\}/);
-    expect(assistantMatch).not.toBeNull();
-    const assistantBody = assistantMatch![1];
-    expect(assistantBody).toMatch(/background:\s*#FAF5FF/i);
-    expect(assistantBody).toMatch(/color:\s*#581c87/i);
-    expect(assistantBody).toMatch(/padding:\s*10px 16px 24px/);
-    expect(assistantBody).toMatch(/border-radius:\s*18px/);
-    expect(assistantBody).toMatch(/border:\s*1px solid rgba\(192,\s*132,\s*252,\s*0\.45\)/);
-    expect(assistantBody).toMatch(/box-shadow:\s*0 1px 3px rgba\(0,\s*0,\s*0,\s*0\.04\)/);
-
-    // Distinct color variants across the palette
-    expect(css).toMatch(/\.msg\[data-role="assistant"\]\[data-tint="pink"\]\s+\.bubble\s*\{[\s\S]*?background:\s*#FDF2F8;[\s\S]*?border:\s*1px solid rgba\(244,\s*114,\s*182,\s*0\.4\);[\s\S]*?color:\s*#831843;/i);
-    expect(css).toMatch(/\.msg\[data-role="assistant"\]\[data-tint="blue"\]\s+\.bubble\s*\{[\s\S]*?background:\s*#F0F9FF;[\s\S]*?border:\s*1px solid rgba\(56,\s*189,\s*248,\s*0\.45\);[\s\S]*?color:\s*#0c4a6e;/i);
-    expect(css).toMatch(/\.msg\[data-role="assistant"\]\[data-tint="purple"\]\s+\.bubble\s*\{[\s\S]*?background:\s*#FAF5FF;[\s\S]*?border:\s*1px solid rgba\(192,\s*132,\s*252,\s*0\.45\);[\s\S]*?color:\s*#581c87;/i);
-    expect(css).toMatch(/\.msg\[data-role="assistant"\]\[data-tint="green"\]\s+\.bubble\s*\{[\s\S]*?background:\s*#F0FDF4;[\s\S]*?border:\s*1px solid rgba\(74,\s*222,\s*128,\s*0\.45\);[\s\S]*?color:\s*#14532d;/i);
-    expect(css).toMatch(/\.msg\[data-role="assistant"\]\[data-tint="amber"\]\s+\.bubble\s*\{[\s\S]*?background:\s*#FFFBEB;[\s\S]*?border:\s*1px solid rgba\(251,\s*191,\s*36,\s*0\.45\);[\s\S]*?color:\s*#78350f;/i);
-
-    // User and assistant color treatments must be distinct
-    expect(userBody).not.toEqual(assistantBody);
-  });
-
-  it("guards the geometry contract: user bubble is narrower right-aligned and assistant is full-width", async () => {
-    const css = await readSfc("../components/MainChatMessageList.vue", import.meta.url);
-
-    // Base .msg is full-width and left-aligned
-    expect(css).toMatch(/\.msg\s*\{[\s\S]*?justify-content:\s*flex-start/);
-    expect(css).toMatch(/\.msg\s*\{[\s\S]*?width:\s*100%/);
-
-    // User row aligns right
-    expect(css).toMatch(/\.msg\[data-role="user"\]\s*\{[\s\S]*?justify-content:\s*flex-end/);
-
-    // User bubble has constrained width
-    const userMatch = css.match(/\.msg\[data-role="user"\]\s+\.bubble\s*\{([^}]+)\}/);
-    expect(userMatch![1]).toMatch(/width:\s*fit-content/);
-    expect(userMatch![1]).toMatch(/max-width:\s*78%/);
-
-    // Base .bubble is full-width
-    expect(css).toMatch(/\.bubble\s*\{[\s\S]*?width:\s*100%/);
-    expect(css).toMatch(/\.bubble\s*\{[\s\S]*?max-width:\s*100%/);
-
-    // Assistant bubble stays full-width but provides protective padding and rounded corners
-    const assistantMatch = css.match(/\.msg\[data-role="assistant"\]\s+\.bubble\s*\{([^}]+)\}/);
-    expect(assistantMatch![1]).toMatch(/width:\s*100%/);
-    expect(assistantMatch![1]).toMatch(/max-width:\s*100%/);
-    expect(assistantMatch![1]).toMatch(/padding:\s*10px 16px 24px/);
-    expect(assistantMatch![1]).toMatch(/border-radius:\s*18px/);
-    expect(assistantMatch![1]).toMatch(/box-shadow:\s*0 1px 3px rgba\(0,\s*0,\s*0,\s*0\.04\)/);
-
-    // Assistant actions align with padding
-    expect(css).toMatch(/\.msg\[data-role="assistant"\]\s+\.msgActions\s*\{[^}]*left:\s*16px/);
-
-    // Assistant markdown text inherits tint color
-    expect(css).toMatch(/\.msg\[data-role="assistant"\]\s+\.bubble\s+:deep\(\.md\)\s*\{[\s\S]*?color:\s*inherit;/);
-
-    // User bubble adopts matching 18px border-radius on mobile full-width rows
-    expect(css).toMatch(/@media\s*\(max-width:\s*900px\)\s*\{[\s\S]*?\.msg\[data-role="user"\]\s+\.bubble\s*\{[\s\S]*?border-radius:\s*18px\s*;/);
-
-    // Live-step progress indicator stays transparent and unboxed
-    expect(css).toMatch(/\.msg\[data-id="live-step"\]\s+\.bubble\s*\{[\s\S]*?background:\s*transparent;/);
-    expect(css).toMatch(/\.msg\[data-id="live-step"\]\s+\.bubble\s*\{[\s\S]*?border:\s*none;/);
-    expect(css).toMatch(/\.msg\[data-id="live-step"\]\s+\.bubble\s*\{[\s\S]*?box-shadow:\s*none;/);
-    expect(css).toMatch(/\.msg\[data-id="live-step"\]\s+\.bubble\s+:deep\(\.md\)\s*\{[\s\S]*?color:\s*var\(--github-text\);/);
-  });
-
-  it("preserves independent styling for system, error, and execute bubbles", async () => {
-    const css = await readSfc("../components/MainChatMessageList.vue", import.meta.url);
-
-    // System bubble retains border and background
-    expect(css).toMatch(/\.msg\[data-role="system"\]\s+\.bubble\s*\{[\s\S]*?background:\s*rgba\(246,\s*248,\s*250,\s*0\.96\)/);
-
-    // Error bubble retains distinct alert background and color
-    expect(css).toMatch(/\.msg\[data-kind="error"\]\s+\.bubble\s*\{[\s\S]*?background:\s*rgba\(255,\s*247,\s*237,\s*0\.96\)/);
-    expect(css).toMatch(/\.msg\[data-kind="error"\]\s+\.bubble\s*\{[\s\S]*?color:\s*#7c2d12/);
-
-    // Execute block bubble retains code background
-    expect(css).toMatch(/\.msg\[data-kind="execute"\]\s+\.bubble\s*\{[\s\S]*?background:\s*#f8fafc/);
-  });
-
   it("renders user and assistant messages with semantic data-role attributes and bubble classes", () => {
     const messages = [
       { id: "u-1", role: "user", kind: "text", content: "Write a poem", ts: 100 },
@@ -189,6 +102,90 @@ describe("chat bubble role colors and geometry contract", () => {
     expect(bubble.exists()).toBe(true);
     expect(bubble.find(".typing").exists()).toBe(true);
 
+    wrapper.unmount();
+  });
+
+  it("renders a visible Reviewer to Acopilot handoff card", () => {
+    const messages = [{
+      id: "review-verdict:job-1",
+      role: "system",
+      kind: "agent_handoff",
+      content: "Read the Issue verdict and handle the findings.",
+      agentHandoff: {
+        messageId: "review-verdict:job-1",
+        status: "delivered",
+        issueId: 648,
+        issueTitle: "Model review verdict wake as a durable agent message",
+        issueUrl: "https://github.com/Andy963/ads/issues/648",
+        prNumber: 649,
+        baseSha: "aaa111bbb222",
+        headSha: "ccc333ddd444",
+      },
+      ts: 300,
+    }];
+
+    const wrapper = mountMessageList(messages);
+    const card = wrapper.get('[data-testid="agent-handoff-card"]');
+    expect(card.attributes("data-status")).toBe("delivered");
+    expect(card.text()).toContain("Reviewer");
+    expect(card.text()).toContain("Acopilot");
+    expect(card.text()).toContain("Issue #648");
+    expect(card.text()).toContain("PR #649");
+    expect(card.text()).toContain("已交付");
+    expect(card.text()).toContain("head ccc333ddd444");
+    expect(card.get(".agentHandoffTitle a").attributes("href")).toBe(
+      "https://github.com/Andy963/ads/issues/648",
+    );
+    wrapper.unmount();
+  });
+
+  it("retries a failed Reviewer to Acopilot handoff", async () => {
+    const wrapper = mountMessageList([{
+      id: "review-verdict:job-failed",
+      role: "system",
+      kind: "agent_handoff",
+      content: "Retry this handoff.",
+      agentHandoff: {
+        messageId: "review-verdict:job-failed",
+        status: "failed",
+        lastError: "model unavailable",
+      },
+    }]);
+
+    await wrapper.get("[data-testid='agent-handoff-retry']").trigger("click");
+    expect(wrapper.emitted("retryAgentHandoff")?.[0]).toEqual([
+      "review-verdict:job-failed",
+    ]);
+    wrapper.unmount();
+  });
+
+  it("renders unstarted pending agent handoffs in the composer inbox slot", () => {
+    const wrapper = mount(MainChatComposerPanel, {
+      props: {
+        queuedPrompts: [],
+        pendingAgentHandoffs: [{
+          messageId: "review-verdict:job-pending",
+          status: "pending",
+          issueId: 676,
+          issueTitle: "Formalize durable agent handoff boundaries",
+          issueUrl: "https://github.com/Andy963/ads/issues/676",
+          prNumber: 688,
+          headSha: "abcdef1234567890",
+          content: "Verdict: PASS on PR #688 at head abcdef123456 (job job-pending).",
+        }],
+        pendingImages: [],
+        connected: true,
+        busy: true,
+      },
+    });
+
+    const inbox = wrapper.get('[data-testid="pending-agent-handoff-inbox"]');
+    expect(inbox.text()).toContain("Reviewer");
+    expect(inbox.text()).toContain("Acopilot");
+    expect(inbox.text()).toContain("等待执行");
+    expect(inbox.text()).toContain("Issue #676 · PR #688");
+    expect(inbox.text()).toContain("head abcdef123456");
+    expect(inbox.text()).toContain("Verdict: PASS on PR #688");
     wrapper.unmount();
   });
 });

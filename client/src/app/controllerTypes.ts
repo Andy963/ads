@@ -26,6 +26,7 @@ export type PreparedPromptPayload = {
   agentId: string;
   model: string;
   model_reasoning_effort: string;
+  origin?: "system";
 };
 
 export type QueuedPrompt = {
@@ -46,6 +47,8 @@ export type QueuedPrompt = {
   queueAttempts?: number;
   queueError?: string;
   serverQueueTracked?: boolean;
+  /** Internal prompts run a turn without appearing as user input. */
+  origin?: "user" | "system";
   /** Lane generation the durable server row was written under. */
   queueLaneGeneration?: number;
 };
@@ -134,7 +137,7 @@ export type ChatItem = {
   providerCommandId?: string;
   id: string;
   role: "user" | "assistant" | "system";
-  kind: "text" | "command" | "execute" | "patch" | "error" | "plan" | "thought" | "divider";
+  kind: "text" | "command" | "execute" | "patch" | "error" | "plan" | "thought" | "divider" | "agent_handoff";
   content: string;
   fullContent?: string;
   patch?: ChatPatch;
@@ -151,6 +154,29 @@ export type ChatItem = {
   ts?: number;
   streaming?: boolean;
   execution?: ChatExecutionContext;
+  agentHandoff?: {
+    messageId: string;
+    status: "pending" | "running" | "delivered" | "failed" | "superseded" | "unknown";
+    transitionRevision?: number;
+    attempts?: number;
+    fromLane?: string;
+    fromRole?: string;
+    toLane?: string;
+    toRole?: string;
+    issueId?: number;
+    issueTitle?: string;
+    issueUrl?: string;
+    prNumber?: number;
+    baseSha?: string;
+    headSha?: string;
+    correlationId?: string;
+    lastError?: string;
+  };
+};
+
+export type PendingAgentHandoffItem = NonNullable<ChatItem["agentHandoff"]> & {
+  content: string;
+  ts?: number;
 };
 
 export type ExecutePreviewState = {
@@ -173,6 +199,10 @@ export type ProjectRuntime = {
   projectSessionId: string;
   chatSessionId: string;
   connected: Ref<boolean>;
+  /** Terminal WebSocket/bootstrap error only; operational failures remain in wsError. */
+  connectionError: Ref<string | null>;
+  /** Invalidates the derived connection phase for non-reactive runtime fields. */
+  connectionPhaseRevision: Ref<number>;
   needsChatSync: boolean;
   syncInProgress: boolean;
   syncGeneration: number;
@@ -244,6 +274,7 @@ export type ProjectRuntime = {
   streamSnapshotRevisions?: Map<string, number>;
   pendingImages: Ref<IncomingImage[]>;
   queuedPrompts: Ref<QueuedPrompt[]>;
+  pendingAgentHandoffs: Ref<PendingAgentHandoffItem[]>;
   composerDraft: Ref<string>;
   resumableSessions: Ref<ResumableSession[]>;
   resumableSessionsBusy: Ref<boolean>;

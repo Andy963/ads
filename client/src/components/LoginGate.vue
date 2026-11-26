@@ -155,7 +155,7 @@ onBeforeUnmount(() => {
 
       <template v-else>
         <p v-if="initialized === false" class="desc">
-          {{ t("auth.adminNotInitialized") }} <code>npm run web:init-admin -- --username &lt;username&gt; --password-stdin</code>.
+          {{ t("auth.adminNotInitialized") }} <code>ads-server init-admin --username &lt;username&gt; --password-stdin</code>.
         </p>
 
         <template v-else-if="initialized === true">

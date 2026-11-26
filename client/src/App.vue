@@ -6,8 +6,8 @@ const appVersion = typeof __APP_VERSION__ !== "undefined" ? __APP_VERSION__ : "0
 
 import LoginGate from "./components/LoginGate.vue";
 import MainChatView from "./components/MainChat.vue";
-import MainChatModelSelectors from "./components/MainChatModelSelectors.vue";
 import ActionsReviewQueue from "./components/ActionsReviewQueue.vue";
+import PullRequestsWorkspace from "./components/PullRequestsWorkspace.vue";
 import { lazyComponent } from "./lib/asyncComponent";
 
 // Settings and session pickers sit behind modals/drawers; keep them out of the
@@ -16,6 +16,7 @@ import { lazyComponent } from "./lib/asyncComponent";
 const DraggableModal = lazyComponent(() => import("./components/DraggableModal.vue"));
 const ModelManager = lazyComponent(() => import("./components/ModelManager.vue"));
 const SessionResumePicker = lazyComponent(() => import("./components/SessionResumePicker.vue"));
+const NotesDrawer = lazyComponent(() => import("./components/NotesDrawer.vue"));
 
 import { createAppController } from "./app/controller";
 import { useLaneRuntimeBridge, type ChatLane } from "./composables/app/useLaneRuntimeBridge";
@@ -44,6 +45,9 @@ import {
 } from "@element-plus/icons-vue";
 import { isLaneConnected } from "./lib/laneConnectionStatus";
 import { t } from "./lib/i18n";
+import { RECONNECT_BUSY_MESSAGE } from "./app/projectsWs/reconnectNotice";
+import { resolveLaneConnectionPhase, type LaneConnectionPhase } from "./lib/laneConnectionPhase";
+import type { LaneStatus, ProjectRuntime } from "./app/controllerTypes";
 const {
   loggedIn,
   cachedTranscriptAvailable,
@@ -127,11 +131,13 @@ const {
 } = createAppController();
 
 const settingsOpen = ref(false);
+const notesOpen = ref(false);
 
 type MobileDrawerSection = "projects" | "settings";
 type MobileContextActionId =
   | "resume"
   | "new-session"
+  | "notes"
   | "create-model"
   | "refresh-models";
 type MobileContextAction = {
@@ -143,6 +149,7 @@ type MobileManagerHandle = {
   refresh: () => Promise<void>;
   create: () => void;
 };
+type WorkspaceView = ChatLane | "prs";
 
 const mobileDrawerOpen = ref(false);
 const mobileDrawerSection = ref<MobileDrawerSection>("projects");
@@ -153,13 +160,17 @@ const chatLanes: Array<{ id: ChatLane; label: string }> = [
   { id: "acopilot", label: "Acopilot" },
   { id: "actions", label: "Actions" },
 ];
-const workspaceTabs = computed<Array<{ id: ChatLane; label: string }>>(() => chatLanes);
+const workspaceTabs = computed<Array<{ id: WorkspaceView; label: string }>>(() => [
+  ...chatLanes,
+  { id: "prs", label: "PRs" },
+]);
 
 const {
   activeChatLane,
   setActiveChatLane,
   acopilotMessages,
   acopilotQueuedPrompts,
+  acopilotPendingAgentHandoffs,
   acopilotPendingImages,
   acopilotReady,
   acopilotBusy,
@@ -249,6 +260,7 @@ function handleActionsViewport(viewport: TranscriptViewport): void {
 }
 
 const activeWorkspaceTab = computed<ChatLane>(() => activeChatLane.value);
+const activeWorkspaceView = ref<WorkspaceView>(activeChatLane.value);
 
 const actionsComposerInputLocked = computed(() => Boolean(actionsInputLocked.value));
 
@@ -259,12 +271,6 @@ type MainChatHandle = {
 const acopilotChatRef = ref<MainChatHandle | null>(null);
 const actionsChatRef = ref<MainChatHandle | null>(null);
 
-const activeLaneConnected = computed(() =>
-  activeWorkspaceTab.value === "acopilot" ? Boolean(acopilotReady.value) : Boolean(actionsReady.value),
-);
-const activeLaneInputLocked = computed(() =>
-  activeWorkspaceTab.value === "acopilot" ? Boolean(acopilotInputLocked.value) : actionsComposerInputLocked.value,
-);
 const activeLaneAgents = computed(() =>
   activeWorkspaceTab.value === "acopilot" ? acopilotAgents.value : actionsAgents.value,
 );
@@ -281,6 +287,20 @@ const activeLaneModelReasoningEffort = computed(() =>
     ? activeAcopilotRuntime.value.modelReasoningEffort.value
     : activeRuntime.value.modelReasoningEffort.value,
 );
+
+function workspaceTabConnected(view: WorkspaceView): boolean {
+  return view !== "prs" && isLaneConnected(view, { acopilot: acopilotReady.value, actions: actionsReady.value });
+}
+
+function workspaceTabStatusClass(view: WorkspaceView): string {
+  if (view === "prs") return "";
+  const connected = workspaceTabConnected(view);
+  const busy = view === "acopilot" ? acopilotBusy.value : agentBusy.value;
+  return [
+    connected ? "laneTabStatusDot--connected" : "laneTabStatusDot--disconnected",
+    connected && busy ? (view === "acopilot" ? "laneTabStatusDot--busy-acopilot" : "laneTabStatusDot--busy-actions") : "",
+  ].filter(Boolean).join(" ");
+}
 
 function handleActiveLaneSwitchAgent(agentId: string): void {
   if (activeWorkspaceTab.value === "acopilot") {
@@ -309,8 +329,12 @@ function handleActiveLaneSetReasoningEffort(effort: string): void {
 type ProjectBusyState = "idle" | "acopilot" | "actions" | "both";
 
 function projectBusyState(projectId: string): ProjectBusyState {
-  const acopilotBusy = runtimeProjectInProgress(getAcopilotRuntime(projectId));
-  const actionsBusy = runtimeProjectInProgress(getRuntime(projectId));
+  const acopilotRuntime = getAcopilotRuntime(projectId);
+  const actionsRuntime = getRuntime(projectId);
+  // A transport loss leaves `busy` set so the reconnect notice and input lock
+  // survive. Running animations, however, must disappear with the connection.
+  const acopilotBusy = Boolean(acopilotRuntime.connected.value) && runtimeProjectInProgress(acopilotRuntime);
+  const actionsBusy = Boolean(actionsRuntime.connected.value) && runtimeProjectInProgress(actionsRuntime);
   if (acopilotBusy && actionsBusy) return "both";
   if (acopilotBusy) return "acopilot";
   if (actionsBusy) return "actions";
@@ -349,6 +373,22 @@ const mobileContextTitle = computed(() => {
   return activeProject.value?.name?.trim() || "项目";
 });
 
+const activeProjectName = computed(() => activeProject.value?.name?.trim() || "项目");
+const activeProjectBranchLabel = computed(() => {
+  const branch = String(activeProject.value?.branch ?? "").trim();
+  return branch ? formatProjectBranch(branch) : "";
+});
+const activeProjectContextTitle = computed(() => (
+  activeProjectBranchLabel.value
+    ? `${activeProjectName.value} ${activeProjectBranchLabel.value}`
+    : activeProjectName.value
+));
+const activeProjectContextAriaLabel = computed(() => (
+  activeProjectBranchLabel.value
+    ? `当前项目 ${activeProjectName.value}，当前分支 ${activeProjectBranchLabel.value}`
+    : `当前项目 ${activeProjectName.value}`
+));
+
 const mobileContextMenuTitle = computed(() => {
   if (mobileDrawerSection.value === "settings") {
     if (mobileSettingsTab.value === "models") return "模型配置操作";
@@ -359,7 +399,7 @@ const mobileContextMenuTitle = computed(() => {
 });
 
 const mobileContextActions = computed<MobileContextAction[]>(() => {
-  if (mobileDrawerSection.value === "settings") {
+  if (mobileDrawerSection.value === "settings" || activeWorkspaceView.value === "prs") {
     return [];
   }
   return [
@@ -372,6 +412,11 @@ const mobileContextActions = computed<MobileContextAction[]>(() => {
       id: "new-session",
       label: "新建会话",
       disabled: activeLaneBusy.value || activeLaneNewSessionBlocked.value,
+    },
+    {
+      id: "notes",
+      label: "闪念",
+      disabled: false,
     },
   ];
 });
@@ -441,17 +486,20 @@ function onMobileDrawerNavigationClick(event: MouseEvent): void {
   if (mobileDrawerOpen.value) mobileDrawerRef.value?.focus({ preventScroll: true });
 }
 
-function selectWorkspaceTab(tab: ChatLane): void {
-  if (activeWorkspaceTab.value === tab) {
+function selectWorkspaceTab(tab: WorkspaceView): void {
+  if (activeWorkspaceView.value === tab) {
     closeMobileContextMenu();
     return;
   }
   if (typeof document !== "undefined" && document.activeElement instanceof HTMLElement) {
     document.activeElement.blur();
   }
-  setActiveChatLane(tab);
-  crumb(`lane:${activeWorkspaceTab.value}->${tab}`);
-  writeWorkspaceTab(activeProjectId.value, tab);
+  if (tab !== "prs") {
+    setActiveChatLane(tab);
+    writeWorkspaceTab(activeProjectId.value, tab);
+  }
+  activeWorkspaceView.value = tab;
+  crumb(`workspace:${activeWorkspaceTab.value}->${tab}`);
   closeMobileContextMenu();
 }
 
@@ -461,6 +509,7 @@ function restoreWorkspaceTab(): void {
   const projectId = activeProjectId.value.trim();
   const tab = readWorkspaceTab(projectId);
   setActiveChatLane(tab);
+  activeWorkspaceView.value = tab;
 }
 
 async function refreshVisibleLaneChat(lane: ChatLane): Promise<void> {
@@ -500,6 +549,17 @@ function retryAcopilotMessage(message: Parameters<typeof retryPrompt>[0]): void 
   retryPrompt(message, activeAcopilotRuntime.value);
 }
 
+function retryAcopilotAgentHandoff(messageId: string): void {
+  const id = String(messageId ?? "").trim();
+  if (!loggedIn.value || !id) return;
+  const socket = activeAcopilotRuntime.value.ws as {
+    send?: (type: string, payload?: unknown) => boolean | void;
+  } | null;
+  if (socket?.send?.("retry_agent_message", { messageId: id }) === false) {
+    activeAcopilotRuntime.value.wsError.value = "Agent handoff retry could not be sent";
+  }
+}
+
 function retryActionsMessage(message: Parameters<typeof retryPrompt>[0]): void {
   if (!loggedIn.value) return;
   retryPrompt(message);
@@ -525,6 +585,11 @@ function handleMobileContextAction(actionId: MobileContextActionId): void {
   if (actionId === "new-session") {
     closeMobileDrawer();
     handleLaneNewSession();
+    return;
+  }
+  if (actionId === "notes") {
+    closeMobileDrawer();
+    openNotes();
     return;
   }
   if (actionId === "create-model") {
@@ -801,7 +866,14 @@ const LANE_FLICK_STALE_MS = 100;
 const LANE_SNAP_SETTLE_MS = 380;
 // Touches starting inside horizontally scrollable or editable children keep
 // their native behavior instead of switching lanes.
-const LANE_SWIPE_IGNORE_SELECTOR = "pre, code, table, input, textarea, select, button, a, [contenteditable]";
+const LANE_SWIPE_IGNORE_SELECTOR = "pre, code, table, input, textarea, select, button, a, [contenteditable], .prFilterScroller";
+const WORKSPACE_VIEW_ORDER: WorkspaceView[] = ["acopilot", "actions", "prs"];
+const MAX_WORKSPACE_VIEW_INDEX = WORKSPACE_VIEW_ORDER.length - 1;
+
+function workspaceViewIndex(view: WorkspaceView): number {
+  const index = WORKSPACE_VIEW_ORDER.indexOf(view);
+  return index >= 0 ? index : 0;
+}
 
 // Dragging a selection handle horizontally must not read as a lane swipe.
 function hasActiveTextSelection(): boolean {
@@ -816,7 +888,7 @@ type LaneGesture = {
   startX: number;
   startY: number;
   startTime: number;
-  startLane: ChatLane;
+  startView: WorkspaceView;
   width: number;
   tracking: boolean;
   samples: TouchSample[];
@@ -846,13 +918,19 @@ const laneTrackStyle = computed<Record<string, string> | undefined>(() => {
 const laneTabGroupStyle = computed<Record<string, string> | undefined>(() => {
   if (!isMobile.value || laneTrackOffset.value === null) return undefined;
   const width = laneGesture?.width || lanePanelWidthPx() || 1;
-  const progress = Math.min(1, Math.max(0, -laneTrackOffset.value / width));
+  const progress = Math.min(MAX_WORKSPACE_VIEW_INDEX, Math.max(0, -laneTrackOffset.value / width));
   return {
     "--lane-pill-progress": String(progress),
     "--lane-pill-transition": laneSnapSettling.value
       ? "transform 0.36s cubic-bezier(0.25, 1, 0.5, 1)"
       : "none",
   };
+});
+
+const prPanelPreviewVisible = computed(() => {
+  if (!isMobile.value || laneTrackOffset.value === null) return false;
+  const width = laneGesture?.width || lanePanelWidthPx() || 1;
+  return laneTrackOffset.value < -width;
 });
 
 function lanePanelWidthPx(): number {
@@ -862,13 +940,14 @@ function lanePanelWidthPx(): number {
 }
 
 function clampLaneOffsetWithResistance(offset: number, width: number): number {
+  const minOffset = -MAX_WORKSPACE_VIEW_INDEX * width;
   if (offset > 0) {
     // Rubber-band resistance past left edge (Advisor)
     return offset * 0.35;
   }
-  if (offset < -width) {
-    // Rubber-band resistance past right edge (Worker)
-    return -width + (offset + width) * 0.35;
+  if (offset < minOffset) {
+    // Rubber-band resistance past right edge (PRs)
+    return minOffset + (offset - minOffset) * 0.35;
   }
   return offset;
 }
@@ -884,16 +963,16 @@ function cancelLaneGesture(): void {
   }
 }
 
-function settleLaneGesture(target: ChatLane, width: number): void {
+function settleLaneGesture(target: WorkspaceView, width: number): void {
   laneSnapSettling.value = true;
-  laneTrackOffset.value = target === "actions" ? -width : 0;
+  laneTrackOffset.value = -workspaceViewIndex(target) * width;
   laneSettleTimer = setTimeout(() => {
     laneSettleTimer = null;
     laneSnapSettling.value = false;
     // The stylesheet position matches the settle target, so dropping the
     // inline transform cannot move the track.
     laneTrackOffset.value = null;
-    if (target !== activeWorkspaceTab.value) selectWorkspaceTab(target);
+    if (target !== activeWorkspaceView.value) selectWorkspaceTab(target);
   }, LANE_SNAP_SETTLE_MS);
 }
 
@@ -913,7 +992,7 @@ function onLaneSwipeTouchStart(ev: TouchEvent): void {
     startX: touch.x,
     startY: touch.y,
     startTime: ev.timeStamp,
-    startLane: activeWorkspaceTab.value,
+    startView: activeWorkspaceView.value,
     width: 0,
     tracking: false,
     samples: [{ x: touch.x, time: ev.timeStamp }],
@@ -957,7 +1036,7 @@ function onLaneSwipeTouchMove(ev: TouchEvent): void {
   gesture.lastTime = ev.timeStamp;
   gesture.samples.push({ x: touch.x, time: ev.timeStamp });
   if (gesture.samples.length > 5) gesture.samples.shift();
-  const base = gesture.startLane === "actions" ? -gesture.width : 0;
+  const base = -workspaceViewIndex(gesture.startView) * gesture.width;
   laneTrackOffset.value = clampLaneOffsetWithResistance(base + dx, gesture.width);
 }
 
@@ -968,11 +1047,12 @@ function finishLaneGesture(ev: TouchEvent, cancelled: boolean): void {
   if (!gesture || !gesture.tracking) return;
   const width = gesture.width;
   if (cancelled) {
-    // touchcancel always springs back to the lane the drag started from.
-    settleLaneGesture(gesture.startLane, width);
+    // touchcancel always springs back to the view the drag started from.
+    settleLaneGesture(gesture.startView, width);
     return;
   }
-  const base = gesture.startLane === "actions" ? -width : 0;
+  const startIndex = workspaceViewIndex(gesture.startView);
+  const base = -startIndex * width;
   const position = clampLaneOffsetWithResistance(base + (gesture.lastX - gesture.startX), width);
   // Calculate flick velocity over a rolling window (up to ~80ms) to avoid single-frame noise
   let velocity = 0;
@@ -985,21 +1065,24 @@ function finishLaneGesture(ev: TouchEvent, cancelled: boolean): void {
       velocity = (newest.x - earliest.x) / dt;
     }
   }
-  let target: ChatLane;
+  let targetIndex = startIndex;
   if (velocity <= -LANE_FLICK_VELOCITY_PX_PER_MS) {
-    target = "actions";
+    targetIndex = Math.min(MAX_WORKSPACE_VIEW_INDEX, startIndex + 1);
   } else if (velocity >= LANE_FLICK_VELOCITY_PX_PER_MS) {
-    target = "acopilot";
+    targetIndex = Math.max(0, startIndex - 1);
   } else if (position > 0) {
-    target = "acopilot";
-  } else if (position < -width) {
-    target = "actions";
+    targetIndex = 0;
+  } else if (position < -MAX_WORKSPACE_VIEW_INDEX * width) {
+    targetIndex = MAX_WORKSPACE_VIEW_INDEX;
   } else {
-    const moved = gesture.startLane === "acopilot" ? -position / width : (position + width) / width;
-    const otherLane: ChatLane = gesture.startLane === "acopilot" ? "actions" : "acopilot";
-    target = moved > LANE_SNAP_RATIO ? otherLane : gesture.startLane;
+    const deltaPanels = (-position - startIndex * width) / width;
+    if (deltaPanels > LANE_SNAP_RATIO) {
+      targetIndex = Math.min(MAX_WORKSPACE_VIEW_INDEX, startIndex + 1);
+    } else if (deltaPanels < -LANE_SNAP_RATIO) {
+      targetIndex = Math.max(0, startIndex - 1);
+    }
   }
-  settleLaneGesture(target, width);
+  settleLaneGesture(WORKSPACE_VIEW_ORDER[targetIndex] ?? gesture.startView, width);
 }
 
 function onLaneSwipeTouchEnd(ev: TouchEvent): void {
@@ -1056,7 +1139,7 @@ watch(mobileDrawerOpen, async (open) => {
 });
 
 watch(isMobile, (mobile) => {
-  if (activeProjectId.value.trim()) restoreWorkspaceTab();
+  if (activeProjectId.value.trim() && activeWorkspaceView.value !== "prs") restoreWorkspaceTab();
   if (mobile) return;
   closeMobileDrawer();
   cancelLaneGesture();
@@ -1065,6 +1148,10 @@ watch(isMobile, (mobile) => {
 watch(activeProjectId, (projectId, previousProjectId) => {
   if (!projectId.trim() || projectId === previousProjectId) return;
   restoreWorkspaceTab();
+});
+
+watch(activeChatLane, (lane) => {
+  if (activeWorkspaceView.value !== "prs") activeWorkspaceView.value = lane;
 });
 
 watch(activeWorkspaceTab, (lane) => {
@@ -1383,6 +1470,33 @@ function closeSettings(): void {
   settingsOpen.value = false;
 }
 
+function openNotes(): void {
+  if (!loggedIn.value) return;
+  notesOpen.value = true;
+}
+
+function closeNotes(): void {
+  notesOpen.value = false;
+}
+
+async function handlePromoteNote(note: { projectId: string; content: string }): Promise<void> {
+  notesOpen.value = false;
+  const targetProjectId = String(note.projectId ?? "").trim();
+  if (
+    targetProjectId &&
+    targetProjectId !== activeProjectId.value &&
+    projects.value.some((project) => project.id === targetProjectId)
+  ) {
+    selectProject(targetProjectId);
+    await nextTick();
+  }
+  selectWorkspaceTab("acopilot");
+  await nextTick();
+  startNewAcopilotSession();
+  await nextTick();
+  acopilotComposerDraft.value = note.content;
+}
+
 async function onSettingsChanged(): Promise<void> {
   try {
     await loadModels();
@@ -1394,7 +1508,62 @@ async function onSettingsChanged(): Promise<void> {
 const runningTaskCount = computed(() => 0);
 
 const authConnectionState = ref<"checking" | "offline" | "unavailable" | "request-failed">("checking");
-const disconnectedStatusMessage = t("connection.disconnected");
+
+type LaneConnectionPhaseState = { phase: LaneConnectionPhase; message: string };
+
+function laneConnectionPhaseForRuntime(runtime: ProjectRuntime): LaneConnectionPhaseState | null {
+  const terminalError = String(runtime.connectionError.value ?? "").trim() || null;
+  const socket = runtime.ws as { isConnecting?: () => boolean } | null;
+  const phase = resolveLaneConnectionPhase({
+    connected: runtime.connected.value,
+    connecting: socket?.isConnecting?.() === true,
+    syncInProgress: runtime.syncInProgress,
+    reconnectActive: runtime.reconnectTimer !== null || runtime.reconnectAttempts > 0,
+    terminalError,
+    stateRevision: runtime.connectionPhaseRevision.value,
+  });
+  if (!phase) return null;
+  const message = phase === "connecting"
+    ? t("connection.connecting")
+    : phase === "syncing"
+      ? t("connection.syncing")
+      : phase === "reconnecting"
+        ? t("connection.reconnecting")
+        : terminalError || t("connection.connectionError");
+  return { phase, message };
+}
+
+function laneConnectionStatus(
+  runtime: ProjectRuntime,
+  laneStatus: LaneStatus | null,
+  phase: LaneConnectionPhaseState | null,
+): LaneStatus | null {
+  if (phase?.phase === "error") {
+    if (laneStatus?.kind === "error" && laneStatus.message === phase.message) return null;
+    return laneStatus;
+  }
+  if (phase?.phase === "connecting" || phase?.phase === "reconnecting") {
+    return laneStatus?.kind === "progress" && laneStatus.message === RECONNECT_BUSY_MESSAGE
+      ? null
+      : laneStatus;
+  }
+  return laneStatus?.kind === "progress" && laneStatus.message === RECONNECT_BUSY_MESSAGE
+    ? null
+    : laneStatus;
+}
+
+function laneOperationalError(
+  runtime: ProjectRuntime,
+  laneStatus: LaneStatus | null,
+  phase: LaneConnectionPhaseState | null,
+): string | null {
+  const error = String(runtime.wsError.value ?? "").trim();
+  if (!error) return null;
+  if (phase?.phase === "connecting" || phase?.phase === "reconnecting") return null;
+  if (phase?.phase === "error" && error === phase.message) return null;
+  if (laneStatus?.kind === "error" && laneStatus.message === error) return null;
+  return error;
+}
 
 function handleAuthConnectionState(state: "checking" | "offline" | "unavailable" | "request-failed"): void {
   authConnectionState.value = state;
@@ -1415,25 +1584,25 @@ function cachedConnectionStatus() {
   };
 }
 
-const actionsConnectionStatus = computed(() => {
-  if (!loggedIn.value) return cachedConnectionStatus();
-  const laneStatus = actionsLaneStatus.value;
-  if (!actionsReady.value && laneStatus?.kind === "progress") return laneStatus;
-  const error = String(wsError.value ?? "").trim();
-  if (error) return { kind: "error" as const, message: error };
-  if (!actionsReady.value) return { kind: "disconnected" as const, message: disconnectedStatusMessage };
-  return laneStatus;
-});
+const actionsConnectionPhase = computed(() => laneConnectionPhaseForRuntime(activeRuntime.value));
 
-const acopilotConnectionStatus = computed(() => {
-  if (!loggedIn.value) return cachedConnectionStatus();
-  const laneStatus = acopilotLaneStatus.value;
-  if (!acopilotReady.value && laneStatus?.kind === "progress") return laneStatus;
-  const error = String(activeAcopilotRuntime.value.wsError.value ?? "").trim();
-  if (error) return { kind: "error" as const, message: error };
-  if (!acopilotReady.value) return { kind: "disconnected" as const, message: disconnectedStatusMessage };
-  return laneStatus;
-});
+const acopilotConnectionPhase = computed(() => laneConnectionPhaseForRuntime(activeAcopilotRuntime.value));
+
+const actionsConnectionStatus = computed(() => loggedIn.value
+  ? laneConnectionStatus(activeRuntime.value, actionsLaneStatus.value, actionsConnectionPhase.value)
+  : cachedConnectionStatus());
+
+const acopilotConnectionStatus = computed(() => loggedIn.value
+  ? laneConnectionStatus(activeAcopilotRuntime.value, acopilotLaneStatus.value, acopilotConnectionPhase.value)
+  : cachedConnectionStatus());
+
+const actionsOperationalError = computed(() => loggedIn.value
+  ? laneOperationalError(activeRuntime.value, actionsLaneStatus.value, actionsConnectionPhase.value)
+  : null);
+
+const acopilotOperationalError = computed(() => loggedIn.value
+  ? laneOperationalError(activeAcopilotRuntime.value, acopilotLaneStatus.value, acopilotConnectionPhase.value)
+  : null);
 
 </script>
 
@@ -1450,6 +1619,7 @@ const acopilotConnectionStatus = computed(() => {
     class="app"
     :data-cache-read-only="!loggedIn"
     :data-active-lane="activeWorkspaceTab"
+    :data-active-workspace-view="activeWorkspaceView"
     :data-project-id="activeProjectId"
     :data-worker-message-count="messages.length"
     :data-advisor-message-count="acopilotMessages.length"
@@ -1483,12 +1653,45 @@ const acopilotConnectionStatus = computed(() => {
         </svg>
       </button>
       <div class="topbarMain">
-        <div v-if="isMobile" class="mobileContextTitle" :title="mobileContextTitle">
+        <div
+          v-if="!isMobile || mobileDrawerSection === 'projects'"
+          class="activeProjectContext"
+          role="group"
+          data-testid="active-project-context"
+          :title="activeProjectContextTitle"
+          :aria-label="activeProjectContextAriaLabel"
+        >
+          <span
+            class="activeProjectContextName"
+            data-testid="active-project-context-name"
+            :title="activeProjectName"
+            aria-hidden="true"
+          >{{ activeProjectName }}</span>
+          <span
+            v-if="activeProjectBranchLabel"
+            class="activeProjectBranchBadge"
+            data-testid="active-project-context-branch"
+            :title="activeProjectBranchLabel"
+            aria-hidden="true"
+          >{{ activeProjectBranchLabel }}</span>
+        </div>
+        <div v-else class="mobileContextTitle" :title="mobileContextTitle">
           {{ mobileContextTitle }}
         </div>
       </div>
       <div class="right">
-        <div v-if="!isMobile" class="laneSessionActions">
+        <div v-if="!isMobile && activeWorkspaceView !== 'prs'" class="laneSessionActions">
+          <button
+            v-if="loggedIn"
+            class="laneTabIconBtn"
+            type="button"
+            title="闪念 (Notes)"
+            aria-label="闪念 (Notes)"
+            data-testid="lane-quick-notes"
+            @click.stop="openNotes"
+          >
+            <el-icon :size="15" aria-hidden="true"><Document /></el-icon>
+          </button>
           <button
             v-if="activeLaneHasResume && loggedIn"
             class="laneTabIconBtn"
@@ -1675,6 +1878,12 @@ const acopilotConnectionStatus = computed(() => {
                 :data-testid="`project-swipe-remove-${p.id}`"
                 aria-label="从列表移除"
                 @click.stop.prevent="handleSwipeRemove(p)"
+                @pointerdown.stop
+                @pointerup.stop
+                @pointercancel.stop
+                @touchstart.stop
+                @touchend.stop
+                @touchcancel.stop
               >
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                   <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
@@ -1723,6 +1932,12 @@ const acopilotConnectionStatus = computed(() => {
                   aria-label="从列表移除"
                   :data-testid="`project-remove-${p.id}`"
                   @click.stop.prevent="requestRemoveProject(p)"
+                  @pointerdown.stop
+                  @pointerup.stop
+                  @pointercancel.stop
+                  @touchstart.stop
+                  @touchend.stop
+                  @touchcancel.stop
                 >
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                     <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
@@ -1776,9 +1991,9 @@ const acopilotConnectionStatus = computed(() => {
                 :id="`lane-tab-${tab.id}`"
                 type="button"
                 class="laneTab"
-                :class="{ active: activeWorkspaceTab === tab.id }"
+                :class="{ active: activeWorkspaceView === tab.id }"
                 role="tab"
-                :aria-selected="activeWorkspaceTab === tab.id"
+                :aria-selected="activeWorkspaceView === tab.id"
                 :aria-controls="`lane-panel-${tab.id}`"
                 :data-testid="`lane-tab-${tab.id}`"
                 @pointerdown="laneActivation.onPointerDown($event, tab.id)"
@@ -1788,37 +2003,15 @@ const acopilotConnectionStatus = computed(() => {
                 @click="laneActivation.onClick($event, tab.id)"
               >
               <span
+                v-if="tab.id !== 'prs'"
                 class="laneTabStatusDot"
-                :class="[
-                  isLaneConnected(tab.id, { acopilot: acopilotReady, actions: actionsReady })
-                    ? 'laneTabStatusDot--connected'
-                    : 'laneTabStatusDot--disconnected',
-                  (tab.id === 'acopilot' ? acopilotBusy : agentBusy)
-                    ? (tab.id === 'acopilot' ? 'laneTabStatusDot--busy-acopilot' : 'laneTabStatusDot--busy-actions')
-                    : '',
-                ]"
+                :class="workspaceTabStatusClass(tab.id)"
                :data-testid="`lane-tab-status-${tab.id}`"
                 aria-hidden="true"
               />
               <span class="laneTabLabel">{{ tab.label }}</span>
               </button>
             </template>
-          </div>
-          <div class="laneControlDivider" aria-hidden="true" />
-          <div class="laneModelControls" data-testid="lane-model-controls">
-            <MainChatModelSelectors
-              :connected="activeLaneConnected"
-              :busy="activeLaneBusy"
-              :input-locked="!loggedIn || activeLaneInputLocked"
-              :agents="activeLaneAgents"
-              :active-agent-id="activeLaneActiveAgentId"
-              :models="models"
-              :model-id="activeLaneModelId"
-              :model-reasoning-effort="activeLaneModelReasoningEffort"
-              @switch-agent="handleActiveLaneSwitchAgent"
-              @set-model="handleActiveLaneSetModel"
-              @set-reasoning-effort="handleActiveLaneSetReasoningEffort"
-            />
           </div>
         </div>
 
@@ -1832,18 +2025,22 @@ const acopilotConnectionStatus = computed(() => {
         >
           <div
             class="lanePanelsTrack"
-            :class="{ 'lanePanelsTrack--worker': activeWorkspaceTab === 'actions', 'lanePanelsTrack--dragging': laneDragTracking }"
+            :class="{
+              'lanePanelsTrack--worker': activeWorkspaceView === 'actions',
+              'lanePanelsTrack--prs': activeWorkspaceView === 'prs',
+              'lanePanelsTrack--dragging': laneDragTracking,
+            }"
             :style="laneTrackStyle"
           >
             <section
               id="lane-panel-acopilot"
               class="lanePanel"
-              :class="{ 'lanePanel--inactive': activeWorkspaceTab !== 'acopilot' }"
-              :style="!isMobile && activeWorkspaceTab !== 'acopilot' ? { display: 'none' } : undefined"
+              :class="{ 'lanePanel--inactive': activeWorkspaceView !== 'acopilot' }"
+              :style="!isMobile && activeWorkspaceView !== 'acopilot' ? { display: 'none' } : undefined"
               role="tabpanel"
               aria-labelledby="lane-tab-acopilot"
-              :aria-hidden="activeWorkspaceTab === 'acopilot' ? undefined : 'true'"
-              :inert="activeWorkspaceTab !== 'acopilot' ? true : undefined"
+              :aria-hidden="activeWorkspaceView === 'acopilot' ? undefined : 'true'"
+              :inert="activeWorkspaceView !== 'acopilot' ? true : undefined"
               data-testid="lane-panel-acopilot"
               :data-message-count="acopilotMessages.length"
               :data-panel-key="`${acopilotPanelKey}:${errorRecoveryGeneration}`"
@@ -1867,16 +2064,26 @@ const acopilotConnectionStatus = computed(() => {
                 :latest-prompt-key="acopilotChatKey"
                 :voice-input-active="activeWorkspaceTab === 'acopilot' && loggedIn && !settingsOpen && !mobileDrawerOpen"
                 :queued-prompts="acopilotQueuedPrompts"
+                :pending-agent-handoffs="acopilotPendingAgentHandoffs"
                 :pending-images="acopilotPendingImages"
                 :connected="acopilotReady"
                 :busy="acopilotBusy"
                 :input-locked="!loggedIn || acopilotInputLocked"
                 :workspace-root="resolveActiveWorkspaceRoot()"
+                :agents="activeLaneAgents"
+                :active-agent-id="activeLaneActiveAgentId"
+                :models="models"
+                :model-id="activeLaneModelId"
+                :model-reasoning-effort="activeLaneModelReasoningEffort"
                 :connection-status-kind="acopilotConnectionStatus?.kind ?? null"
                 :connection-status-message="acopilotConnectionStatus?.message ?? null"
+                :connection-phase="acopilotConnectionPhase?.phase ?? null"
+                :connection-phase-message="acopilotConnectionPhase?.message ?? null"
+                :operational-error="acopilotOperationalError"
                 :thread-warning="acopilotThreadWarning"
                 @send="sendAcopilotPrompt"
                 @retry-message="retryAcopilotMessage($event)"
+                @retry-agent-handoff="retryAcopilotAgentHandoff($event)"
                 @update:draft="acopilotComposerDraft = $event"
                 @update:viewport-scope="handleAcopilotViewportScope"
                 @update:viewport="handleAcopilotViewport"
@@ -1886,18 +2093,21 @@ const acopilotConnectionStatus = computed(() => {
                 @removeImage="removeAcopilotPendingImage"
                 @removeQueued="removeAcopilotQueuedPrompt"
                 @retryQueued="retryAcopilotQueuedPrompt"
+                @switch-agent="handleActiveLaneSwitchAgent"
+                @set-model="handleActiveLaneSetModel"
+                @set-reasoning-effort="handleActiveLaneSetReasoningEffort"
               />
             </section>
 
             <section
               id="lane-panel-actions"
               class="lanePanel"
-              :class="{ 'lanePanel--inactive': activeWorkspaceTab !== 'actions' }"
-              :style="!isMobile && activeWorkspaceTab !== 'actions' ? { display: 'none' } : undefined"
+              :class="{ 'lanePanel--inactive': activeWorkspaceView !== 'actions' }"
+              :style="!isMobile && activeWorkspaceView !== 'actions' ? { display: 'none' } : undefined"
               role="tabpanel"
               aria-labelledby="lane-tab-actions"
-              :aria-hidden="activeWorkspaceTab === 'actions' ? undefined : 'true'"
-              :inert="activeWorkspaceTab !== 'actions' ? true : undefined"
+              :aria-hidden="activeWorkspaceView === 'actions' ? undefined : 'true'"
+              :inert="activeWorkspaceView !== 'actions' ? true : undefined"
               data-testid="lane-panel-actions"
               :data-message-count="messages.length"
               :data-panel-key="`${actionsPanelKey}:${errorRecoveryGeneration}`"
@@ -1933,8 +2143,16 @@ const acopilotConnectionStatus = computed(() => {
                 :input-locked="!loggedIn || actionsComposerInputLocked"
                 :workspace-root="resolveActiveWorkspaceRoot()"
                 :running-task-count="runningTaskCount"
+                :agents="activeLaneAgents"
+                :active-agent-id="activeLaneActiveAgentId"
+                :models="models"
+                :model-id="activeLaneModelId"
+                :model-reasoning-effort="activeLaneModelReasoningEffort"
                 :connection-status-kind="actionsConnectionStatus?.kind ?? null"
                 :connection-status-message="actionsConnectionStatus?.message ?? null"
+                :connection-phase="actionsConnectionPhase?.phase ?? null"
+                :connection-phase-message="actionsConnectionPhase?.message ?? null"
+                :operational-error="actionsOperationalError"
                 :thread-warning="actionsThreadWarning"
                 @send="sendActionsPrompt"
                 @retry-message="retryActionsMessage($event)"
@@ -1948,6 +2166,27 @@ const acopilotConnectionStatus = computed(() => {
                 @removeImage="removePendingImage"
                 @removeQueued="removeQueuedPrompt"
                 @retryQueued="retryQueuedPrompt"
+                @switch-agent="handleActiveLaneSwitchAgent"
+                @set-model="handleActiveLaneSetModel"
+                @set-reasoning-effort="handleActiveLaneSetReasoningEffort"
+              />
+            </section>
+
+            <section
+              id="lane-panel-prs"
+              class="lanePanel"
+              :class="{ 'lanePanel--inactive': activeWorkspaceView !== 'prs' }"
+              :style="!isMobile && activeWorkspaceView !== 'prs' ? { display: 'none' } : undefined"
+              role="tabpanel"
+              aria-labelledby="lane-tab-prs"
+              :aria-hidden="activeWorkspaceView === 'prs' ? undefined : 'true'"
+              :inert="activeWorkspaceView !== 'prs' ? true : undefined"
+              data-testid="lane-panel-prs"
+            >
+              <PullRequestsWorkspace
+                v-if="activeWorkspaceView === 'prs' || prPanelPreviewVisible"
+                :project-id="activeProjectId"
+                :active="activeWorkspaceView === 'prs'"
               />
             </section>
           </div>
@@ -1978,6 +2217,16 @@ const acopilotConnectionStatus = computed(() => {
         @refresh="refreshResumableSessions"
         @load-more="loadMoreResumableSessions"
         @resume="resumeSelectedSession"
+      />
+    </DraggableModal>
+
+    <DraggableModal v-if="notesOpen" card-variant="large" @close="closeNotes">
+      <NotesDrawer
+        :api="api"
+        :project-id="activeProjectId"
+        :projects="projects"
+        @close="closeNotes"
+        @promote="handlePromoteNote($event)"
       />
     </DraggableModal>
 

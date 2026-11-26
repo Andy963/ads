@@ -25,6 +25,8 @@ export type PersistedPrompt = {
   modelReasoningEffort?: string;
   replayIncomplete?: boolean;
   retryOriginal?: boolean;
+  /** An internal turn trigger; it is not user input and never renders as one. */
+  origin?: "user" | "system";
   /** The frame was handed to WebSocket, but no authoritative ACK arrived yet. */
   sentAwaitingAck?: boolean;
   /** Legacy key kept for entries written before the rename. */
@@ -123,6 +125,7 @@ function normalizePrompt(value: unknown): PersistedPrompt | null {
   if (effort) prompt.modelReasoningEffort = effort;
   if (replayIncomplete) prompt.replayIncomplete = true;
   if (record.retryOriginal === true) prompt.retryOriginal = true;
+  if (record.origin === "system") prompt.origin = "system";
   if (sentAwaitingAck) prompt.sentAwaitingAck = true;
   return prompt;
 }

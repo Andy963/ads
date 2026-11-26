@@ -7,7 +7,7 @@ import { createLaneActions } from "../app/laneActions";
 import { createWsMessageHandler } from "../app/projectsWs/wsMessage";
 
 describe("session boundary divider and status feedback", () => {
-  it("inserts a session boundary divider and retains prior messages when starting a new session", async () => {
+  it("starts a new session with an empty transcript", async () => {
     const ctx = createAppContext();
     const chat = createChatActions(ctx as AppContext);
     const deps = {
@@ -26,26 +26,11 @@ describe("session boundary divider and status feedback", () => {
 
     await projects.startNewChatSession();
 
-    // Messages should be retained with divider appended
-    expect(rt.messages.value).toHaveLength(3);
-    expect(rt.messages.value[0]?.content).toBe("Previous user request");
-    expect(rt.messages.value[1]?.content).toBe("Previous model response");
-
-    const divider = rt.messages.value[2]!;
-    expect(divider.role).toBe("system");
-    expect(divider.kind).toBe("divider");
-    expect(divider.content).toBe(
-      "Previous messages above are retained for review only and are NOT injected into model prompt context.",
-    );
-
-    // Composer status feedback
-    expect(rt.laneStatus.value).toEqual({
-      kind: "info",
-      message: "New session active: clean context (previous history is not included).",
-    });
+    expect(rt.messages.value).toHaveLength(0);
+    expect(rt.laneStatus.value).toBeNull();
   });
 
-  it("does not insert duplicate consecutive dividers on repeated new session calls", async () => {
+  it("keeps the transcript empty on repeated new session calls", async () => {
     const ctx = createAppContext();
     const chat = createChatActions(ctx as AppContext);
     const deps = {
@@ -62,34 +47,10 @@ describe("session boundary divider and status feedback", () => {
     ];
 
     await projects.startNewChatSession();
-    expect(rt.messages.value).toHaveLength(2);
-    expect(rt.messages.value[1]?.kind).toBe("divider");
-
-    await projects.startNewChatSession();
-    expect(rt.messages.value).toHaveLength(2);
-    expect(rt.messages.value[1]?.kind).toBe("divider");
-  });
-
-  it("does not insert a divider if messages are empty", async () => {
-    const ctx = createAppContext();
-    const chat = createChatActions(ctx as AppContext);
-    const deps = {
-      activateProject: vi.fn(async () => {}),
-    };
-    const projects = createProjectActions({ ...ctx, ...chat } as AppContext & ReturnType<typeof createChatActions>, deps);
-
-    ctx.loggedIn.value = true;
-    projects.initializeProjects();
-
-    const rt = ctx.activeRuntime.value;
-    rt.messages.value = [];
+    expect(rt.messages.value).toHaveLength(0);
 
     await projects.startNewChatSession();
     expect(rt.messages.value).toHaveLength(0);
-    expect(rt.laneStatus.value).toEqual({
-      kind: "info",
-      message: "New session active: clean context (previous history is not included).",
-    });
   });
 
   it("replays session_divider from history bootstrap and sets fresh session status", () => {
@@ -114,6 +75,7 @@ describe("session boundary divider and status feedback", () => {
       finalizeAssistant: vi.fn(),
       finalizeCommandBlock: vi.fn(),
       flushQueuedPrompts: vi.fn(),
+      enqueuePrompt: vi.fn(),
       pushMessageBeforeLive: vi.fn(),
       threadReset: vi.fn(),
       updateProject: vi.fn(),
@@ -167,6 +129,7 @@ describe("session boundary divider and status feedback", () => {
       finalizeAssistant: vi.fn(),
       finalizeCommandBlock: vi.fn(),
       flushQueuedPrompts: vi.fn(),
+      enqueuePrompt: vi.fn(),
       pushMessageBeforeLive: vi.fn(),
       threadReset: vi.fn(),
       updateProject: vi.fn(),
@@ -201,6 +164,50 @@ describe("session boundary divider and status feedback", () => {
     expect(rt.laneStatus.value).toBeNull();
   });
 
+  it("filters legacy Reviewer inspection steps from Actions history", () => {
+    const ctx = createAppContext();
+    const chat = createChatActions(ctx as AppContext);
+    const projects = createProjectActions({ ...ctx, ...chat } as AppContext & ReturnType<typeof createChatActions>, {
+      activateProject: vi.fn(async () => {}),
+    });
+    ctx.loggedIn.value = true;
+    projects.initializeProjects();
+    const rt = ctx.activeRuntime.value;
+
+    const handler = createWsMessageHandler({
+      rt,
+      project: { id: "default", sessionId: "default", chatSessionId: "main" } as any,
+      projects: ctx.projects,
+      activeProjectId: ctx.activeProjectId,
+      activeProject: ctx.activeProject,
+      cancelPendingResume: chat.cancelPendingResume,
+      clearPendingPrompt: vi.fn(),
+      clearStepLive: vi.fn(),
+      finalizeAssistant: vi.fn(),
+      finalizeCommandBlock: vi.fn(),
+      flushQueuedPrompts: vi.fn(),
+      enqueuePrompt: vi.fn(),
+      pushMessageBeforeLive: vi.fn(),
+      threadReset: vi.fn(),
+      updateProject: vi.fn(),
+      applyResumeHistory: chat.applyResumeHistory,
+      randomId: (p) => `${p}-1`,
+    });
+
+    handler({
+      type: "history",
+      items: [
+        { role: "status", kind: "action_step:job-1:log:1", text: "Reviewer step: read_file_range src/app.ts:1-40", ts: 100 },
+        { role: "status", kind: "action_step:job-1:log:2", text: 'Reviewer step: search_code "INCOMPLETE" in tests/** offset=1000', ts: 101 },
+        { role: "status", kind: "action_step:job-1:started", text: "Review started for PR #621 · Remove review noise.", ts: 102 },
+      ],
+    });
+
+    expect(rt.messages.value.map((entry) => entry.content)).toEqual([
+      "Review started for PR #621 · Remove review noise.",
+    ]);
+  });
+
   it("clears laneStatus fresh session notice when first turn completes with result", () => {
     const ctx = createAppContext();
     const chat = createChatActions(ctx as AppContext);
@@ -223,6 +230,7 @@ describe("session boundary divider and status feedback", () => {
       finalizeAssistant: vi.fn(),
       finalizeCommandBlock: vi.fn(),
       flushQueuedPrompts: vi.fn(),
+      enqueuePrompt: vi.fn(),
       pushMessageBeforeLive: vi.fn(),
       threadReset: vi.fn(),
       updateProject: vi.fn(),

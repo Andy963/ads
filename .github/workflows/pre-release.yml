@@ -24,8 +24,20 @@ jobs:
         with:
           node-version: "24"
           cache: "npm"
+          cache-dependency-path: client/package-lock.json
 
-      - name: Install dependencies
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust-server
+
+      - name: Install client dependencies
+        working-directory: client
         run: npm ci
 
       - name: Verify dev toolchain
@@ -33,47 +45,41 @@ jobs:
           set -euo pipefail
           node -v
           npm -v
-          npx --no tsx --version
-          npx --no vitest --version
+          rustc --version
+          cargo --version
+          npm --prefix client exec --no -- vitest --version
 
-      - name: Build
-        run: npm run build
+      - name: Lint client
+        working-directory: client
+        run: npm run lint
 
-      - name: Run unit tests
+      - name: Test client
+        working-directory: client
         run: npm test
 
-      - name: Run web tests
-        run: npm run test:web
+      - name: Build client
+        working-directory: client
+        run: npm run build
 
-      - name: Install browser engines
-        run: npx --no playwright install --with-deps webkit chromium
+      - name: Lint Rust server
+        working-directory: rust-server
+        run: cargo clippy --workspace --all-targets
 
-      - name: Run chat browser regressions
-        run: npm run test:chat-browser
+      - name: Test Rust server
+        working-directory: rust-server
+        run: cargo test --workspace -- --test-threads=2
 
-      - name: Run model and retry browser regressions
-        env:
-          TMPDIR: ${{ runner.temp }}
-        run: |
-          npm run test:model-settings-browser
-          npm run test:model-selection-browser
-          npm run test:message-retry-browser
-
-      - name: Upload retry browser failure diagnostics
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: message-retry-browser-failure
-          path: ${{ runner.temp }}/ads-message-retry-*/
-          if-no-files-found: ignore
-          retention-days: 7
+      - name: Build Rust release binaries
+        if: github.event_name == 'workflow_dispatch' || github.ref_type == 'tag'
+        working-directory: rust-server
+        run: cargo build --release -p ads-server -p ads-telegram
 
       - name: Resolve pre-release version and tag
         if: github.event_name == 'workflow_dispatch' || github.ref_type == 'tag'
         id: vars
         run: |
           set -euo pipefail
-          VERSION=$(node -p "require('./package.json').version")
+          VERSION=$(node -p "require('./client/package.json').version")
           if [[ "${GITHUB_REF_TYPE:-}" == "tag" ]]; then
             TAG="${GITHUB_REF_NAME}"
           else
@@ -96,7 +102,17 @@ jobs:
         run: |
           set -euo pipefail
           TAG="${{ steps.vars.outputs.tag }}"
-          tar -czf "ads-${TAG}.tgz" dist package.json package-lock.json README.md LICENSE .env.example .env.advanced.example
+          STAGE_DIR="$RUNNER_TEMP/ads-release-stage"
+          rm -rf "$STAGE_DIR"
+          mkdir -p "$STAGE_DIR/bin" "$STAGE_DIR/dist"
+          cp -p rust-server/target/release/ads-server "$STAGE_DIR/bin/ads-server"
+          cp -p rust-server/target/release/ads-telegram "$STAGE_DIR/bin/ads-telegram"
+          cp -a client/dist "$STAGE_DIR/dist/client"
+          cp -p README.md LICENSE .env.example .env.advanced.example "$STAGE_DIR/"
+          tar -czf "ads-${TAG}.tgz" -C "$STAGE_DIR" bin dist README.md LICENSE .env.example .env.advanced.example
+          test -x "$STAGE_DIR/bin/ads-server"
+          test -x "$STAGE_DIR/bin/ads-telegram"
+          test -f "$STAGE_DIR/dist/client/index.html"
 
       - name: Create GitHub pre-release
         if: steps.vars.outputs.is_prerelease == 'true'

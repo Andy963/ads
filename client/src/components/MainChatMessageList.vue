@@ -122,6 +122,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: "copyMessage", message: RenderMessage): void;
   (e: "retryMessage", message: RenderMessage): void;
+  (e: "retryAgentHandoff", messageId: string): void;
   (e: "toggleLiveStepExpanded"): void;
   (e: "beforeHistoryPrepend"): void;
 }>();
@@ -661,6 +662,34 @@ function isTurnFailureCard(m: RenderMessage): boolean {
   return m.role === "system" && m.kind === "error" && m.id.startsWith(TURN_FAILURE_CARD_PREFIX);
 }
 
+function agentHandoffStatusLabel(status: string | undefined): string {
+  switch (status) {
+    case "pending": return "等待执行";
+    case "running": return "交付中";
+    case "delivered": return "已交付";
+    case "failed": return "交付失败";
+    case "superseded": return "已过期";
+    default: return "历史交付";
+  }
+}
+
+function agentHandoffTarget(m: RenderMessage): string {
+  const handoff = m.agentHandoff;
+  if (!handoff) return "Reviewer → Acopilot";
+  const issue = handoff.issueId ? `Issue #${handoff.issueId}` : "当前 Issue";
+  const pr = handoff.prNumber ? ` · PR #${handoff.prNumber}` : "";
+  return `${issue}${pr}`;
+}
+
+function agentHandoffIssueUrl(m: RenderMessage): string {
+  const value = String(m.agentHandoff?.issueUrl ?? "").trim();
+  return value.startsWith("https://github.com/") ? value : "";
+}
+
+function shortSha(value: string | undefined): string {
+  return String(value ?? "").trim().slice(0, 12);
+}
+
 function getTurnFailureForUser(message: RenderMessage): RenderMessage | null {
   if (message.role !== "user") return null;
   // The card id embeds its user message id, so the retry control follows the
@@ -785,6 +814,41 @@ function getAssistantTint(m: RenderMessage): AssistantBubbleTint | undefined {
         <div class="sessionBoundaryNotice">
           {{ m.content || "Previous messages above are retained for review only and are NOT injected into model prompt context." }}
         </div>
+        </div>
+        <div
+          v-else-if="m.kind === 'agent_handoff'"
+          class="agentHandoffCard"
+          :data-status="m.agentHandoff?.status ?? 'unknown'"
+          :data-message-id="m.agentHandoff?.messageId"
+          data-testid="agent-handoff-card"
+        >
+          <div class="agentHandoffHeader">
+            <span class="agentHandoffRoute">Reviewer <span aria-hidden="true">→</span> Acopilot</span>
+            <span class="agentHandoffStatus">{{ agentHandoffStatusLabel(m.agentHandoff?.status) }}</span>
+          </div>
+          <div class="agentHandoffTitle">
+            <a
+              v-if="agentHandoffIssueUrl(m)"
+              :href="agentHandoffIssueUrl(m)"
+              target="_blank"
+              rel="noopener noreferrer"
+            >{{ agentHandoffTarget(m) }}</a>
+            <span v-else>{{ agentHandoffTarget(m) }}</span>
+          </div>
+          <div v-if="m.agentHandoff?.issueTitle" class="agentHandoffIssue">{{ m.agentHandoff.issueTitle }}</div>
+          <div v-if="m.agentHandoff?.headSha" class="agentHandoffMeta">
+            head {{ shortSha(m.agentHandoff.headSha) }}
+            <span v-if="m.agentHandoff?.baseSha"> · base {{ shortSha(m.agentHandoff.baseSha) }}</span>
+          </div>
+          <div class="agentHandoffBody"><MarkdownContent :content="m.content" /></div>
+          <div v-if="m.agentHandoff?.lastError" class="agentHandoffError">{{ m.agentHandoff.lastError }}</div>
+          <button
+            v-if="m.agentHandoff?.status === 'failed' && m.agentHandoff?.messageId"
+            class="agentHandoffRetry"
+            type="button"
+            data-testid="agent-handoff-retry"
+            @click.stop="emit('retryAgentHandoff', m.agentHandoff.messageId)"
+          >重试交付</button>
         </div>
         <div
           v-else
@@ -1474,6 +1538,113 @@ function getAssistantTint(m: RenderMessage): AssistantBubbleTint | undefined {
   border-radius: 12px;
   border: 1px solid rgba(208, 215, 222, 0.95);
   background: rgba(246, 248, 250, 0.96);
+}
+
+.agentHandoffCard {
+  width: min(760px, 100%);
+  box-sizing: border-box;
+  padding: 14px 16px;
+  border: 1px solid rgba(99, 102, 241, 0.38);
+  border-radius: 14px;
+  background: linear-gradient(135deg, rgba(238, 242, 255, 0.98), rgba(250, 245, 255, 0.98));
+  color: #312e81;
+  box-shadow: 0 4px 16px rgba(79, 70, 229, 0.08);
+}
+
+.agentHandoffHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.agentHandoffRoute {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: #4338ca;
+}
+
+.agentHandoffStatus {
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(79, 70, 229, 0.1);
+  color: #4338ca;
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.agentHandoffCard[data-status="running"] .agentHandoffStatus {
+  background: rgba(14, 116, 144, 0.12);
+  color: #0e7490;
+}
+
+.agentHandoffCard[data-status="delivered"] .agentHandoffStatus {
+  background: rgba(22, 101, 52, 0.12);
+  color: #166534;
+}
+
+.agentHandoffCard[data-status="failed"] .agentHandoffStatus {
+  background: rgba(185, 28, 28, 0.12);
+  color: #b91c1c;
+}
+
+.agentHandoffCard[data-status="superseded"] .agentHandoffStatus {
+  background: rgba(100, 116, 139, 0.14);
+  color: #475569;
+}
+
+.agentHandoffTitle {
+  margin-top: 8px;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.agentHandoffTitle a {
+  color: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.agentHandoffIssue {
+  margin-top: 2px;
+  color: #4f46e5;
+  font-size: 12px;
+}
+
+.agentHandoffMeta {
+  margin-top: 6px;
+  color: #64748b;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 11px;
+}
+
+.agentHandoffBody {
+  margin-top: 10px;
+  color: #3730a3;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.agentHandoffError {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(254, 226, 226, 0.8);
+  color: #991b1b;
+  font-size: 12px;
+}
+
+.agentHandoffRetry {
+  margin-top: 10px;
+  padding: 5px 10px;
+  border: 1px solid rgba(185, 28, 28, 0.35);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.8);
+  color: #991b1b;
+  font-size: 12px;
+  font-weight: 650;
+  cursor: pointer;
 }
 
 .msg[data-kind="error"] .bubble {

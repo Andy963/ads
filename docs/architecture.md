@@ -46,7 +46,7 @@ ADS (Agent Dispatch & Orchestration System) 采用分层解耦的架构设计，
 
 ### 2.0 统一会话消息记录
 
-Web 与独立 Channel Connector 通过 Core WebSocket 协议使用各自隔离的会话与消息交付行为。通道接受最终用户消息或成功记录最终 Agent 回复后，还会通过 `server/utils/conversationMessageRecorder.ts` 中的共享 `ConversationMessageRecorder` 契约发布规范化消息。
+Web 与独立 Channel Connector 通过 Core WebSocket 协议使用各自隔离的会话与消息交付行为。通道接受最终用户消息或成功记录最终 Agent 回复后，还会通过 `ts-server/server/utils/conversationMessageRecorder.ts` 中的共享 `ConversationMessageRecorder` 契约发布规范化消息。
 
 该契约携带消息 ID、工作区、会话、来源、角色、正文及可用的 Agent 身份。消费者是可选且隔离的：recorder 抛错不得影响本地持久化、模型调用或通道交付。流式增量、命令、状态事件、工具输出和错误不属于最终会话消息，不通过该契约发布。
 
@@ -62,14 +62,16 @@ Web 与独立 Channel Connector 通过 Core WebSocket 协议使用各自隔离�
 ### 2.2 多 Agent 抽象与容错执行
 - **统一适配器抽象 (`AgentAdapter`)**：
   - 双运行时引擎实现同一 `AgentAdapter` / `AgentEvent` 契约，WebSocket 协议与前端无需感知后端差异：
-    - **`NativeAgentAdapter`（默认）**：进程内直连 OpenAI 兼容 SSE，按模型配置与认证用户解析 endpoint、model 与加密凭据 profile；内置 `exec_command` / `read_file` / `search` / `apply_patch` 四个受限工具，文件工具限制在工作区内，命令（含 Shell 元字符的管道/复合命令）直接在宿主机执行并继承宿主环境与 `$HOME`。Native 是直接宿主机执行模式，不等同于 Codex app-server 的 sandbox policy。
+    - **`NativeAgentAdapter`（默认）**：进程内直连 OpenAI 兼容 SSE，按模型配置与认证用户解析 endpoint、model 与加密凭据 profile；内置 `exec_command` / `read_file` / `search` / `apply_patch` 四个受限工具，外加常驻的 `review_action`，文件工具限制在工作区内，命令（含 Shell 元字符的管道/复合命令）直接在宿主机执行并继承宿主环境与 `$HOME`。Native 是直接宿主机执行模式，不等同于 Codex app-server 的 sandbox policy。
     - **`CodexAppServerAdapter`（`ADS_AGENT_RUNTIME=codex-app-server`）**：通过 Codex App-Server 标准化封装多 Provider 模型的 RPC 调用、结构化事件与进程生命周期，支持 Codex App Server JSON-RPC 长连接与一次性 CLI 的无缝降级。
   - Native durable conversation 使用 ADS state store 中的 provider-neutral transcript，按 completed turn 恢复；ephemeral session（例如 Actions Reviewer）不持久化。上下文发送前经过独立的 token-aware projection，不能把 Native transcript 当作 Codex rollout。
   - Native provider capability 按 `supported` / `unsupported` / `unknown` 协商；未知或不支持的能力在请求前以结构化错误拒绝，不静默降级。完整边界见 [ADR 0026](adr/0026-native-runtime-lifecycle-and-capability-contract.md)。
-- **Actions Reviewer 队列**：Web Acopilot 泳道动态暴露 `begin_implementation` 与 `review_action`。非 Web 执行环境未注入 `begin_implementation` 时，Acopilot 必须做等价的只读任务槽校验，不能仅因工具缺失停止实现。
+- **Actions Reviewer 队列**：`review_action` 是常驻 ADS 内置工具，每个会话的模型工具列表都包含它。服务端从已认证会话解析项目、工作区与用户身份；缺少该上下文时调用返回明确错误。派发只写入队列，分支、PR、Issue 与 commit 的匹配检查在队首执行时完成。
   `review_action` 将固定的 PR、Issue、ADR 与 base/head 快照写入持久队列；验证和只读 Reviewer 在 Actions lane
-  按项目串行运行，进度及判词同时写入 Actions 会话，并将结构化结果返回 Acopilot。队列不执行 Developer，
-  PASS 也不会触发合并。详见 [ADR 0048](adr/0048-two-role-architecture-with-actions-review-queue.md)。
+  按项目串行运行。任务结束后裁决写成 Issue comment（`<!-- ads:review-verdict -->`），并向 Acopilot 泳道发送
+  服务端把裁决作为持久 `agent_message` 从 Reviewer 交付给 Acopilot，并以独立 inbox、lease 和可见 handoff 卡处理；工具调用本身立即返回，不等裁决。Agent message 不进入用户 `prompt_queue`。队列不执行 Developer，
+  PASS 也不会触发合并。详见 [ADR 0048](adr/0048-two-role-architecture-with-actions-review-queue.md) 与
+  [ADR 0050](adr/0050-review-verdicts-published-through-issue.md)。
 - **上游重试与自愈 (Upstream Retry & Healing)**：
   - 自动识别限流（429）、服务器高负载（503）、Cloudflare/网关超时（520–524）以及上游安全拦截。
   - 仅在未产生命令执行或文件写入等副作用前，自动指数退避重试，保障网络波动下的任务可靠性。
@@ -77,7 +79,7 @@ Web 与独立 Channel Connector 通过 Core WebSocket 协议使用各自隔离�
   - 动态限制并发 CLI 实例数，提供空闲看门狗（Idle Watchdog）与最大硬超时保护，防止僵尸进程耗尽系统资源。
 
 ### 2.2.1 Agent Turn Middleware
-- `server/middleware/` 提供可组合的 Turn/Item 生命周期钩子。
+- `ts-server/server/middleware/` 提供可组合的 Turn/Item 生命周期钩子。
 - `runAgentTurn` 支持注入 middleware pipeline，用于输入预处理、回合启动、输出后处理和错误收尾。
 - Item 级安全钩子失败时默认拒绝执行；输出 artifact 使用私有目录和 `0600` 文件权限。
 

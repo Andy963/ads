@@ -1,6 +1,6 @@
 # ADS Telegram Connector
 
-ADS includes a standalone Telegram Channel Connector in `connectors/telegram/`. It runs outside ADS Core and communicates with Core over an authenticated WebSocket. Telegram turns enter Core as `channel: "telegram"` and therefore run through the same `MiddlewarePipeline`, memory recall, and safety rules as Web turns.
+ADS includes a standalone Rust Telegram Channel Connector in `rust-server/crates/ads-telegram/` (`ads-telegram`). It runs outside ADS Core and communicates with Core over an authenticated WebSocket. Telegram turns enter Core as `channel: "telegram"` and therefore run through the same `MiddlewarePipeline`, memory recall, and safety rules as Web turns.
 
 Core streams prompt output as `delta` frames followed by a `result` frame. Task lifecycle notifications use the transport-neutral `task_terminal` event; only the connector calls the Telegram API.
 
@@ -26,10 +26,10 @@ Start the two processes independently:
 
 ```bash
 # Start ADS Core
-node dist/server/cli.js
+cargo run --manifest-path rust-server/Cargo.toml -p ads-server
 
 # Start the Telegram Connector
-node connectors/telegram/bin/ads-telegram.js start
+cargo run --manifest-path rust-server/Cargo.toml -p ads-telegram
 ```
 
 ## Supported Interaction
@@ -45,6 +45,8 @@ node connectors/telegram/bin/ads-telegram.js start
 | Text message | Any non-command text | Sends a `channel: "telegram"` prompt to ADS Core. |
 
 Each Telegram chat uses an independent Core chat session. History, `/new`, and `/stop` actions are scoped to that chat and cannot affect another chat.
+
+Text prompts receive a temporary `thinking` message immediately after the connector accepts them. Its trailing dots animate while the turn is running, and the connector also refreshes the Telegram typing indicator. The temporary message is deleted before the final response or error response is sent, so completed conversations contain only the answer.
 
 The `/model` list is read from ADS Core's global model configuration registry (`/api/models`). Model configuration is not workspace-scoped. A model selection is stored in the chat's Core session, so changing it in one Telegram chat does not change another chat's active model.
 
