@@ -77,4 +77,5 @@
 - 0066 - [ADR 0066: Route Actions Reviewer Through the Active Agent Runtime](0066-runtime-unified-actions-reviewer.md)
 - 0067 - [ADR 0067: Port Web Push API Routes and VAPID Delivery to Rust Server](0067-rust-server-web-push-notifications.md)
 - 0068 - [ADR 0068: Retire Legacy TypeScript Server to Archive Branch](0068-retire-ts-server-to-archive-branch.md)
+- 0069 - [ADR 0069: Make Lane Stream Replay Idempotent by Turn and Assistant Item Identity](0069-idempotent-lane-stream-replay.md)
 <!-- ADS:ADR_INDEX_END -->

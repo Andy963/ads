@@ -414,11 +414,13 @@ impl NativePromptRunner {
                 let streamed_final = Arc::new(AtomicBool::new(false));
                 let make_delta = {
                     let delta_context = context.clone();
+                    let delta_client_message_id = entry.client_message_id.clone();
                     let delta_item_id = item_id.clone();
                     let delta_executor = Arc::clone(&tool_executor);
                     let streamed_final = Arc::clone(&streamed_final);
                     move |emitted: Arc<AtomicBool>| -> NativeTextDelta {
                         let delta_context = delta_context.clone();
+                        let delta_client_message_id = delta_client_message_id.clone();
                         let delta_item_id = delta_item_id.clone();
                         let delta_executor = Arc::clone(&delta_executor);
                         let streamed_final = Arc::clone(&streamed_final);
@@ -438,6 +440,7 @@ impl NativePromptRunner {
                                 streamed_final.store(true, Ordering::SeqCst);
                                 delta_context.emit(json!({
                                     "type": "delta",
+                                    "clientMessageId": delta_client_message_id,
                                     "delta": delta,
                                     "assistantItemId": delta_item_id,
                                     "ts": now_ms(),
@@ -512,6 +515,7 @@ impl NativePromptRunner {
                     if !completion.text.is_empty() && !streamed_final.load(Ordering::SeqCst) {
                         context.emit(json!({
                             "type": "delta",
+                            "clientMessageId": entry.client_message_id,
                             "delta": completion.text,
                             "assistantItemId": item_id,
                             "ts": now_ms(),
@@ -787,6 +791,7 @@ impl NativePromptRunner {
             self.add_error_history(&entry, &message)?;
             context.emit(json!({
                 "type": "error",
+                "clientMessageId": entry.client_message_id,
                 "message": message,
                 "errorInfo": {
                     "code": if status == NativeTranscriptTurnStatus::Cancelled {
@@ -867,6 +872,7 @@ impl NativePromptRunner {
         )?;
         context.emit(json!({
             "type": "assistant_item",
+            "clientMessageId": entry.client_message_id,
             "assistantItemId": item_id,
             "assistantItemText": output,
             "ts": now_ms(),
@@ -877,6 +883,7 @@ impl NativePromptRunner {
             "ts": now_ms(),
         }));
         context.emit(result_event(
+            &entry.client_message_id,
             &output,
             &item_id,
             &model.model,
@@ -902,6 +909,7 @@ impl NativePromptRunner {
         self.add_error_history(entry, &message)?;
         context.emit(json!({
             "type": "error",
+            "clientMessageId": entry.client_message_id,
             "message": message,
             "errorInfo": {
                 "code": "native_runtime_capability_error",
@@ -1630,10 +1638,17 @@ fn build_transcript_id(entry: &LaneTurn) -> String {
     format!("{:x}", Sha256::digest(value.to_string().as_bytes()))
 }
 
-fn result_event(output: &str, item_id: &str, effective_model: &str, effort: Option<&str>) -> Value {
+fn result_event(
+    client_message_id: &str,
+    output: &str,
+    item_id: &str,
+    effective_model: &str,
+    effort: Option<&str>,
+) -> Value {
     json!({
         "type": "result",
         "ok": true,
+        "clientMessageId": client_message_id,
         "output": output,
         "assistantItems": [{ "id": item_id, "text": output }],
         "threadId": null,

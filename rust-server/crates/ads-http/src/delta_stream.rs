@@ -206,7 +206,15 @@ impl DeltaStreamCoalescer {
         self.ensure_hydrated(db);
         let mut state = self.state.lock().expect("delta stream lock");
         if let Some(identity) = identity {
-            state.identity = identity;
+            if !state.text.is_empty() && identity_changed(&state.identity, &identity) {
+                seal_phase_locked(&mut state, db);
+            }
+            if identity.client_message_id.is_some() {
+                state.identity.client_message_id = identity.client_message_id;
+            }
+            if identity.assistant_item_id.is_some() {
+                state.identity.assistant_item_id = identity.assistant_item_id;
+            }
         }
         if state.started_at == 0 {
             state.started_at = normalize_ts(event_ts);
@@ -231,20 +239,7 @@ impl DeltaStreamCoalescer {
     pub fn finish_phase(&self, db: &StateDb) {
         self.ensure_hydrated(db);
         let mut state = self.state.lock().expect("delta stream lock");
-        flush_locked(&mut state, db, true, now_millis());
-        if !state.text.is_empty() {
-            mark_inactive_locked(&mut state, db);
-        }
-        state.identity = DeltaStreamIdentity::default();
-        state.text.clear();
-        state.total_chars = 0;
-        state.revision = 0;
-        state.started_at = 0;
-        state.last_flush_at = 0;
-        state.latest_snapshot_seq = None;
-        state.pending = false;
-        state.phase += 1;
-        state.stream_id = stream_event_id(&state.lane_key, &state.token, state.phase);
+        seal_phase_locked(&mut state, db);
     }
 
     pub fn finish(&self, db: &StateDb) {
@@ -309,6 +304,33 @@ impl DeltaStreamCoalescer {
         );
         Some(Value::Object(snapshot))
     }
+}
+
+fn identity_changed(current: &DeltaStreamIdentity, next: &DeltaStreamIdentity) -> bool {
+    let client_changed = current.client_message_id.is_some()
+        && next.client_message_id.is_some()
+        && current.client_message_id != next.client_message_id;
+    let item_changed = current.assistant_item_id.is_some()
+        && next.assistant_item_id.is_some()
+        && current.assistant_item_id != next.assistant_item_id;
+    client_changed || item_changed
+}
+
+fn seal_phase_locked(state: &mut DeltaState, db: &StateDb) {
+    flush_locked(state, db, true, now_millis());
+    if !state.text.is_empty() {
+        mark_inactive_locked(state, db);
+    }
+    state.identity = DeltaStreamIdentity::default();
+    state.text.clear();
+    state.total_chars = 0;
+    state.revision = 0;
+    state.started_at = 0;
+    state.last_flush_at = 0;
+    state.latest_snapshot_seq = None;
+    state.pending = false;
+    state.phase += 1;
+    state.stream_id = stream_event_id(&state.lane_key, &state.token, state.phase);
 }
 
 fn flush_locked(state: &mut DeltaState, db: &StateDb, active: bool, now: i64) {
@@ -617,5 +639,51 @@ mod tests {
         assert_eq!(rows[0].payload["text"], "ab");
         assert_eq!(rows[0].payload["revision"], 2);
         assert_eq!(rows[0].payload["active"], true);
+    }
+
+    #[test]
+    fn rotates_phase_when_assistant_item_identity_changes() {
+        let (db, _dir) = test_db();
+        let coalescer = DeltaStreamCoalescer::new("web-acopilot", "lane");
+        let first = coalescer
+            .append_delta(
+                &db,
+                "commentary phase",
+                1_000,
+                Some(DeltaStreamIdentity::new(Some("turn-1"), Some("item-1"))),
+            )
+            .expect("first delta");
+        let second = coalescer
+            .append_delta(
+                &db,
+                "final phase",
+                1_050,
+                Some(DeltaStreamIdentity::new(Some("turn-1"), Some("item-2"))),
+            )
+            .expect("second delta");
+        coalescer.flush_due(&db, i64::MAX);
+
+        assert_ne!(first.stream_id, second.stream_id);
+        assert_eq!(second.start_offset, 0);
+        assert_eq!(second.end_offset, "final phase".chars().count() as i64);
+
+        let connection = db.connect().expect("connection");
+        let rows = SyncEventStore::default()
+            .read_coalesced(
+                &connection,
+                "web-acopilot",
+                "lane",
+                Some(DELTA_SNAPSHOT_EVENT_TYPE),
+            )
+            .expect("rows");
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].payload["clientMessageId"], "turn-1");
+        assert_eq!(rows[0].payload["assistantItemId"], "item-1");
+        assert_eq!(rows[0].payload["text"], "commentary phase");
+        assert_eq!(rows[0].payload["active"], false);
+        assert_eq!(rows[1].payload["clientMessageId"], "turn-1");
+        assert_eq!(rows[1].payload["assistantItemId"], "item-2");
+        assert_eq!(rows[1].payload["text"], "final phase");
+        assert_eq!(rows[1].payload["active"], true);
     }
 }
