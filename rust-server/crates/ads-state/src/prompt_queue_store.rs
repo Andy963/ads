@@ -246,6 +246,21 @@ fn canonicalize_payload(value: &Value) -> Value {
     }
 }
 
+fn merge_retry_controls(
+    payload: &mut Map<String, Value>,
+    model: Option<Value>,
+    effort: Option<Value>,
+) {
+    if let Some(model) = model {
+        payload.insert("model".to_string(), model);
+    }
+    if let Some(effort) = effort {
+        payload.remove("modelReasoningEffort");
+        payload.remove("model_reasoning_effort");
+        payload.insert("modelReasoningEffort".to_string(), effort);
+    }
+}
+
 fn required_text(value: &str, field: &str) -> StateResult<String> {
     let normalized = value.trim();
     if normalized.is_empty() {
@@ -402,6 +417,12 @@ impl<'a> PromptQueueStore<'a> {
             ));
         }
 
+        let refreshed_model = input.payload.get("model").cloned();
+        let refreshed_effort = input
+            .payload
+            .get("modelReasoningEffort")
+            .cloned()
+            .or_else(|| input.payload.get("model_reasoning_effort").cloned());
         let mut payload = input.payload;
         let mut payload_hash = hash_prompt_queue_payload(&payload);
         if self.is_cancelled(&client_message_id, input.user_id, &lane)? {
@@ -434,10 +455,14 @@ impl<'a> PromptQueueStore<'a> {
                     });
                 }
                 payload = existing.payload.clone();
+                merge_retry_controls(&mut payload, refreshed_model, refreshed_effort);
                 payload.insert("replay_incomplete".to_string(), Value::Bool(true));
                 payload_hash = hash_prompt_queue_payload(&payload);
             }
-            if !existing.payload_hash.is_empty() && existing.payload_hash != payload_hash {
+            if !input.retry_original
+                && !existing.payload_hash.is_empty()
+                && existing.payload_hash != payload_hash
+            {
                 return Err(StateError::InvalidInput(
                     "clientMessageId is already associated with a different prompt payload"
                         .to_string(),

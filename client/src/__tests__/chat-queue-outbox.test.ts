@@ -980,13 +980,15 @@ describe("consumed failure reconciliation", () => {
     store.write(key, { pending: null, sent: [], queued: [], dismissed: [], consumed: ["failed-turn"] });
     const first = mountRetryHarness({ laneGeneration: 1, chatSessionId: lane });
     first.rt.connected.value = false;
+    first.rt.modelId.value = "selected-model";
+    first.rt.modelReasoningEffort.value = "xhigh";
     const failure = { id: "failure", role: "system" as const, kind: "error" as const, content: "Provider failed" };
     first.rt.messages.value = [{ id: "failed-turn", role: "user", kind: "text", content: "Retry original",
       execution: { model: "original-model", modelReasoningEffort: "medium" } }, failure];
     first.chat.retryPrompt(failure, first.rt);
     expect(store.read(key).consumed).not.toContain("failed-turn");
     expect(store.read(key).queued).toEqual([expect.objectContaining({
-      clientMessageId: "failed-turn", replayIncomplete: true, retryOriginal: true, model: "original-model", modelReasoningEffort: "medium",
+      clientMessageId: "failed-turn", replayIncomplete: true, retryOriginal: true, model: "selected-model", modelReasoningEffort: "xhigh",
     })]);
 
     const cold = mountRetryHarness({ laneGeneration: 1, chatSessionId: lane });
@@ -1002,7 +1004,7 @@ describe("consumed failure reconciliation", () => {
     await settle();
     expect(cold.sentFrames).toEqual([expect.objectContaining({
       clientMessageId: "failed-turn", payload: expect.objectContaining({
-        replay_incomplete: true, retry_original: true, model: "original-model", model_reasoning_effort: "medium",
+        replay_incomplete: true, retry_original: true, model: "selected-model", model_reasoning_effort: "xhigh",
       }),
     })]);
     store.close();

@@ -1193,6 +1193,9 @@ export function createChatActions(ctx: AppContext) {
     state.dismissedPromptIds?.delete(userItem.id);
     const execution = userItem.execution ?? {};
     const agentId = String(execution.agentId ?? "").trim() || String(state.activeAgentId.value ?? "").trim();
+    const model = String(state.modelId.value ?? "").trim() || String(execution.model ?? "").trim();
+    const modelReasoningEffort = String(state.modelReasoningEffort.value ?? "").trim()
+      || String(execution.modelReasoningEffort ?? "").trim();
     state.queuedPrompts.value = [
       ...state.queuedPrompts.value,
       {
@@ -1202,8 +1205,8 @@ export function createChatActions(ctx: AppContext) {
         images: [],
         createdAt: Date.now(),
         ...(agentId ? { agentId } : {}),
-        ...(execution.model ? { model: execution.model } : {}),
-        ...(execution.modelReasoningEffort ? { modelReasoningEffort: execution.modelReasoningEffort } : {}),
+        ...(model ? { model } : {}),
+        ...(modelReasoningEffort ? { modelReasoningEffort } : {}),
         replayIncomplete: true,
         retryOriginal: true,
         deliveryStatus: state.connected.value ? "awaiting_ack" : "offline",
