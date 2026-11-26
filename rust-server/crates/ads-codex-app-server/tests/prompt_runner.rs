@@ -113,11 +113,18 @@ async fn runs_a_queued_prompt_through_the_codex_app_server() {
                 .is_some_and(|kind| kind.contains("origin=agent"))
         );
         assert!(events.iter().any(|event| event["type"] == "in_flight"));
-        assert!(
-            events
-                .iter()
-                .any(|event| event["type"] == "result" && event["output"] == "conformance done")
-        );
+        let result_event = events
+            .iter()
+            .find(|event| event["type"] == "result" && event["output"] == "conformance done")
+            .expect("result event");
+        assert_eq!(result_event["clientMessageId"], "prompt-1");
+        if let Some(last_delta) = events.iter().rev().find(|event| event["type"] == "delta") {
+            assert_eq!(last_delta["clientMessageId"], "prompt-1");
+            assert_eq!(
+                result_event["assistantItems"][0]["id"],
+                last_delta["assistantItemId"]
+            );
+        }
     }
     let connection = db.connect().expect("connection");
     let history = HistoryStore::new("web-acopilot", 1_000, 100_000)

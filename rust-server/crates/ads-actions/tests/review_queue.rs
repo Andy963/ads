@@ -710,6 +710,25 @@ async fn processes_a_review_end_to_end() {
     assert!(kinds.iter().any(|kind| kind.ends_with(":verification")));
     assert!(kinds.iter().any(|kind| kind.ends_with(":completed")));
     assert!(kinds.iter().any(|kind| kind.ends_with(":result")));
+    let completed_message = messages
+        .iter()
+        .find(|message| message.kind.ends_with(":completed"))
+        .expect("completed status message");
+    assert!(completed_message.text.contains("Review complete for "));
+    assert!(completed_message.text.contains("(PASS)"));
+    assert!(!completed_message.text.contains("Reviewer verdict:"));
+    assert!(!completed_message.text.contains("All good"));
+    let result_message = messages
+        .iter()
+        .find(|message| message.kind.ends_with(":result"))
+        .expect("result assistant message");
+    assert!(result_message.text.contains("Reviewer verdict: PASS"));
+    assert!(result_message.text.contains("All good"));
+    let verdict_message_count = messages
+        .iter()
+        .filter(|message| message.text.contains("Reviewer verdict:"))
+        .count();
+    assert_eq!(verdict_message_count, 1);
     let wakes = wakes.lock().expect("wakes");
     assert_eq!(wakes.len(), 1);
     assert_eq!(wakes[0].issue_id, 7);

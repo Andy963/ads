@@ -143,10 +143,25 @@ function getUnrenderedSnapshotText(
 ): { text: string; matched: boolean } {
   const normalizedSnapshot = String(snapshot ?? "").replace(/\r\n/g, "\n");
   const rendered = getRenderedAssistantText(items, isLiveMessageId).replace(/\r\n/g, "\n");
-  if (!rendered || !normalizedSnapshot.startsWith(rendered)) {
-    return { text: normalizedSnapshot, matched: false };
+  if (rendered && normalizedSnapshot.startsWith(rendered)) {
+    return { text: normalizedSnapshot.slice(rendered.length), matched: true };
   }
-  return { text: normalizedSnapshot.slice(rendered.length), matched: true };
+  let lastUserIndex = -1;
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    if (items[index]?.role === "user") {
+      lastUserIndex = index;
+      break;
+    }
+  }
+  const turnAssistantTexts = items
+    .slice(lastUserIndex + 1)
+    .filter((item) => item.role === "assistant" && item.kind === "text" && !isLiveMessageId(item.id))
+    .map((item) => stripStreamingDisconnectNotice(String(item.content ?? "")).replace(/\r\n/g, "\n"))
+    .filter((text) => text.length > 0);
+  if (turnAssistantTexts.some((text) => text === normalizedSnapshot)) {
+    return { text: "", matched: true };
+  }
+  return { text: normalizedSnapshot, matched: false };
 }
 
 export function createStreamingActions(params: {

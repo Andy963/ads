@@ -1738,6 +1738,24 @@ pub(crate) fn emit_lane_turn_event_with(
         .map(str::trim)
         .unwrap_or("")
         .to_string();
+    if matches!(
+        event_type.as_str(),
+        "delta" | "assistant_item" | "result" | "error"
+    ) {
+        let turn_client_message_id = turn.client_message_id.trim();
+        if !turn_client_message_id.is_empty()
+            && let Some(record) = framed.as_object_mut()
+        {
+            let has_client_message_id = record
+                .get("clientMessageId")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .is_some_and(|value| !value.is_empty());
+            if !has_client_message_id {
+                record.insert("clientMessageId".to_string(), json!(turn_client_message_id));
+            }
+        }
+    }
     if event_type == "delta" {
         attach_delta_snapshot(db, ws, &turn.lane_namespace, &turn.history_key, &mut framed);
     } else if event_type == "command" || event_type == "phase_complete" {
@@ -5705,5 +5723,111 @@ mod tests {
         );
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         assert_eq!(transport.sent.lock().expect("sent").len(), 2);
+    }
+
+    #[test]
+    fn emit_lane_turn_event_attaches_client_message_id_to_delta_snapshot_and_result() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let db = StateDb::open(dir.path().join("state.db")).expect("state db");
+        let hub = WebSocketHub::new(WebSocketConfig::default());
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let _guard = hub.register_connection(ConnectionRegistration {
+            physical_id: "phys-turn-identity".to_string(),
+            auth_user_id: "user-1".to_string(),
+            session_id: "sess-1".to_string(),
+            chat_session_id: "acopilot".to_string(),
+            logical_history_key: "user-1::sess-1::acopilot".to_string(),
+            workspace_root: Some("/tmp/ads".to_string()),
+            workspace_cwd: PathBuf::from("/tmp/ads"),
+            generation: 1,
+            connector: false,
+            sender: tx,
+        });
+        let turn = LaneTurn {
+            kind: ads_runtime::LaneTurnKind::UserPrompt,
+            key: ads_runtime::LaneTurnKey::PromptQueue(1),
+            client_message_id: "turn-cm-1".to_string(),
+            auth_user_id: "user-1".to_string(),
+            user_id: 1,
+            session_id: "sess-1".to_string(),
+            chat_session_id: "acopilot".to_string(),
+            history_key: "user-1::sess-1::acopilot".to_string(),
+            logical_history_key: "user-1::sess-1::acopilot".to_string(),
+            lane_namespace: ads_state::WEB_ACOPILOT_NAMESPACE.to_string(),
+            lane_generation: 1,
+            workspace_root: "/tmp/ads".to_string(),
+            payload: Map::new(),
+            history_display_text: None,
+            created_at: 1_000,
+        };
+
+        emit_lane_turn_event_with(
+            &db,
+            &hub,
+            &turn,
+            None,
+            json!({
+                "type": "delta",
+                "delta": "Inspecting code...",
+                "assistantItemId": "msg-phase-1",
+                "ts": 1_001,
+            }),
+        );
+        emit_lane_turn_event_with(
+            &db,
+            &hub,
+            &turn,
+            None,
+            json!({
+                "type": "command",
+                "command": { "id": "cmd-1", "command": "cargo test", "status": "completed" },
+                "ts": 1_002,
+            }),
+        );
+        emit_lane_turn_event_with(
+            &db,
+            &hub,
+            &turn,
+            None,
+            json!({
+                "type": "result",
+                "ok": true,
+                "output": "Done",
+                "assistantItems": [{ "id": "msg-phase-2", "text": "Done" }],
+                "ts": 1_003,
+            }),
+        );
+
+        let mut frames = Vec::new();
+        while let Ok(frame) = rx.try_recv() {
+            if let ControlEvent::Frame(value) = frame {
+                frames.push(value);
+            }
+        }
+        let delta_frame = frames
+            .iter()
+            .find(|frame| frame["type"] == "delta")
+            .expect("delta frame");
+        assert_eq!(delta_frame["clientMessageId"], "turn-cm-1");
+        assert_eq!(delta_frame["assistantItemId"], "msg-phase-1");
+        let result_frame = frames
+            .iter()
+            .find(|frame| frame["type"] == "result")
+            .expect("result frame");
+        assert_eq!(result_frame["clientMessageId"], "turn-cm-1");
+
+        let connection = db.connect().expect("connection");
+        let snapshots = SyncEventStore::default()
+            .read_coalesced(
+                &connection,
+                ads_state::WEB_ACOPILOT_NAMESPACE,
+                "user-1::sess-1::acopilot",
+                Some(crate::delta_stream::DELTA_SNAPSHOT_EVENT_TYPE),
+            )
+            .expect("snapshots");
+        assert_eq!(snapshots.len(), 1);
+        assert_eq!(snapshots[0].payload["clientMessageId"], "turn-cm-1");
+        assert_eq!(snapshots[0].payload["assistantItemId"], "msg-phase-1");
+        assert_eq!(snapshots[0].payload["active"], false);
     }
 }

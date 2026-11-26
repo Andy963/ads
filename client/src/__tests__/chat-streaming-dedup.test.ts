@@ -126,4 +126,22 @@ describe("chat streaming duplicate protection", () => {
     expect(messages.value.find((message) => message.id === "live-step")?.content).toBe("Legacy progress");
     expect(messages.value.filter((message) => message.kind === "thought")).toHaveLength(0);
   });
+
+  it("does not duplicate an already-rendered per-phase snapshot across multiple command boundaries", () => {
+    const firstPhase = "Phase 1: Inspecting repository state.";
+    const secondPhase = "Phase 2: Updating server and client handlers.";
+    const { messages, runtime, streaming } = createHarness([
+      { id: "u-1", role: "user", kind: "text", content: "fix duplicate messages" },
+      { id: "a-1", role: "assistant", kind: "text", content: firstPhase, streaming: false },
+      { id: "exec-1", role: "system", kind: "execute", content: "$ git status\n", command: "git status", streaming: false },
+      { id: "a-2", role: "assistant", kind: "text", content: secondPhase, streaming: false },
+      { id: "exec-2", role: "system", kind: "execute", content: "$ cargo test\n", command: "cargo test", streaming: false },
+    ]);
+
+    streaming.replaceStreamingText(secondPhase, runtime);
+    streaming.replaceStreamingText(firstPhase, runtime);
+
+    const assistantMessages = messages.value.filter((message) => message.role === "assistant" && message.kind === "text");
+    expect(assistantMessages.map((message) => message.content)).toEqual([firstPhase, secondPhase]);
+  });
 });
