@@ -965,6 +965,214 @@ async fn times_out_and_interrupts_an_active_turn() {
     registry.stop_all().await;
 }
 
+fn custom_error_retry_factory(
+    requests: Arc<Mutex<Vec<Value>>>,
+    error_payload: Value,
+) -> ClientFactory {
+    Arc::new(move |_: SpawnOptions| {
+        let requests = Arc::clone(&requests);
+        let error_payload = error_payload.clone();
+        Box::pin(async move {
+            let (client_stream, server_stream) = tokio::io::duplex(1024 * 1024);
+            let (client_reader, client_writer) = split(client_stream);
+            let (server_reader, server_writer) = split(server_stream);
+            let mut server = ServerSide {
+                reader: BufReader::new(server_reader),
+                writer: server_writer,
+            };
+            tokio::spawn(async move {
+                let turns = AtomicUsize::new(0);
+                while let Some(message) = server.read().await {
+                    requests.lock().await.push(message.clone());
+                    match message["method"].as_str().unwrap_or_default() {
+                        "initialize" => {
+                            server
+                                .respond(
+                                    &message["id"],
+                                    json!({
+                                        "userAgent": "fake",
+                                        "codexHome": "/tmp/codex-home",
+                                        "platformFamily": "unix",
+                                        "platformOs": "linux"
+                                    }),
+                                )
+                                .await;
+                        }
+                        "thread/start" => {
+                            server
+                                .respond(
+                                    &message["id"],
+                                    json!({
+                                        "thread": {"id": "thread-classify"},
+                                        "sandbox": {"type": "workspaceWrite"},
+                                        "approvalPolicy": "untrusted"
+                                    }),
+                                )
+                                .await;
+                        }
+                        "turn/start" => {
+                            let turn = turns.fetch_add(1, Ordering::AcqRel) + 1;
+                            server.respond(&message["id"], json!({})).await;
+                            server
+                                .notify(
+                                    "turn/started",
+                                    json!({
+                                        "threadId": "thread-classify",
+                                        "turn": {"id": format!("turn-{turn}")}
+                                    }),
+                                )
+                                .await;
+                            if turn == 1 {
+                                server
+                                    .notify(
+                                        "error",
+                                        json!({
+                                            "threadId": "thread-classify",
+                                            "turnId": "turn-1",
+                                            "willRetry": false,
+                                            "error": error_payload
+                                        }),
+                                    )
+                                    .await;
+                                continue;
+                            }
+                            server
+                                .notify(
+                                    "item/completed",
+                                    json!({
+                                        "threadId": "thread-classify",
+                                        "turnId": format!("turn-{turn}"),
+                                        "item": {
+                                            "type": "agentMessage",
+                                            "id": "message-ok",
+                                            "text": "recovered"
+                                        }
+                                    }),
+                                )
+                                .await;
+                            server
+                                .notify(
+                                    "turn/completed",
+                                    json!({
+                                        "threadId": "thread-classify",
+                                        "turn": {"id": format!("turn-{turn}")}
+                                    }),
+                                )
+                                .await;
+                        }
+                        _ => {}
+                    }
+                }
+            });
+            Ok(CodexAppServerClient::from_io(client_reader, client_writer))
+        })
+    })
+}
+
+#[tokio::test]
+async fn does_not_retry_request_token_429_or_authentication_failures_but_retries_structured_429() {
+    for (project_id, payload) in [
+        (
+            "project-trace-429",
+            json!({ "message": "upstream failure request_id=trace-429" }),
+        ),
+        (
+            "project-auth-stream-error",
+            json!({ "message": "stream error: 401 unauthorized" }),
+        ),
+        (
+            "project-structured-401",
+            json!({
+                "message": "stream disconnected",
+                "codexErrorInfo": { "httpConnectionFailed": { "httpStatusCode": 401 } }
+            }),
+        ),
+    ] {
+        let request_log = Arc::new(Mutex::new(Vec::new()));
+        let factory = custom_error_retry_factory(Arc::clone(&request_log), payload);
+        let registry = CodexAppServerDaemonRegistry::with_factory(move |options| factory(options));
+        let agent = CodexAppServerAgent::new(CodexAppServerAgentOptions {
+            project_id: project_id.to_string(),
+            workspace_root: std::env::temp_dir(),
+            working_directory: None,
+            model: None,
+            resume_thread_id: None,
+            reasoning_effort: "high".to_string(),
+            sandbox_mode: SandboxMode::WorkspaceWrite,
+            developer_instructions: None,
+            dynamic_tools: Vec::new(),
+            daemon_options: SpawnOptions::default(),
+            registry: Some(Arc::clone(&registry)),
+            turn_timeout: Some(std::time::Duration::from_secs(2)),
+            auto_compact: ads_codex_app_server::AutoCompactConfig::default(),
+            retry: ads_codex_app_server::RetryConfig {
+                max_attempts: 2,
+                backoff_ms: Some(vec![0]),
+            },
+        });
+        let _ = agent
+            .send(vec![AgentInputPart::text("hello")], None)
+            .await
+            .expect_err("non-transient failure must not retry");
+        assert_eq!(
+            request_log
+                .lock()
+                .await
+                .iter()
+                .filter(|request| request["method"] == "turn/start")
+                .count(),
+            1,
+            "{project_id} should not retry"
+        );
+        registry.stop_all().await;
+    }
+
+    // Structured HTTP 429 payload must still retry and succeed.
+    let request_log = Arc::new(Mutex::new(Vec::new()));
+    let factory = custom_error_retry_factory(
+        Arc::clone(&request_log),
+        json!({
+            "message": "upstream throttled",
+            "codexErrorInfo": { "httpConnectionFailed": { "httpStatusCode": 429 } }
+        }),
+    );
+    let registry = CodexAppServerDaemonRegistry::with_factory(move |options| factory(options));
+    let agent = CodexAppServerAgent::new(CodexAppServerAgentOptions {
+        project_id: "project-structured-429".to_string(),
+        workspace_root: std::env::temp_dir(),
+        working_directory: None,
+        model: None,
+        resume_thread_id: None,
+        reasoning_effort: "high".to_string(),
+        sandbox_mode: SandboxMode::WorkspaceWrite,
+        developer_instructions: None,
+        dynamic_tools: Vec::new(),
+        daemon_options: SpawnOptions::default(),
+        registry: Some(Arc::clone(&registry)),
+        turn_timeout: Some(std::time::Duration::from_secs(2)),
+        auto_compact: ads_codex_app_server::AutoCompactConfig::default(),
+        retry: ads_codex_app_server::RetryConfig {
+            max_attempts: 2,
+            backoff_ms: Some(vec![0]),
+        },
+    });
+    let result = agent
+        .send(vec![AgentInputPart::text("hello")], None)
+        .await
+        .expect("structured 429 should retry and succeed");
+    assert_eq!(result.response, "recovered");
+    assert_eq!(
+        request_log
+            .lock()
+            .await
+            .iter()
+            .filter(|request| request["method"] == "turn/start")
+            .count(),
+        2
+    );
+    registry.stop_all().await;
+}
+
 #[tokio::test]
 async fn handles_approvals_and_review_action_without_replaying_side_effects() {
     let rework_arguments = json!({

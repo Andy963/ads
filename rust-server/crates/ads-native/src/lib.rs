@@ -48,7 +48,8 @@ pub use middleware::{
 };
 pub use model::{ModelResolver, NativeModelConfig, ResolveOptions};
 pub use retry::{
-    TRANSIENT_MODEL_RETRY_COUNT_ENV, is_retryable_model_error, is_transient_upstream_model_error,
+    MAX_RETRY_AFTER_MS, TRANSIENT_MODEL_RETRY_COUNT_ENV, is_retryable_http_status,
+    is_retryable_model_error, is_transient_upstream_model_error, is_transient_upstream_payload,
     max_attempts, resolve_transient_model_retry_count, resolve_transient_retry_delay_ms,
 };
 pub use reviewer::{

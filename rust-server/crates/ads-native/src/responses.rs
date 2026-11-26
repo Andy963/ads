@@ -804,14 +804,15 @@ fn provider_failure(value: &Value) -> NativeError {
         .and_then(|value| u16::try_from(value).ok());
     let retryable = code.is_some_and(|code| RETRYABLE_CODES.contains(&code))
         || status.is_some_and(|status| RETRYABLE_HTTP.contains(&status));
-    NativeError::provider(
-        if retryable {
+    NativeError::Provider {
+        message: "Native Responses upstream failed [redacted]".to_string(),
+        kind: if retryable {
             NativeProviderErrorKind::Transient
         } else {
             NativeProviderErrorKind::Permanent
         },
-        "Native Responses upstream failed [redacted]",
-    )
+        status,
+    }
 }
 
 async fn parse_response_stream(
