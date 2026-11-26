@@ -713,6 +713,35 @@ describe("issue-478: turn failure retry", () => {
     }), "failed-turn");
   });
 
+  it("does not send the auto placeholder when a failed turn has no execution model", async () => {
+    const { chat, rt } = mountHarness();
+    const sendPrompt = vi.fn().mockReturnValue(true);
+    rt.ws = { sendPrompt } as never;
+    rt.modelId.value = "AUTO";
+    rt.modelReasoningEffort.value = "high";
+    const failure = { id: "failure", role: "system" as const, kind: "error" as const, content: "Provider failed" };
+    rt.messages.value = [
+      {
+        id: "failed-turn-without-metadata",
+        role: "user",
+        kind: "text",
+        content: "Retry the original turn",
+      },
+      failure,
+    ];
+
+    chat.retryPrompt(failure, rt);
+    await settle();
+
+    const payload = sendPrompt.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(payload).not.toHaveProperty("model");
+    expect(payload).toMatchObject({
+      model_reasoning_effort: "high",
+      replay_incomplete: true,
+      retry_original: true,
+    });
+  });
+
   it.each(["offline", "sync", "locked"])("queues a retry with feedback while %s and sends it once when ready", async (gate) => {
     const { chat, rt } = mountHarness();
     const sendPrompt = vi.fn().mockReturnValue(true);

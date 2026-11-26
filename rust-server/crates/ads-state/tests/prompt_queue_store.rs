@@ -446,6 +446,52 @@ fn explicit_original_retry_refreshes_controls_without_replacing_immutable_payloa
 }
 
 #[test]
+fn explicit_original_retry_ignores_case_insensitive_auto_model_placeholders() {
+    let (_directory, _db, connection) = open_store();
+    let store = PromptQueueStore::new(&connection).expect("store");
+
+    for (index, retry_model) in ["auto", "AUTO"].into_iter().enumerate() {
+        let client_message_id = format!("cm-auto-{index}");
+        let mut initial = prompt_input(&client_message_id, 1, "original prompt", 100);
+        initial.payload = payload(json!({
+            "text": "original prompt",
+            "model": "original-model",
+            "modelReasoningEffort": "low"
+        }));
+        let original = store.enqueue(initial, 100).expect("original prompt");
+        store
+            .claim_ownership("owner-1", 10, 100, 60_000, |_| true)
+            .expect("claim");
+        let queued = store
+            .get_by_client_message_id(&client_message_id)
+            .expect("get original")
+            .expect("original entry");
+        store
+            .mark_running(queued.id, "owner-1", 110, 60_000)
+            .expect("running");
+        store
+            .mark_failed(queued.id, "temporary", "owner-1", 120)
+            .expect("failed");
+
+        let mut retry = prompt_input(&client_message_id, 1, "tampered prompt", 130);
+        retry.payload = payload(json!({
+            "text": "tampered prompt",
+            "model": retry_model,
+            "replay_incomplete": true,
+            "retry_original": true
+        }));
+        retry.retry_failed = true;
+        retry.retry_original = true;
+        let retried = store.enqueue(retry, 130).expect("retry original prompt");
+
+        assert!(!retried.duplicate);
+        assert_eq!(retried.entry.payload["model"], "original-model");
+        assert_eq!(retried.entry.payload["modelReasoningEffort"], "low");
+        assert_eq!(retried.entry.payload_hash, original.entry.payload_hash);
+    }
+}
+
+#[test]
 fn ownership_leases_and_interrupted_rows_are_fenced_by_owner() {
     let (_directory, _db, connection) = open_store();
     let store = PromptQueueStore::new(&connection).expect("store");

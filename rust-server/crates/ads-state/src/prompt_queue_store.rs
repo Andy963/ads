@@ -251,6 +251,7 @@ fn retry_control_text(value: Option<&Value>) -> Option<String> {
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|value| !value.is_empty())
+        .filter(|value| !value.eq_ignore_ascii_case("auto"))
         .map(str::to_owned)
 }
 
