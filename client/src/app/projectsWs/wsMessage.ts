@@ -1276,9 +1276,27 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
           const name = String(obj.name ?? obj.agentName ?? obj.agent_name ?? id).trim() || id;
           const ready = Boolean(obj.ready);
           const error = typeof obj.error === "string" && obj.error.trim() ? obj.error.trim() : undefined;
-          return { id, name, ready, error };
+          const rawEmail = obj.accountEmail ?? obj.account_email;
+          const accountEmail = typeof rawEmail === "string" && rawEmail.trim() ? rawEmail.trim() : undefined;
+          const rawTier = obj.tier;
+          const tier = typeof rawTier === "string" && rawTier.trim() ? rawTier.trim() : undefined;
+          return {
+            id,
+            name,
+            ready,
+            error,
+            ...(accountEmail ? { accountEmail } : {}),
+            ...(tier ? { tier } : {}),
+          };
         })
-        .filter(Boolean) as Array<{ id: string; name: string; ready: boolean; error?: string }>;
+        .filter(Boolean) as Array<{
+          id: string;
+          name: string;
+          ready: boolean;
+          error?: string;
+          accountEmail?: string;
+          tier?: string;
+        }>;
 
       rt.availableAgents.value = agents;
       if (activeAgentId) {

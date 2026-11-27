@@ -41,7 +41,14 @@ const props = withDefaults(defineProps<{
   voiceInputActive?: boolean;
   apiToken?: string;
   runningTaskCount?: number;
-  agents?: Array<{ id: string; name: string; ready: boolean; error?: string }>;
+  agents?: Array<{
+    id: string;
+    name: string;
+    ready: boolean;
+    error?: string;
+    accountEmail?: string | null;
+    tier?: string | null;
+  }>;
   activeAgentId?: string;
   models?: ModelConfig[];
   modelId?: string;

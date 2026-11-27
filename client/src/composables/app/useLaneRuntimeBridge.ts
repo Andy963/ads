@@ -11,7 +11,14 @@ export type ChatLane = CanonicalLaneId;
 /** Queue card view model: the runtime prompt minus its raw image payloads. */
 type QueuedPromptView = Omit<QueuedPrompt, "images"> & { imagesCount: number };
 
-type AgentOption = { id: string; name: string; ready: boolean; error?: string };
+type AgentOption = {
+  id: string;
+  name: string;
+  ready: boolean;
+  error?: string;
+  accountEmail?: string;
+  tier?: string;
+};
 type LaneStatus = { kind: "info" | "progress" | "disconnected" | "error"; message: string };
 type ResumableSessionShape = { sessionId: string; updatedAt: number };
 type ResumableSessionsHiddenShape = { singleTurn: number; duplicates: number; forks: number };
