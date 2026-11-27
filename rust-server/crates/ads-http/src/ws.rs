@@ -21,12 +21,11 @@ use axum::body::Bytes;
 use axum::extract::State;
 use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
 use axum::http::{HeaderMap, Uri};
-use axum::response::Response;
+use axum::response::{IntoResponse, Response};
 use rusqlite::OptionalExtension;
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 
-use crate::AppState;
 use crate::command::{
     ParsedCommandRequest, default_user_cwd, is_blocked_user_slash_command, parse_command_request,
     run_ads_command_line, set_user_cwd,
@@ -35,11 +34,15 @@ use crate::command_snapshot::CommandSnapshotCoalescer;
 use crate::delta_stream::{DeltaStreamCoalescer, DeltaStreamIdentity};
 use crate::origin::is_origin_allowed_for_request;
 use crate::routes::authenticate_request;
+use crate::{ApiError, AppState};
 
 const DEFAULT_MAX_CLIENTS: usize = 32;
 const DEFAULT_PING_INTERVAL_MS: u64 = 30_000;
 const DEFAULT_MAX_MISSED_PONGS: u32 = 6;
 const DEFAULT_MAX_PAYLOAD_BYTES: usize = 16 * 1024 * 1024;
+const DEFAULT_OUTBOUND_QUEUE_CAPACITY: usize = 256;
+const OVERFLOW_CLOSE_TIMEOUT: Duration = Duration::from_secs(1);
+pub const OUTBOUND_QUEUE_OVERFLOW_CLOSE_CODE: u16 = 4429;
 const ACTIONS_NAMESPACE: &str = "web-actions";
 const ACOPILOT_NAMESPACE: &str = "web-acopilot";
 const DEFAULT_CHAT_SESSION_ID: &str = "main";
@@ -56,6 +59,7 @@ pub struct WebSocketConfig {
     pub ping_interval_ms: u64,
     pub max_missed_pongs: u32,
     pub max_payload_bytes: usize,
+    pub outbound_queue_capacity: usize,
 }
 
 impl Default for WebSocketConfig {
@@ -65,6 +69,7 @@ impl Default for WebSocketConfig {
             ping_interval_ms: DEFAULT_PING_INTERVAL_MS,
             max_missed_pongs: DEFAULT_MAX_MISSED_PONGS,
             max_payload_bytes: DEFAULT_MAX_PAYLOAD_BYTES,
+            outbound_queue_capacity: DEFAULT_OUTBOUND_QUEUE_CAPACITY,
         }
     }
 }
@@ -75,6 +80,7 @@ impl WebSocketConfig {
         let ping_interval = env_value("ADS_WEB_WS_PING_INTERVAL_MS");
         let max_missed_pongs = env_value("ADS_WEB_WS_MAX_MISSED_PONGS");
         let max_payload = env_value("ADS_WEB_WS_MAX_PAYLOAD_BYTES");
+        let outbound_queue_capacity = env_value("ADS_WEB_WS_OUTBOUND_QUEUE_CAPACITY");
         Self {
             max_clients: normalize_env_integer(
                 max_clients.as_deref(),
@@ -96,8 +102,34 @@ impl WebSocketConfig {
                 DEFAULT_MAX_PAYLOAD_BYTES as f64,
                 1024.0,
             ) as usize,
+            outbound_queue_capacity: normalize_env_integer(
+                outbound_queue_capacity.as_deref(),
+                DEFAULT_OUTBOUND_QUEUE_CAPACITY as f64,
+                1.0,
+            ) as usize,
         }
     }
+}
+
+#[derive(Debug, Default)]
+pub struct WebSocketMetrics {
+    pub outbound_queue_overflows: AtomicU64,
+    pub slow_client_disconnects: AtomicU64,
+}
+
+impl WebSocketMetrics {
+    pub fn snapshot(&self) -> WebSocketMetricsSnapshot {
+        WebSocketMetricsSnapshot {
+            outbound_queue_overflows: self.outbound_queue_overflows.load(Ordering::Relaxed),
+            slow_client_disconnects: self.slow_client_disconnects.load(Ordering::Relaxed),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WebSocketMetricsSnapshot {
+    pub outbound_queue_overflows: u64,
+    pub slow_client_disconnects: u64,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -218,7 +250,16 @@ struct ConnectionRegistration {
     workspace_cwd: PathBuf,
     generation: i64,
     connector: bool,
-    sender: tokio::sync::mpsc::UnboundedSender<ControlEvent>,
+    lane_index: usize,
+    sender: tokio::sync::mpsc::Sender<(usize, ControlEvent)>,
+    overflow_notify: tokio::sync::watch::Sender<bool>,
+}
+
+#[derive(Debug, Clone)]
+struct OutboundTarget {
+    lane_index: usize,
+    sender: tokio::sync::mpsc::Sender<(usize, ControlEvent)>,
+    overflow_notify: tokio::sync::watch::Sender<bool>,
 }
 
 #[derive(Debug, Clone)]
@@ -294,6 +335,7 @@ pub struct WebSocketHub {
     delta_coalescers: Mutex<HashMap<String, Arc<DeltaStreamCoalescer>>>,
     command_coalescers: Mutex<HashMap<String, Arc<CommandSnapshotCoalescer>>>,
     next_command_token: AtomicU64,
+    metrics: WebSocketMetrics,
 }
 
 impl WebSocketHub {
@@ -312,11 +354,49 @@ impl WebSocketHub {
             delta_coalescers: Mutex::new(HashMap::new()),
             command_coalescers: Mutex::new(HashMap::new()),
             next_command_token: AtomicU64::new(1),
+            metrics: WebSocketMetrics::default(),
         }
     }
 
     pub fn config(&self) -> &WebSocketConfig {
         &self.config
+    }
+
+    pub fn metrics(&self) -> &WebSocketMetrics {
+        &self.metrics
+    }
+
+    fn dispatch_targets(&self, targets: Vec<(OutboundTarget, ControlEvent)>) -> usize {
+        let mut sent = 0;
+        for (target, event) in targets {
+            match target.sender.try_send((target.lane_index, event)) {
+                Ok(()) => sent += 1,
+                Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                    self.metrics
+                        .outbound_queue_overflows
+                        .fetch_add(1, Ordering::Relaxed);
+                    let first_overflow = target.overflow_notify.send_if_modified(|overflowed| {
+                        if *overflowed {
+                            false
+                        } else {
+                            *overflowed = true;
+                            true
+                        }
+                    });
+                    if first_overflow {
+                        self.metrics
+                            .slow_client_disconnects
+                            .fetch_add(1, Ordering::Relaxed);
+                        eprintln!(
+                            "[ads-ws] outbound queue full for lane={}, closing slow connection",
+                            target.lane_index
+                        );
+                    }
+                }
+                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {}
+            }
+        }
+        sent
     }
 
     pub fn has_open_web_client(&self, auth_user_id: &str) -> bool {
@@ -338,36 +418,40 @@ impl WebSocketHub {
             .unwrap_or("")
             .trim();
         let mut sent_physical = HashSet::new();
-        let mut sent = 0usize;
-        for connection in self
-            .connections
-            .lock()
-            .expect("websocket connection registry lock")
-            .values()
-        {
-            if !workspace_root.is_empty()
-                && connection
-                    .workspace_root
-                    .as_deref()
-                    .is_some_and(|value| !value.is_empty() && value != workspace_root)
-            {
-                continue;
-            }
-            if !sent_physical.insert(connection.physical_id.as_str()) {
-                continue;
-            }
-            if connection
-                .sender
-                .send(ControlEvent::Frame(json!({
-                    "type": "task_terminal",
-                    "event": event,
-                })))
-                .is_ok()
-            {
-                sent += 1;
-            }
-        }
-        sent
+        let targets = {
+            let connections = self
+                .connections
+                .lock()
+                .expect("websocket connection registry lock");
+            connections
+                .values()
+                .filter_map(|connection| {
+                    if !workspace_root.is_empty()
+                        && connection
+                            .workspace_root
+                            .as_deref()
+                            .is_some_and(|value| !value.is_empty() && value != workspace_root)
+                    {
+                        return None;
+                    }
+                    if !sent_physical.insert(connection.physical_id.as_str()) {
+                        return None;
+                    }
+                    Some((
+                        OutboundTarget {
+                            lane_index: connection.lane_index,
+                            sender: connection.sender.clone(),
+                            overflow_notify: connection.overflow_notify.clone(),
+                        },
+                        ControlEvent::Frame(json!({
+                            "type": "task_terminal",
+                            "event": event,
+                        })),
+                    ))
+                })
+                .collect()
+        };
+        self.dispatch_targets(targets)
     }
 
     fn delta_coalescer(&self, namespace: &str, lane_key: &str) -> Arc<DeltaStreamCoalescer> {
@@ -589,36 +673,41 @@ impl WebSocketHub {
         chat_session_id: &str,
         generation: i64,
     ) -> usize {
-        let mut sent = 0;
-        let mut connections = self
-            .connections
-            .lock()
-            .expect("websocket connection registry lock");
-        for (id, connection) in connections.iter_mut() {
-            if *id == exclude_id
-                || connection.auth_user_id != auth_user_id
-                || connection.session_id != session_id
-                || connection.connector
-                || connection.chat_session_id == ACOPILOT_CHAT_SESSION_ID
-            {
-                continue;
-            }
-            connection.chat_session_id = chat_session_id.to_string();
-            connection.logical_history_key =
-                format!("{auth_user_id}::{session_id}::{chat_session_id}");
-            connection.generation = generation;
-            if connection
-                .sender
-                .send(ControlEvent::SwitchChat {
-                    chat_session_id: chat_session_id.to_string(),
-                    generation,
+        let targets = {
+            let mut connections = self
+                .connections
+                .lock()
+                .expect("websocket connection registry lock");
+            connections
+                .iter_mut()
+                .filter_map(|(id, connection)| {
+                    if *id == exclude_id
+                        || connection.auth_user_id != auth_user_id
+                        || connection.session_id != session_id
+                        || connection.connector
+                        || connection.chat_session_id == ACOPILOT_CHAT_SESSION_ID
+                    {
+                        return None;
+                    }
+                    connection.chat_session_id = chat_session_id.to_string();
+                    connection.logical_history_key =
+                        format!("{auth_user_id}::{session_id}::{chat_session_id}");
+                    connection.generation = generation;
+                    Some((
+                        OutboundTarget {
+                            lane_index: connection.lane_index,
+                            sender: connection.sender.clone(),
+                            overflow_notify: connection.overflow_notify.clone(),
+                        },
+                        ControlEvent::SwitchChat {
+                            chat_session_id: chat_session_id.to_string(),
+                            generation,
+                        },
+                    ))
                 })
-                .is_ok()
-            {
-                sent += 1;
-            }
-        }
-        sent
+                .collect()
+        };
+        self.dispatch_targets(targets)
     }
 
     fn broadcast_lane_reset(
@@ -628,38 +717,43 @@ impl WebSocketHub {
         payload: &Value,
         generation: i64,
     ) -> usize {
-        let mut sent = 0;
-        let mut connections = self
-            .connections
-            .lock()
-            .expect("websocket connection registry lock");
-        for (id, connection) in connections.iter_mut() {
-            if *id == exclude_id
-                || connection.auth_user_id != lane.auth_user_id
-                || connection.session_id != lane.session_id
-                || connection.chat_session_id != lane.chat_session_id
-                || !ads_state::history_key_belongs_to_logical_lane(
-                    &connection.logical_history_key,
-                    &lane.logical_history_key,
-                )
-            {
-                continue;
-            }
-            connection.generation = generation;
-            let mut lane_generations = HashMap::new();
-            lane_generations.insert(connection.chat_session_id.clone(), generation);
-            if connection
-                .sender
-                .send(ControlEvent::Reset(ResetEvent {
-                    payload: payload.clone(),
-                    lane_generations,
-                }))
-                .is_ok()
-            {
-                sent += 1;
-            }
-        }
-        sent
+        let targets = {
+            let mut connections = self
+                .connections
+                .lock()
+                .expect("websocket connection registry lock");
+            connections
+                .iter_mut()
+                .filter_map(|(id, connection)| {
+                    if *id == exclude_id
+                        || connection.auth_user_id != lane.auth_user_id
+                        || connection.session_id != lane.session_id
+                        || connection.chat_session_id != lane.chat_session_id
+                        || !ads_state::history_key_belongs_to_logical_lane(
+                            &connection.logical_history_key,
+                            &lane.logical_history_key,
+                        )
+                    {
+                        return None;
+                    }
+                    connection.generation = generation;
+                    let mut lane_generations = HashMap::new();
+                    lane_generations.insert(connection.chat_session_id.clone(), generation);
+                    Some((
+                        OutboundTarget {
+                            lane_index: connection.lane_index,
+                            sender: connection.sender.clone(),
+                            overflow_notify: connection.overflow_notify.clone(),
+                        },
+                        ControlEvent::Reset(ResetEvent {
+                            payload: payload.clone(),
+                            lane_generations,
+                        }),
+                    ))
+                })
+                .collect()
+        };
+        self.dispatch_targets(targets)
     }
 
     fn broadcast_shared_reset(
@@ -670,34 +764,39 @@ impl WebSocketHub {
         payload: &Value,
         lane_generations: &HashMap<String, i64>,
     ) -> usize {
-        let mut sent = 0;
-        let mut connections = self
-            .connections
-            .lock()
-            .expect("websocket connection registry lock");
-        for (id, connection) in connections.iter_mut() {
-            if *id == exclude_id
-                || connection.auth_user_id != auth_user_id
-                || connection.session_id != session_id
-                || connection.chat_session_id == ACOPILOT_CHAT_SESSION_ID
-            {
-                continue;
-            }
-            if let Some(generation) = lane_generations.get(&connection.chat_session_id) {
-                connection.generation = *generation;
-            }
-            if connection
-                .sender
-                .send(ControlEvent::Reset(ResetEvent {
-                    payload: payload.clone(),
-                    lane_generations: lane_generations.clone(),
-                }))
-                .is_ok()
-            {
-                sent += 1;
-            }
-        }
-        sent
+        let targets = {
+            let mut connections = self
+                .connections
+                .lock()
+                .expect("websocket connection registry lock");
+            connections
+                .iter_mut()
+                .filter_map(|(id, connection)| {
+                    if *id == exclude_id
+                        || connection.auth_user_id != auth_user_id
+                        || connection.session_id != session_id
+                        || connection.chat_session_id == ACOPILOT_CHAT_SESSION_ID
+                    {
+                        return None;
+                    }
+                    if let Some(generation) = lane_generations.get(&connection.chat_session_id) {
+                        connection.generation = *generation;
+                    }
+                    Some((
+                        OutboundTarget {
+                            lane_index: connection.lane_index,
+                            sender: connection.sender.clone(),
+                            overflow_notify: connection.overflow_notify.clone(),
+                        },
+                        ControlEvent::Reset(ResetEvent {
+                            payload: payload.clone(),
+                            lane_generations: lane_generations.clone(),
+                        }),
+                    ))
+                })
+                .collect()
+        };
+        self.dispatch_targets(targets)
     }
 
     pub(crate) fn broadcast_lane_frame(
@@ -732,34 +831,39 @@ impl WebSocketHub {
         payload: &Value,
     ) -> usize {
         let history_key = history_key_for_generation(logical_history_key, generation);
-        let mut sent = 0;
-        let mut connections = self
-            .connections
-            .lock()
-            .expect("websocket connection registry lock");
-        for (id, connection) in connections.iter_mut() {
-            if exclude_id == Some(*id)
-                || connection.auth_user_id != auth_user_id
-                || connection.session_id != session_id
-                || connection.chat_session_id != chat_session_id
-                || connection.logical_history_key != logical_history_key
-                || connection.generation != generation
-                || history_key_for_generation(
-                    &connection.logical_history_key,
-                    connection.generation,
-                ) != history_key
-            {
-                continue;
-            }
-            if connection
-                .sender
-                .send(ControlEvent::Frame(payload.clone()))
-                .is_ok()
-            {
-                sent += 1;
-            }
-        }
-        sent
+        let targets = {
+            let connections = self
+                .connections
+                .lock()
+                .expect("websocket connection registry lock");
+            connections
+                .iter()
+                .filter_map(|(id, connection)| {
+                    if exclude_id == Some(*id)
+                        || connection.auth_user_id != auth_user_id
+                        || connection.session_id != session_id
+                        || connection.chat_session_id != chat_session_id
+                        || connection.logical_history_key != logical_history_key
+                        || connection.generation != generation
+                        || history_key_for_generation(
+                            &connection.logical_history_key,
+                            connection.generation,
+                        ) != history_key
+                    {
+                        return None;
+                    }
+                    Some((
+                        OutboundTarget {
+                            lane_index: connection.lane_index,
+                            sender: connection.sender.clone(),
+                            overflow_notify: connection.overflow_notify.clone(),
+                        },
+                        ControlEvent::Frame(payload.clone()),
+                    ))
+                })
+                .collect()
+        };
+        self.dispatch_targets(targets)
     }
 
     fn begin_reset_barrier(self: &Arc<Self>, key: String) -> ResetBarrierGuard {
@@ -913,11 +1017,20 @@ struct LaneMeta {
 struct LaneSocket<'a> {
     socket: &'a mut WebSocket,
     meta: &'a mut LaneMeta,
+    overflow_rx: Option<tokio::sync::watch::Receiver<bool>>,
 }
 
 impl<'a> LaneSocket<'a> {
-    fn new(socket: &'a mut WebSocket, meta: &'a mut LaneMeta) -> Self {
-        Self { socket, meta }
+    fn new(
+        socket: &'a mut WebSocket,
+        meta: &'a mut LaneMeta,
+        overflow_rx: Option<tokio::sync::watch::Receiver<bool>>,
+    ) -> Self {
+        Self {
+            socket,
+            meta,
+            overflow_rx,
+        }
     }
 
     fn rebind(&mut self, chat_session_id: &str) {
@@ -962,6 +1075,14 @@ pub async fn handler(
     uri: Uri,
     upgrade: WebSocketUpgrade,
 ) -> Response {
+    let auth = match authenticate_request(&state, &headers).await {
+        Ok(auth) => auth,
+        Err(error) => return error.into_response(),
+    };
+    if !auth.connector && !is_origin_allowed_for_request(&headers, &state.allowed_origins) {
+        return ApiError::forbidden().into_response();
+    }
+
     let protocols = parse_protocols(&headers);
     let max_payload = state.ws.config().max_payload_bytes;
     let mut upgrade = upgrade
@@ -971,22 +1092,17 @@ pub async fn handler(
         upgrade = upgrade.protocols(protocols);
     }
     upgrade.on_upgrade(move |socket| async move {
-        serve(socket, state, headers, uri).await;
+        serve(socket, state, auth, headers, uri).await;
     })
 }
 
-async fn serve(mut socket: WebSocket, state: AppState, headers: HeaderMap, uri: Uri) {
-    let auth = match authenticate_request(&state, &headers).await {
-        Ok(auth) => auth,
-        Err(_) => {
-            close_raw_socket(&mut socket, 4401, "unauthorized").await;
-            return;
-        }
-    };
-    if !auth.connector && !is_origin_allowed_for_request(&headers, &state.allowed_origins) {
-        close_raw_socket(&mut socket, 4403, "forbidden").await;
-        return;
-    }
+async fn serve(
+    mut socket: WebSocket,
+    state: AppState,
+    auth: crate::routes::AuthenticatedRequest,
+    headers: HeaderMap,
+    uri: Uri,
+) {
     let Some(_client_guard) = state.ws.try_acquire() else {
         let reason = format!("max clients reached ({})", state.ws.config().max_clients);
         close_raw_socket(&mut socket, 4409, &reason).await;
@@ -1004,8 +1120,10 @@ async fn serve(mut socket: WebSocket, state: AppState, headers: HeaderMap, uri: 
     let query = uri.query().unwrap_or("").to_string();
     let physical_id = uuid::Uuid::new_v4().to_string();
 
-    let (control_tx, mut control_rx) =
-        tokio::sync::mpsc::unbounded_channel::<(usize, ControlEvent)>();
+    let (control_tx, mut control_rx) = tokio::sync::mpsc::channel::<(usize, ControlEvent)>(
+        state.ws.config().outbound_queue_capacity,
+    );
+    let (overflow_tx, mut overflow_rx) = tokio::sync::watch::channel(false);
     let mut lanes: Vec<LaneRuntime<'_>> = Vec::with_capacity(chat_session_ids.len());
 
     for (index, chat_session_id) in chat_session_ids.into_iter().enumerate() {
@@ -1107,7 +1225,6 @@ async fn serve(mut socket: WebSocket, state: AppState, headers: HeaderMap, uri: 
             }
         };
 
-        let (lane_tx, lane_rx) = tokio::sync::mpsc::unbounded_channel();
         let connection_guard = state.ws.register_connection(ConnectionRegistration {
             physical_id: physical_id.clone(),
             auth_user_id: lane.auth_user_id.clone(),
@@ -1118,7 +1235,9 @@ async fn serve(mut socket: WebSocket, state: AppState, headers: HeaderMap, uri: 
             workspace_cwd: current_cwd.clone(),
             generation: lane.generation,
             connector: lane.connector,
-            sender: lane_tx,
+            lane_index: index,
+            sender: control_tx.clone(),
+            overflow_notify: overflow_tx.clone(),
         });
         let connection = ConnectionContext {
             state: &state,
@@ -1146,21 +1265,11 @@ async fn serve(mut socket: WebSocket, state: AppState, headers: HeaderMap, uri: 
             _guard: connection_guard,
         });
 
-        let control_tx_for_lane = control_tx.clone();
-        tokio::spawn(async move {
-            let mut lane_rx = lane_rx;
-            while let Some(event) = lane_rx.recv().await {
-                if control_tx_for_lane.send((index, event)).is_err() {
-                    break;
-                }
-            }
-        });
-
         let runtime = lanes.last_mut().expect("lane runtime");
         let LaneRuntime {
             meta, connection, ..
         } = runtime;
-        let mut lane_socket = LaneSocket::new(&mut socket, meta);
+        let mut lane_socket = LaneSocket::new(&mut socket, meta, Some(overflow_rx.clone()));
         if !send_bootstrap_frames(&mut lane_socket, &state, &bootstrap, Some(&connection.lane))
             .await
         {
@@ -1180,17 +1289,30 @@ async fn serve(mut socket: WebSocket, state: AppState, headers: HeaderMap, uri: 
     let mut missed_pongs = 0_u32;
 
     loop {
+        if *overflow_rx.borrow() {
+            close_raw_socket(
+                &mut socket,
+                OUTBOUND_QUEUE_OVERFLOW_CLOSE_CODE,
+                "outbound queue overflow",
+            )
+            .await;
+            break;
+        }
         let incoming = async {
             match ping_timer.as_mut() {
                 Some(timer) => {
                     tokio::select! {
-                        message = socket.recv() => Incoming::Message(message),
+                        biased;
+                        changed = overflow_rx.changed() => Incoming::Overflow(changed),
                         _ = timer.tick() => Incoming::Tick,
+                        message = socket.recv() => Incoming::Message(message),
                         event = control_rx.recv() => Incoming::Control(event),
                     }
                 }
                 None => {
                     tokio::select! {
+                        biased;
+                        changed = overflow_rx.changed() => Incoming::Overflow(changed),
                         message = socket.recv() => Incoming::Message(message),
                         event = control_rx.recv() => Incoming::Control(event),
                     }
@@ -1202,30 +1324,51 @@ async fn serve(mut socket: WebSocket, state: AppState, headers: HeaderMap, uri: 
                 if awaiting_pong {
                     missed_pongs += 1;
                     if max_missed_pongs > 0 && missed_pongs >= max_missed_pongs {
-                        let _ = socket.send(Message::Close(None)).await;
+                        let _ = tokio::time::timeout(
+                            OVERFLOW_CLOSE_TIMEOUT,
+                            socket.send(Message::Close(None)),
+                        )
+                        .await;
                         break;
                     }
                 } else {
                     missed_pongs = 0;
                 }
                 awaiting_pong = true;
-                if socket.send(Message::Ping(Bytes::new())).await.is_err() {
+                if !send_socket_message(
+                    &mut socket,
+                    Message::Ping(Bytes::new()),
+                    Some(&mut overflow_rx),
+                )
+                .await
+                {
                     break;
                 }
             }
             Incoming::Message(Some(Ok(Message::Text(text)))) => {
-                if !dispatch_text_frame(&mut socket, &mut lanes, text.as_str()).await {
+                if !dispatch_text_frame(
+                    &mut socket,
+                    &mut lanes,
+                    text.as_str(),
+                    Some(overflow_rx.clone()),
+                )
+                .await
+                {
                     break;
                 }
             }
             Incoming::Message(Some(Ok(Message::Binary(bytes)))) => {
                 let text = String::from_utf8_lossy(&bytes);
-                if !dispatch_text_frame(&mut socket, &mut lanes, &text).await {
+                if !dispatch_text_frame(&mut socket, &mut lanes, &text, Some(overflow_rx.clone()))
+                    .await
+                {
                     break;
                 }
             }
             Incoming::Message(Some(Ok(Message::Ping(payload)))) => {
-                if socket.send(Message::Pong(payload)).await.is_err() {
+                if !send_socket_message(&mut socket, Message::Pong(payload), Some(&mut overflow_rx))
+                    .await
+                {
                     break;
                 }
             }
@@ -1242,7 +1385,8 @@ async fn serve(mut socket: WebSocket, state: AppState, headers: HeaderMap, uri: 
                 } = lane;
                 match event {
                     ControlEvent::Reset(event) => {
-                        let mut lane_socket = LaneSocket::new(&mut socket, meta);
+                        let mut lane_socket =
+                            LaneSocket::new(&mut socket, meta, Some(overflow_rx.clone()));
                         if !apply_lane_reset(&mut lane_socket, connection, &event).await {
                             break;
                         }
@@ -1251,7 +1395,8 @@ async fn serve(mut socket: WebSocket, state: AppState, headers: HeaderMap, uri: 
                         chat_session_id,
                         generation,
                     } => {
-                        let mut lane_socket = LaneSocket::new(&mut socket, meta);
+                        let mut lane_socket =
+                            LaneSocket::new(&mut socket, meta, Some(overflow_rx.clone()));
                         if !apply_session_switch(
                             &mut lane_socket,
                             connection,
@@ -1265,7 +1410,8 @@ async fn serve(mut socket: WebSocket, state: AppState, headers: HeaderMap, uri: 
                         lane_socket.rebind(&connection.lane.chat_session_id);
                     }
                     ControlEvent::Frame(frame) => {
-                        let mut lane_socket = LaneSocket::new(&mut socket, meta);
+                        let mut lane_socket =
+                            LaneSocket::new(&mut socket, meta, Some(overflow_rx.clone()));
                         if !send_json(&mut lane_socket, frame).await {
                             break;
                         }
@@ -1273,6 +1419,17 @@ async fn serve(mut socket: WebSocket, state: AppState, headers: HeaderMap, uri: 
                 }
             }
             Incoming::Control(None) => break,
+            Incoming::Overflow(Ok(())) if *overflow_rx.borrow() => {
+                close_raw_socket(
+                    &mut socket,
+                    OUTBOUND_QUEUE_OVERFLOW_CLOSE_CODE,
+                    "outbound queue overflow",
+                )
+                .await;
+                break;
+            }
+            Incoming::Overflow(Ok(())) => {}
+            Incoming::Overflow(Err(_)) => break,
             Incoming::Message(Some(Ok(Message::Close(_)))) | Incoming::Message(None) => break,
             Incoming::Message(Some(Err(_))) => break,
         }
@@ -1283,6 +1440,7 @@ enum Incoming {
     Message(Option<Result<Message, axum::Error>>),
     Tick,
     Control(Option<(usize, ControlEvent)>),
+    Overflow(Result<(), tokio::sync::watch::error::RecvError>),
 }
 
 struct Bootstrap {
@@ -2165,6 +2323,7 @@ async fn dispatch_text_frame(
     socket: &mut WebSocket,
     lanes: &mut [LaneRuntime<'_>],
     text: &str,
+    overflow_rx: Option<tokio::sync::watch::Receiver<bool>>,
 ) -> bool {
     let target = if lanes.len() <= 1 {
         0
@@ -2197,7 +2356,7 @@ async fn dispatch_text_frame(
     let LaneRuntime {
         meta, connection, ..
     } = &mut lanes[target];
-    let mut lane_socket = LaneSocket::new(socket, meta);
+    let mut lane_socket = LaneSocket::new(socket, meta, overflow_rx);
     let ok = handle_text_frame(&mut lane_socket, text, connection).await;
     lane_socket.rebind(&connection.lane.chat_session_id);
     ok
@@ -4103,22 +4262,54 @@ fn reset_lane_state(
     Ok((next_lane, bootstrap))
 }
 
+async fn wait_for_overflow(overflow_rx: &mut tokio::sync::watch::Receiver<bool>) {
+    loop {
+        if *overflow_rx.borrow() {
+            return;
+        }
+        if overflow_rx.changed().await.is_err() {
+            std::future::pending::<()>().await;
+        }
+    }
+}
+
+async fn send_socket_message(
+    socket: &mut WebSocket,
+    message: Message,
+    overflow_rx: Option<&mut tokio::sync::watch::Receiver<bool>>,
+) -> bool {
+    let Some(overflow_rx) = overflow_rx else {
+        return socket.send(message).await.is_ok();
+    };
+    if *overflow_rx.borrow() {
+        return false;
+    }
+    tokio::select! {
+        biased;
+        () = wait_for_overflow(overflow_rx) => false,
+        result = socket.send(message) => result.is_ok(),
+    }
+}
+
 async fn send_json(socket: &mut LaneSocket<'_>, mut frame: Value) -> bool {
     socket.tag_outbound(&mut frame);
-    socket
-        .socket
-        .send(Message::Text(frame.to_string().into()))
-        .await
-        .is_ok()
+    send_socket_message(
+        socket.socket,
+        Message::Text(frame.to_string().into()),
+        socket.overflow_rx.as_mut(),
+    )
+    .await
 }
 
 async fn close_raw_socket(socket: &mut WebSocket, code: u16, reason: &str) {
-    let _ = socket
-        .send(Message::Close(Some(CloseFrame {
+    let _ = tokio::time::timeout(
+        OVERFLOW_CLOSE_TIMEOUT,
+        socket.send(Message::Close(Some(CloseFrame {
             code,
             reason: reason.to_string().into(),
-        })))
-        .await;
+        }))),
+    )
+    .await;
 }
 
 async fn close_socket(socket: &mut LaneSocket<'_>, code: u16, reason: &str) {
@@ -4642,8 +4833,9 @@ mod tests {
         session_id: &str,
         chat_session_id: &str,
         generation: i64,
-    ) -> tokio::sync::mpsc::UnboundedReceiver<ControlEvent> {
-        let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
+    ) -> tokio::sync::mpsc::Receiver<(usize, ControlEvent)> {
+        let (sender, receiver) = tokio::sync::mpsc::channel(8);
+        let (overflow_notify, _) = tokio::sync::watch::channel(false);
         let guard = hub.register_connection(ConnectionRegistration {
             physical_id: uuid::Uuid::new_v4().to_string(),
             auth_user_id: auth_user_id.to_string(),
@@ -4655,6 +4847,8 @@ mod tests {
             workspace_root: None,
             workspace_cwd: PathBuf::from("/workspace"),
             sender,
+            lane_index: 0,
+            overflow_notify,
         });
         std::mem::forget(guard);
         receiver
@@ -4691,7 +4885,8 @@ mod tests {
     fn workspace_cache_is_scoped_and_released_with_connections() {
         let hub = WebSocketHub::new(WebSocketConfig::default());
         let register = |auth_user_id: &str, session_id: &str, chat_session_id: &str, cwd: &str| {
-            let (sender, _receiver) = tokio::sync::mpsc::unbounded_channel();
+            let (sender, _receiver) = tokio::sync::mpsc::channel(8);
+            let (overflow_notify, _) = tokio::sync::watch::channel(false);
             hub.register_connection(ConnectionRegistration {
                 physical_id: uuid::Uuid::new_v4().to_string(),
                 auth_user_id: auth_user_id.to_string(),
@@ -4703,6 +4898,8 @@ mod tests {
                 generation: 1,
                 connector: false,
                 sender,
+                lane_index: 0,
+                overflow_notify,
             })
         };
 
@@ -4788,7 +4985,7 @@ mod tests {
         )
         .expect("publish message");
 
-        let ControlEvent::Frame(frame) = receiver.try_recv().expect("frame") else {
+        let (_, ControlEvent::Frame(frame)) = receiver.try_recv().expect("frame") else {
             panic!("expected a frame");
         };
         assert_eq!(frame["type"], "message");
@@ -4890,10 +5087,10 @@ mod tests {
     #[test]
     fn broadcasts_task_terminal_to_matching_workspaces_and_connectors() {
         let hub = WebSocketHub::new(WebSocketConfig::default());
-        let (matching_tx, mut matching_rx) = tokio::sync::mpsc::unbounded_channel();
-        let (other_tx, mut other_rx) = tokio::sync::mpsc::unbounded_channel();
-        let (connector_tx, mut connector_rx) = tokio::sync::mpsc::unbounded_channel();
-        for (physical_id, workspace_root, connector, sender) in [
+        let (matching_tx, mut matching_rx) = tokio::sync::mpsc::channel(8);
+        let (other_tx, mut other_rx) = tokio::sync::mpsc::channel(8);
+        let (connector_tx, mut connector_rx) = tokio::sync::mpsc::channel(8);
+        for (lane_index, (physical_id, workspace_root, connector, sender)) in [
             (
                 "physical-matching",
                 Some("/work/a".to_string()),
@@ -4907,7 +5104,11 @@ mod tests {
                 other_tx,
             ),
             ("physical-connector", None, true, connector_tx),
-        ] {
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let (overflow_notify, _) = tokio::sync::watch::channel(false);
             std::mem::forget(hub.register_connection(ConnectionRegistration {
                 physical_id: physical_id.to_string(),
                 auth_user_id: "user-1".to_string(),
@@ -4919,6 +5120,8 @@ mod tests {
                 generation: 1,
                 connector,
                 sender,
+                lane_index,
+                overflow_notify,
             }));
         }
 
@@ -4926,13 +5129,76 @@ mod tests {
         assert_eq!(hub.broadcast_task_terminal(&event), 2);
         assert!(matches!(
             matching_rx.try_recv().expect("matching frame"),
-            ControlEvent::Frame(frame) if frame["type"] == "task_terminal" && frame["event"] == event
+            (_, ControlEvent::Frame(frame)) if frame["type"] == "task_terminal" && frame["event"] == event
         ));
         assert!(matches!(
             connector_rx.try_recv().expect("connector frame"),
-            ControlEvent::Frame(frame) if frame["event"]["taskId"] == "task-1"
+            (_, ControlEvent::Frame(frame)) if frame["event"]["taskId"] == "task-1"
         ));
         assert!(other_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn disconnects_slow_clients_when_the_bounded_queue_is_full() {
+        let hub = WebSocketHub::new(WebSocketConfig {
+            outbound_queue_capacity: 1,
+            ..WebSocketConfig::default()
+        });
+        let (sender, receiver) = tokio::sync::mpsc::channel(1);
+        let (overflow_notify, overflow_receiver) = tokio::sync::watch::channel(false);
+        std::mem::forget(hub.register_connection(ConnectionRegistration {
+            physical_id: "physical-slow".to_string(),
+            auth_user_id: "user-1".to_string(),
+            session_id: "project-1".to_string(),
+            chat_session_id: "main".to_string(),
+            logical_history_key: "user-1::project-1::main".to_string(),
+            workspace_root: None,
+            workspace_cwd: PathBuf::from("/workspace"),
+            generation: 1,
+            connector: false,
+            lane_index: 0,
+            sender,
+            overflow_notify,
+        }));
+
+        let payload = json!({ "type": "delta", "seq": 1 });
+        assert_eq!(
+            hub.broadcast_lane_frame(
+                "user-1",
+                "project-1",
+                "main",
+                "user-1::project-1::main",
+                1,
+                &payload,
+            ),
+            1
+        );
+        assert_eq!(
+            hub.broadcast_lane_frame(
+                "user-1",
+                "project-1",
+                "main",
+                "user-1::project-1::main",
+                1,
+                &payload,
+            ),
+            0
+        );
+        assert_eq!(
+            hub.broadcast_lane_frame(
+                "user-1",
+                "project-1",
+                "main",
+                "user-1::project-1::main",
+                1,
+                &payload,
+            ),
+            0
+        );
+        assert_eq!(receiver.len(), 1);
+        assert!(*overflow_receiver.borrow());
+        assert_eq!(hub.metrics().snapshot().outbound_queue_overflows, 2);
+        assert_eq!(hub.metrics().snapshot().slow_client_disconnects, 1);
     }
 
     #[test]
@@ -5294,7 +5560,8 @@ mod tests {
     #[test]
     fn tracks_seen_non_acopilot_chat_sessions_for_shared_resets() {
         let hub = WebSocketHub::new(WebSocketConfig::default());
-        let (sender, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let (sender, _receiver) = tokio::sync::mpsc::channel(8);
+        let (overflow_notify, _) = tokio::sync::watch::channel(false);
         let registration = |chat_session_id: &str| ConnectionRegistration {
             physical_id: format!("physical-{chat_session_id}"),
             auth_user_id: "user-1".to_string(),
@@ -5306,6 +5573,8 @@ mod tests {
             generation: 1,
             connector: false,
             sender: sender.clone(),
+            lane_index: 0,
+            overflow_notify: overflow_notify.clone(),
         };
 
         let main = hub.register_connection(registration("main"));
@@ -5514,7 +5783,8 @@ mod tests {
     }
 
     fn make_registration(auth_user_id: &str, connector: bool) -> ConnectionRegistration {
-        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let (tx, _rx) = tokio::sync::mpsc::channel(8);
+        let (overflow_notify, _) = tokio::sync::watch::channel(false);
         ConnectionRegistration {
             physical_id: format!("phys-{auth_user_id}-{connector}"),
             auth_user_id: auth_user_id.to_string(),
@@ -5526,6 +5796,8 @@ mod tests {
             generation: 1,
             connector,
             sender: tx,
+            lane_index: 0,
+            overflow_notify,
         }
     }
 
@@ -5730,7 +6002,8 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let db = StateDb::open(dir.path().join("state.db")).expect("state db");
         let hub = WebSocketHub::new(WebSocketConfig::default());
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        let (overflow_notify, _) = tokio::sync::watch::channel(false);
         let _guard = hub.register_connection(ConnectionRegistration {
             physical_id: "phys-turn-identity".to_string(),
             auth_user_id: "user-1".to_string(),
@@ -5742,6 +6015,8 @@ mod tests {
             generation: 1,
             connector: false,
             sender: tx,
+            lane_index: 0,
+            overflow_notify,
         });
         let turn = LaneTurn {
             kind: ads_runtime::LaneTurnKind::UserPrompt,
@@ -5800,7 +6075,7 @@ mod tests {
 
         let mut frames = Vec::new();
         while let Ok(frame) = rx.try_recv() {
-            if let ControlEvent::Frame(value) = frame {
+            if let (_, ControlEvent::Frame(value)) = frame {
                 frames.push(value);
             }
         }
