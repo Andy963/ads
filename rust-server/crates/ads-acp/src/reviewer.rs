@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 
-use ads_native::Cancellation;
+use ads_native::{Cancellation, find_security_violation};
 use ads_reviewer::{
     ReviewPayload, ReviewTestReport, ReviewVerdict, ReviewVerdictStatus, ReviewVerificationReport,
     ReviewerError, build_review_prompt, parse_review_verdict,
@@ -27,6 +27,7 @@ use crate::session::{AcpPromptRequest, AcpSession, AcpSessionConfig, DesiredConf
 
 const MAX_VERIFICATION_COMMANDS: usize = 32;
 const MAX_VERIFICATION_OUTPUT_CHARS: usize = 6_000;
+const MAX_SHELL_UNWRAP_DEPTH: usize = 6;
 const DEFAULT_INCOMPLETE_SUMMARY: &str =
     "Reviewer reported insufficient evidence; developer rework was not requested.";
 
@@ -43,7 +44,7 @@ pub struct AcpReviewRequest {
 }
 
 /// Permission handler enforcing ADR 0066 & ADR 0060 read-only + verification boundaries
-/// for ACP-backed Actions Reviewer sessions.
+/// for ACP-backed Actions Reviewer sessions. Fails closed for unrecognized tool kinds.
 #[derive(Debug, Default)]
 pub struct ReviewVerificationPermissionHandler;
 
@@ -52,8 +53,11 @@ impl PermissionHandler for ReviewVerificationPermissionHandler {
     async fn request_permission(
         &self,
         request: PendingPermissionRequest,
-        _cancel: watch::Receiver<bool>,
+        cancel: watch::Receiver<bool>,
     ) -> PermissionOutcome {
+        if *cancel.borrow() {
+            return PermissionOutcome::Cancelled;
+        }
         let decision = classify_review_permission(&request.tool_call);
         resolve_permission_outcome(&request.options, decision)
     }
@@ -74,7 +78,24 @@ fn classify_review_permission(info: &ToolCallInfo) -> PermissionDecision {
         return PermissionDecision::DenyOnce;
     }
 
-    if kind == "read" || kind == "search" || kind == "list" {
+    if matches!(kind.as_str(), "read" | "search" | "list" | "think") {
+        let title = info
+            .title
+            .as_deref()
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        if title.contains("write")
+            || title.contains("edit")
+            || title.contains("delete")
+            || title.contains("patch")
+            || title.contains("apply")
+            || title.contains("create")
+            || title.contains("remove")
+            || title.contains("rename")
+            || title.contains("modify")
+        {
+            return PermissionDecision::DenyOnce;
+        }
         return PermissionDecision::AllowOnce;
     }
 
@@ -83,30 +104,17 @@ fn classify_review_permission(info: &ToolCallInfo) -> PermissionDecision {
         let Some(cmd) = command else {
             return PermissionDecision::DenyOnce;
         };
-        if is_mutating_review_command(&cmd).is_some() {
+        if find_security_violation(&cmd).is_some() || is_mutating_review_command(&cmd).is_some() {
             return PermissionDecision::DenyOnce;
         }
         return PermissionDecision::AllowOnce;
     }
 
-    // Deny unrecognized mutating-looking titles; allow passive inspection tools.
-    let title = info
-        .title
-        .as_deref()
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-    if title.contains("write")
-        || title.contains("edit")
-        || title.contains("delete")
-        || title.contains("patch")
-        || title.contains("apply")
-    {
-        return PermissionDecision::DenyOnce;
-    }
-    PermissionDecision::AllowOnce
+    // Fail closed for unrecognized or missing tool kinds.
+    PermissionDecision::DenyOnce
 }
 
-fn extract_permission_command(info: &crate::protocol::ToolCallInfo) -> Option<String> {
+fn extract_permission_command(info: &ToolCallInfo) -> Option<String> {
     if let Some(cmd) = info
         .extra
         .get("normalized")
@@ -138,7 +146,12 @@ fn extract_permission_command(info: &crate::protocol::ToolCallInfo) -> Option<St
             }
         }
     }
-    if info.kind.as_deref() == Some("execute") {
+    if info
+        .kind
+        .as_deref()
+        .map(str::trim)
+        .is_some_and(|k| k.eq_ignore_ascii_case("execute"))
+    {
         return info
             .title
             .as_deref()
@@ -229,8 +242,13 @@ pub async fn run_acp_review(request: AcpReviewRequest) -> Result<ReviewVerdict, 
             rpc_timeout: request.timeout.min(Duration::from_secs(60)),
             ..Default::default()
         },
+        prompt_timeout: request.timeout,
         ..Default::default()
     };
+    let outer_timeout = request
+        .timeout
+        .saturating_add(session_cfg.cancel_drain_timeout)
+        .saturating_add(Duration::from_secs(5));
 
     let session = AcpSession::spawn(
         Arc::clone(&request.driver),
@@ -274,7 +292,7 @@ pub async fn run_acp_review(request: AcpReviewRequest) -> Result<ReviewVerdict, 
         })
         .with_cancel(cancel_rx);
 
-    let turn_res = tokio::time::timeout(request.timeout, session.prompt(prompt_req)).await;
+    let turn_res = tokio::time::timeout(outer_timeout, session.prompt(prompt_req)).await;
 
     cancel_bridge.abort();
     session.shutdown().await;
@@ -284,6 +302,12 @@ pub async fn run_acp_review(request: AcpReviewRequest) -> Result<ReviewVerdict, 
         Ok(Err(error)) => {
             if request.cancellation.is_cancelled() || error.is_cancelled() {
                 return Err(ReviewerError::Cancelled);
+            }
+            if error.is_timeout() {
+                return Err(ReviewerError::Incomplete(format!(
+                    "Reviewer timed out after {} seconds.",
+                    request.timeout.as_secs()
+                )));
             }
             return Err(ReviewerError::Execution(format!(
                 "ACP reviewer execution failed: {error}"
@@ -301,9 +325,7 @@ pub async fn run_acp_review(request: AcpReviewRequest) -> Result<ReviewVerdict, 
         return Err(ReviewerError::Cancelled);
     }
 
-    for event in &turn.events {
-        record_acp_verification_event(&request.verification_report, event);
-    }
+    record_acp_verification_events(&request.verification_report, &turn.events);
 
     let trimmed = turn.response_text.trim();
     if trimmed.is_empty() {
@@ -321,88 +343,103 @@ pub async fn run_acp_review(request: AcpReviewRequest) -> Result<ReviewVerdict, 
     Ok(verdict)
 }
 
-fn record_acp_verification_event(
+fn record_acp_verification_events(
     verification_report: &Arc<StdMutex<ReviewVerificationReport>>,
-    event: &AcpStreamEvent,
+    events: &[AcpStreamEvent],
 ) {
-    let AcpStreamEvent::ToolCall { tool_call, .. } = event else {
-        return;
-    };
-    let status = tool_call
-        .status
-        .as_deref()
-        .map(str::trim)
-        .unwrap_or_default();
-    if !matches!(status, "completed" | "failed" | "declined") {
-        return;
-    }
-    let Some(command) = extract_permission_command(tool_call) else {
-        return;
-    };
-    let command = command.trim();
-    if command.is_empty() || !is_verification_command(command) {
-        return;
-    }
-    let started = status != "declined";
-    let normalized = tool_call.extra.get("normalized").and_then(Value::as_object);
-    let raw_output_obj = tool_call.raw_output.as_ref().and_then(Value::as_object);
-    let exit_code = normalized
-        .and_then(|obj| obj.get("exitCode").and_then(Value::as_i64))
-        .or_else(|| tool_call.extra.get("exit_code").and_then(Value::as_i64))
-        .or_else(|| {
-            raw_output_obj.and_then(|obj| {
-                obj.get("exitCode")
-                    .or_else(|| obj.get("exit_code"))
-                    .and_then(Value::as_i64)
-            })
-        })
-        .unwrap_or(if status == "completed" { 0 } else { 1 });
-    let raw_output = normalized
-        .and_then(|obj| obj.get("aggregatedOutput").and_then(Value::as_str))
-        .or_else(|| {
-            raw_output_obj.and_then(|obj| {
-                obj.get("aggregatedOutput")
-                    .or_else(|| obj.get("aggregated_output"))
-                    .or_else(|| obj.get("combinedOutput"))
-                    .or_else(|| obj.get("output"))
-                    .or_else(|| obj.get("stdout"))
-                    .and_then(Value::as_str)
-            })
-        })
-        .unwrap_or("")
-        .trim();
-    let output = if raw_output.is_empty() {
-        None
-    } else {
-        Some(truncate_tail_chars(
-            raw_output,
-            MAX_VERIFICATION_OUTPUT_CHARS,
-        ))
-    };
-    let summary = if exit_code == 0 && started {
-        "Verification command exited with code 0".to_string()
-    } else if !started {
-        "Verification command was declined".to_string()
-    } else {
-        raw_output
-            .lines()
-            .rev()
-            .find(|line| !line.trim().is_empty())
-            .map(|line| truncate_tail_chars(line.trim(), 500))
-            .unwrap_or_else(|| format!("Verification command exited with code {exit_code}"))
-    };
-
+    let mut index_by_tool_call_id: HashMap<String, usize> = HashMap::new();
     let mut report = verification_report
         .lock()
         .expect("verification report lock");
-    if report.commands.len() < MAX_VERIFICATION_COMMANDS {
-        report.commands.push(ReviewTestReport {
+
+    for event in events {
+        let AcpStreamEvent::ToolCall { tool_call, .. } = event else {
+            continue;
+        };
+        let status = tool_call
+            .status
+            .as_deref()
+            .map(str::trim)
+            .unwrap_or_default();
+        if !matches!(status, "completed" | "failed" | "declined") {
+            continue;
+        }
+        let Some(command) = extract_permission_command(tool_call) else {
+            continue;
+        };
+        let command = command.trim();
+        if command.is_empty() || !is_verification_command(command) {
+            continue;
+        }
+        let started = status != "declined";
+        let normalized = tool_call.extra.get("normalized").and_then(Value::as_object);
+        let raw_output_obj = tool_call.raw_output.as_ref().and_then(Value::as_object);
+        let exit_code = normalized
+            .and_then(|obj| obj.get("exitCode").and_then(Value::as_i64))
+            .or_else(|| tool_call.extra.get("exit_code").and_then(Value::as_i64))
+            .or_else(|| {
+                raw_output_obj.and_then(|obj| {
+                    obj.get("exitCode")
+                        .or_else(|| obj.get("exit_code"))
+                        .and_then(Value::as_i64)
+                })
+            })
+            .unwrap_or(if status == "completed" { 0 } else { 1 });
+        let raw_output = normalized
+            .and_then(|obj| obj.get("aggregatedOutput").and_then(Value::as_str))
+            .or_else(|| {
+                raw_output_obj.and_then(|obj| {
+                    obj.get("aggregatedOutput")
+                        .or_else(|| obj.get("aggregated_output"))
+                        .or_else(|| obj.get("combinedOutput"))
+                        .or_else(|| obj.get("output"))
+                        .or_else(|| obj.get("stdout"))
+                        .and_then(Value::as_str)
+                })
+            })
+            .unwrap_or("")
+            .trim();
+        let output = if raw_output.is_empty() {
+            None
+        } else {
+            Some(truncate_tail_chars(
+                raw_output,
+                MAX_VERIFICATION_OUTPUT_CHARS,
+            ))
+        };
+        let summary = if exit_code == 0 && started {
+            "Verification command exited with code 0".to_string()
+        } else if !started {
+            "Verification command was declined".to_string()
+        } else {
+            raw_output
+                .lines()
+                .rev()
+                .find(|line| !line.trim().is_empty())
+                .map(|line| truncate_tail_chars(line.trim(), 500))
+                .unwrap_or_else(|| format!("Verification command exited with code {exit_code}"))
+        };
+
+        let entry = ReviewTestReport {
             command: command.to_string(),
             exit_code,
             summary,
             output,
             started,
-        });
+        };
+        if !tool_call.tool_call_id.is_empty()
+            && let Some(&existing_idx) = index_by_tool_call_id.get(&tool_call.tool_call_id)
+        {
+            report.commands[existing_idx] = entry;
+            continue;
+        }
+        if report.commands.len() < MAX_VERIFICATION_COMMANDS {
+            let idx = report.commands.len();
+            report.commands.push(entry);
+            if !tool_call.tool_call_id.is_empty() {
+                index_by_tool_call_id.insert(tool_call.tool_call_id.clone(), idx);
+            }
+        }
     }
 }
 
@@ -439,15 +476,64 @@ pub fn augment_path_with_cargo_bin(
 }
 
 pub fn is_mutating_review_command(command: &str) -> Option<&'static str> {
+    is_mutating_review_command_inner(command, 0)
+}
+
+fn is_mutating_review_command_inner(command: &str, depth: usize) -> Option<&'static str> {
+    if depth >= MAX_SHELL_UNWRAP_DEPTH {
+        return Some("Reviewer cannot execute deeply nested shell commands.");
+    }
+    if find_security_violation(command).is_some() {
+        return Some("Reviewer command violated ADS security policy.");
+    }
     let unwrapped = unwrap_shell_command(command);
+    if unwrapped != command.trim() {
+        return is_mutating_review_command_inner(&unwrapped, depth + 1);
+    }
+
     for segment in split_command_segments(&unwrapped) {
+        if has_unsafe_output_redirection(&segment) {
+            return Some("Reviewer cannot write files via shell output redirection.");
+        }
         let tokens = tokenize_segment(&segment);
         let Some((program, args)) = extract_program_and_args(&tokens) else {
             continue;
         };
+
+        // Recursively inspect nested shell commands (`sh`/`bash`/`zsh`/`dash -c|-lc ...`).
+        if matches!(program.as_str(), "sh" | "bash" | "zsh" | "dash")
+            && let Some(nested) = extract_shell_inline_script(args)
+        {
+            if let Some(reason) = is_mutating_review_command_inner(&nested, depth + 1) {
+                return Some(reason);
+            }
+            continue;
+        }
+
         match program.as_str() {
             "apply_patch" | "patch" => {
                 return Some("Reviewer cannot apply patches or modify repository files.");
+            }
+            "rm" | "rmdir" | "mv" | "cp" | "tee" | "touch" | "mkdir" | "ln" | "chmod" | "chown"
+            | "chgrp" | "truncate" | "dd" | "install" => {
+                return Some("Reviewer cannot execute file-mutating shell commands.");
+            }
+            "sed"
+                if args
+                    .iter()
+                    .any(|arg| arg == "--in-place" || arg == "-i" || arg.starts_with("-i")) =>
+            {
+                return Some("Reviewer cannot modify files in place with sed.");
+            }
+            "perl"
+                if args.iter().any(|arg| {
+                    arg == "-i"
+                        || (arg.starts_with('-')
+                            && !arg.starts_with("--")
+                            && arg.chars().skip(1).any(|ch| ch == 'i'))
+                }) =>
+            {
+                return Some("Reviewer cannot modify files in place with perl.");
             }
             "git" => {
                 if let Some((subcommand, sub_args)) = extract_git_subcommand(args) {
@@ -526,13 +612,102 @@ pub fn is_mutating_review_command(command: &str) -> Option<&'static str> {
                     return Some("Reviewer cannot execute mutating GitHub CLI commands.");
                 }
             }
-            "cargo"
-                if args.first().map(String::as_str) == Some("fmt")
-                    && !args.iter().any(|arg| arg == "--check") =>
+            "cargo" => {
+                let sub = args.first().map(String::as_str).unwrap_or("");
+                if sub == "fmt" && !args.iter().any(|arg| arg == "--check") {
+                    return Some("Reviewer cannot format files in place; use cargo fmt --check.");
+                }
+                if sub == "fix" || (sub == "clippy" && args.iter().any(|arg| arg == "--fix")) {
+                    return Some("Reviewer cannot apply automatic cargo fixes.");
+                }
+            }
+            "npm" | "pnpm" | "yarn" | "bun"
+                if args.iter().any(|arg| {
+                    matches!(
+                        arg.as_str(),
+                        "install" | "i" | "add" | "remove" | "uninstall" | "update" | "upgrade"
+                    )
+                }) =>
             {
-                return Some("Reviewer cannot format files in place; use cargo fmt --check.");
+                return Some("Reviewer cannot mutate package dependencies.");
             }
             _ => {}
+        }
+    }
+    None
+}
+
+fn has_unsafe_output_redirection(segment: &str) -> bool {
+    let bytes = segment.as_bytes();
+    let mut i = 0;
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut escaped = false;
+
+    while i < bytes.len() {
+        let ch = bytes[i] as char;
+        if escaped {
+            escaped = false;
+            i += 1;
+            continue;
+        }
+        if ch == '\\' && !in_single {
+            escaped = true;
+            i += 1;
+            continue;
+        }
+        if ch == '\'' && !in_double {
+            in_single = !in_single;
+            i += 1;
+            continue;
+        }
+        if ch == '"' && !in_single {
+            in_double = !in_double;
+            i += 1;
+            continue;
+        }
+        if !in_single && !in_double && ch == '>' {
+            let mut j = i + 1;
+            // Skip second `>` for append (`>>`) or `|` for clobber (`>|`).
+            if j < bytes.len() && matches!(bytes[j], b'>' | b'|') {
+                j += 1;
+            }
+            // Allow fd duplication (`2>&1`, `1>&2`, `>&2`).
+            if j < bytes.len() && bytes[j] == b'&' {
+                let after_amp = j + 1;
+                if after_amp < bytes.len()
+                    && (bytes[after_amp].is_ascii_digit() || bytes[after_amp] == b'-')
+                {
+                    i = after_amp + 1;
+                    continue;
+                }
+            }
+            while j < bytes.len() && (bytes[j] as char).is_whitespace() {
+                j += 1;
+            }
+            let rest = &segment[j..];
+            let target = rest
+                .split(|c: char| c.is_whitespace() || matches!(c, ';' | '|' | '&'))
+                .next()
+                .unwrap_or("");
+            if target == "/dev/null" {
+                i = j + target.len();
+                continue;
+            }
+            return true;
+        }
+        i += 1;
+    }
+    false
+}
+
+fn extract_shell_inline_script(args: &[String]) -> Option<String> {
+    for (idx, arg) in args.iter().enumerate() {
+        if matches!(arg.as_str(), "-c" | "-lc" | "-cl") {
+            let script = args[idx + 1..].join(" ");
+            if !script.trim().is_empty() {
+                return Some(script);
+            }
         }
     }
     None
@@ -694,6 +869,19 @@ fn split_command_segments(command: &str) -> Vec<String> {
                 }
                 continue;
             }
+            if ch == '&' {
+                // Keep fd/combined redirections (`>&`, `<&`, `&>`) intact inside the segment.
+                let prev_is_redir = current.ends_with('>') || current.ends_with('<');
+                let next_is_redir = chars.peek() == Some(&'>');
+                if !prev_is_redir && !next_is_redir {
+                    if !current.trim().is_empty() {
+                        segments.push(std::mem::take(&mut current));
+                    } else {
+                        current.clear();
+                    }
+                    continue;
+                }
+            }
         }
         current.push(ch);
     }
@@ -841,19 +1029,28 @@ mod tests {
     }
 
     #[test]
-    fn blocks_mutating_commands_in_review_mode() {
+    fn blocks_mutating_commands_redirections_and_nested_shells_in_review_mode() {
         assert!(is_mutating_review_command("git commit -m 'nope'").is_some());
         assert!(is_mutating_review_command("/bin/bash -lc 'git push origin dev'").is_some());
-        assert!(is_mutating_review_command("git -C repo checkout -b x").is_some());
-        assert!(is_mutating_review_command("git branch -D codex/issue-1").is_some());
-        assert!(is_mutating_review_command("gh pr merge 702 --squash").is_some());
+        assert!(is_mutating_review_command("cd repo && bash -lc 'git push origin dev'").is_some());
+        assert!(is_mutating_review_command("bash -lc \"sh -c 'git reset --hard'\"").is_some());
+        assert!(is_mutating_review_command("echo ok & git push origin dev").is_some());
+        assert!(is_mutating_review_command("echo hack > README.md").is_some());
+        assert!(is_mutating_review_command("echo hack >> README.md").is_some());
+        assert!(is_mutating_review_command("cat a | tee b").is_some());
+        assert!(is_mutating_review_command("rm -rf foo").is_some());
+        assert!(is_mutating_review_command("mv a b").is_some());
+        assert!(is_mutating_review_command("sed -i 's/a/b/' file.rs").is_some());
         assert!(is_mutating_review_command("cargo fmt").is_some());
+        assert!(is_mutating_review_command("cargo clippy --fix").is_some());
         assert!(is_mutating_review_command("apply_patch").is_some());
 
+        // Safe read-only & verification commands (including 2>&1 and >/dev/null) remain allowed.
         assert!(is_mutating_review_command("git diff origin/dev...HEAD").is_none());
         assert!(is_mutating_review_command("git branch --show-current").is_none());
         assert!(is_mutating_review_command("cargo fmt --check").is_none());
-        assert!(is_mutating_review_command("cargo test -p ads-actions").is_none());
+        assert!(is_mutating_review_command("cargo test -p ads-actions 2>&1").is_none());
+        assert!(is_mutating_review_command("cargo check 2>/dev/null").is_none());
     }
 
     #[test]

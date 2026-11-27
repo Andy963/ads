@@ -1511,7 +1511,44 @@ async fn codex_acp_probing_three_way_runtime_switching_and_persistent_auth_reuse
     let app = build_router(auth, config);
     let cookie = login_cookie(&app).await;
 
-    // 1. Add a Native Settings -> Providers model (`gpt-4.1`) and enable it in conversation service.
+    // 1. Verify fresh-DB seeded models carrying legacy `allowedAgents: ["codex"]` are scoped
+    // to `native` in GET /api/models so they never leak into Codex ACP.
+    let (status, initial_models_body) =
+        authed_request(&app, "GET", "/api/models", &cookie, None).await;
+    assert_eq!(status, StatusCode::OK, "{initial_models_body}");
+    let mut saw_seeded_codex_model = false;
+    for model in initial_models_body.as_array().expect("initial models array") {
+        let provider = model["provider"].as_str().unwrap_or_default();
+        if provider != "codex" && provider != "antigravity" {
+            let allowed = model["configJson"]["allowedAgents"]
+                .as_array()
+                .expect("scoped allowedAgents on DB model");
+            assert!(
+                !allowed.iter().any(|v| v == CODEX_AGENT_ID),
+                "DB-seeded/provider model {} must not leak into codex ACP: {model}",
+                model["id"]
+            );
+            if model["id"]
+                .as_str()
+                .is_some_and(|id| id.contains("codex"))
+            {
+                saw_seeded_codex_model = true;
+                assert!(
+                    allowed.iter().any(|v| v == NATIVE_AGENT_ID),
+                    "legacy codex-seeded DB model {} must fall back to native: {model}",
+                    model["id"]
+                );
+                assert_eq!(model["configJson"]["runtime"], NATIVE_AGENT_ID);
+            }
+        }
+    }
+    assert!(
+        saw_seeded_codex_model,
+        "expected fresh DB to contain at least one legacy codex-seeded model to verify scoping"
+    );
+
+    // 1b. Add a Native Settings -> Providers model (`gpt-4.1`) even with legacy
+    // `allowedAgents: ["codex"]` and verify it is still scoped exclusively to `native`.
     let (status, provider) = authed_request(
         &app,
         "POST",
@@ -1538,6 +1575,7 @@ async fn codex_acp_probing_three_way_runtime_switching_and_persistent_auth_reuse
             "displayName": "GPT-4.1 Native",
             "provider": "NativeOpenAI",
             "providerId": provider_id,
+            "configJson": { "allowedAgents": ["codex"] },
             "isEnabled": true
         })),
     )
@@ -1774,11 +1812,35 @@ async fn codex_acp_probing_three_way_runtime_switching_and_persistent_auth_reuse
 
     // 5. Simulate daemon restart: a fresh RuntimeRegistry reusing the same CODEX_HOME
     // becomes ready immediately with zero re-login.
-    let restarted_registry = RuntimeRegistry::new(reg_cfg);
+    let restarted_registry = RuntimeRegistry::new(reg_cfg.clone());
     restarted_registry.probe_all().await;
     assert!(
         restarted_registry.is_codex_ready(),
         "Codex ACP must reuse persisted CODEX_HOME auth across restarts without re-login"
     );
     restarted_registry.shutdown_all().await;
+
+    // 6. Verify unauthenticated CODEX_HOME reports ready=false with actionable auth error.
+    let unauth_codex_home = dir.path().join("codex-home-unauth");
+    fs::create_dir_all(&unauth_codex_home).expect("unauth codex home");
+    let mut unauth_cfg = reg_cfg;
+    unauth_cfg.codex_home = Some(unauth_codex_home);
+    let unauth_registry = RuntimeRegistry::new(unauth_cfg);
+    unauth_registry.probe_all().await;
+    assert!(!unauth_registry.is_codex_ready());
+    let unauth_codex = unauth_registry
+        .list_agents()
+        .into_iter()
+        .find(|a| a.id == CODEX_AGENT_ID)
+        .expect("unauth codex agent");
+    assert!(!unauth_codex.ready);
+    assert!(
+        unauth_codex
+            .error
+            .as_deref()
+            .unwrap_or_default()
+            .to_ascii_lowercase()
+            .contains("auth")
+    );
+    unauth_registry.shutdown_all().await;
 }

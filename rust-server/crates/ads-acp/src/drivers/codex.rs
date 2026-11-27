@@ -194,22 +194,25 @@ fn absolutize_path(path: &Path) -> AcpResult<PathBuf> {
 }
 
 fn ensure_private_dir(path: &Path) -> AcpResult<()> {
-    fs::create_dir_all(path).map_err(|error| {
-        AcpError::Transport(format!(
-            "failed to create codex home directory {}: {error}",
-            path.display()
-        ))
-    })?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let perms = fs::Permissions::from_mode(0o700);
-        fs::set_permissions(path, perms).map_err(|error| {
+    let existed = path.exists();
+    if !existed {
+        fs::create_dir_all(path).map_err(|error| {
             AcpError::Transport(format!(
-                "failed to chmod codex home directory {}: {error}",
+                "failed to create codex home directory {}: {error}",
                 path.display()
             ))
         })?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let perms = fs::Permissions::from_mode(0o700);
+            fs::set_permissions(path, perms).map_err(|error| {
+                AcpError::Transport(format!(
+                    "failed to chmod codex home directory {}: {error}",
+                    path.display()
+                ))
+            })?;
+        }
     }
     Ok(())
 }
@@ -224,7 +227,7 @@ impl UpdatePlanTracker {
     fn track(&mut self, key: &str, status: Option<&str>, is_update_plan: bool) -> bool {
         if is_update_plan && self.active.insert(key.to_string()) {
             self.order.push_back(key.to_string());
-            while self.active.len() > MAX_UPDATE_PLAN_TRACKED {
+            while self.order.len() > MAX_UPDATE_PLAN_TRACKED {
                 if let Some(oldest) = self.order.pop_front() {
                     self.active.remove(&oldest);
                 } else {
@@ -240,6 +243,7 @@ impl UpdatePlanTracker {
             Some("completed" | "failed" | "cancelled" | "declined")
         ) {
             self.active.remove(key);
+            self.order.retain(|entry| entry != key);
         }
         true
     }
@@ -320,26 +324,22 @@ impl AcpDriver for CodexDriver {
         modes: Option<&SessionModeState>,
         mut desired: DesiredConfigAlignment,
     ) -> DesiredConfigAlignment {
-        if let Some(raw_model) = desired
-            .model
-            .as_deref()
-            .map(|value| self.map_model_id(value))
-            .filter(|value| !value.is_empty())
-        {
-            desired.model = Some(raw_model);
+        if let Some(raw_model) = desired.model.take() {
+            let mapped = self.map_model_id(&raw_model);
+            if !mapped.is_empty() {
+                desired.model = Some(mapped);
+            }
         }
 
-        if let Some(raw_thought) = desired
-            .thought_level
-            .as_deref()
-            .map(|value| self.map_thought_level(value))
-            .filter(|value| !value.is_empty())
-        {
-            desired.thought_level = Some(raw_thought);
+        if let Some(raw_thought) = desired.thought_level.take() {
+            let mapped = self.map_thought_level(&raw_thought);
+            if !mapped.is_empty() {
+                desired.thought_level = Some(mapped);
+            }
         }
 
         if let Some(mode) = desired.mode.take() {
-            desired.mode = Some(coerce_codex_mode(mode, config_options, modes));
+            desired.mode = coerce_codex_mode(mode, config_options, modes);
         }
 
         desired
@@ -429,47 +429,51 @@ fn coerce_codex_mode(
     mode: SessionMode,
     config_options: &ConfigOptionsState,
     modes: Option<&SessionModeState>,
-) -> SessionMode {
+) -> Option<SessionMode> {
     let has_catalog = modes.is_some_and(|m| !m.available_modes.is_empty())
         || config_options.resolve_mode().is_some();
+    let fallback_default = || {
+        (!has_catalog || mode_is_supported("default", config_options, modes))
+            .then_some(SessionMode::Default)
+    };
     match mode {
-        SessionMode::Default => SessionMode::Default,
+        SessionMode::Default => fallback_default(),
         SessionMode::Plan => {
             if !has_catalog || mode_is_supported("plan", config_options, modes) {
-                SessionMode::Plan
+                Some(SessionMode::Plan)
             } else if mode_is_supported("read-only", config_options, modes) {
-                SessionMode::Custom("read-only".to_string())
+                Some(SessionMode::Custom("read-only".to_string()))
             } else if mode_is_supported("readonly", config_options, modes) {
-                SessionMode::Custom("readonly".to_string())
+                Some(SessionMode::Custom("readonly".to_string()))
             } else {
-                SessionMode::Default
+                fallback_default()
             }
         }
         SessionMode::AcceptEdits => {
             if !has_catalog || mode_is_supported("accept-edits", config_options, modes) {
-                SessionMode::AcceptEdits
+                Some(SessionMode::AcceptEdits)
             } else if mode_is_supported("auto", config_options, modes) {
-                SessionMode::Custom("auto".to_string())
+                Some(SessionMode::Custom("auto".to_string()))
             } else if mode_is_supported("workspace-write", config_options, modes) {
-                SessionMode::Custom("workspace-write".to_string())
+                Some(SessionMode::Custom("workspace-write".to_string()))
             } else if mode_is_supported("full-access", config_options, modes) {
-                SessionMode::Custom("full-access".to_string())
+                Some(SessionMode::Custom("full-access".to_string()))
             } else {
-                SessionMode::Default
+                fallback_default()
             }
         }
         SessionMode::Custom(raw) => {
             let trimmed = raw.trim();
             if trimmed.is_empty() || trimmed == "default" {
-                SessionMode::Default
+                fallback_default()
             } else if trimmed == "plan" {
                 coerce_codex_mode(SessionMode::Plan, config_options, modes)
             } else if trimmed == "accept-edits" {
                 coerce_codex_mode(SessionMode::AcceptEdits, config_options, modes)
             } else if !has_catalog || mode_is_supported(trimmed, config_options, modes) {
-                SessionMode::Custom(trimmed.to_string())
+                Some(SessionMode::Custom(trimmed.to_string()))
             } else {
-                SessionMode::Default
+                fallback_default()
             }
         }
     }
@@ -822,17 +826,16 @@ pub fn read_codex_auth_metadata(config: &CodexDriverConfig) -> (Option<String>, 
         }
     }
 
-    let has_env_key = config
-        .extra_env
-        .get("CODEX_API_KEY")
-        .or_else(|| config.extra_env.get("OPENAI_API_KEY"))
-        .is_some_and(|value| !value.trim().is_empty())
-        || env::var("CODEX_API_KEY")
-            .ok()
-            .is_some_and(|v| !v.trim().is_empty())
-        || env::var("OPENAI_API_KEY")
-            .ok()
-            .is_some_and(|v| !v.trim().is_empty());
+    let lookup_env = |key: &str| -> Option<String> {
+        if let Some(value) = config.extra_env.get(key) {
+            Some(value.clone())
+        } else {
+            env::var(key).ok()
+        }
+    };
+    let has_env_key = ["CODEX_API_KEY", "OPENAI_API_KEY"]
+        .iter()
+        .any(|key| lookup_env(key).is_some_and(|value| !value.trim().is_empty()));
     if has_env_key {
         return (Some("api_key".to_string()), None);
     }

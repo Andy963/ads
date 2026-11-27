@@ -202,6 +202,23 @@ for raw in sys.stdin:
                     }
                 }
             })
+            # Emit a trailing duplicate completed update for the same toolCallId to verify dedup.
+            send({
+                "jsonrpc": "2.0",
+                "method": "session/update",
+                "params": {
+                    "sessionId": session_id,
+                    "update": {
+                        "sessionUpdate": "tool_call_update",
+                        "toolCallId": "tc-test",
+                        "title": "Run command",
+                        "kind": "execute",
+                        "status": "completed",
+                        "rawInput": {"command": "cargo test -p ads-acp"},
+                        "rawOutput": {"aggregatedOutput": "test result: ok. 12 passed", "exitCode": 0}
+                    }
+                }
+            })
             verdict = {
                 "status": "PASS" if (not edit_allowed and not push_allowed and test_allowed) else "REJECT",
                 "summary": f"edit={edit_allowed} push={push_allowed} test={test_allowed}",
@@ -333,6 +350,20 @@ fn codex_driver_hooks_handle_prefix_alignment_modes_auth_errors_and_tool_plan_no
         aligned_edits.mode,
         Some(SessionMode::Custom("auto".to_string()))
     );
+
+    // Unsupported "default" mode against catalog without "default" yields None (keep current mode),
+    // and bare "codex:" model prefix clears to None.
+    let aligned_edge = driver.resolve_alignment(
+        &options,
+        Some(&modes),
+        DesiredConfigAlignment {
+            model: Some("codex:".to_string()),
+            mode: Some(SessionMode::Default),
+            ..DesiredConfigAlignment::default()
+        },
+    );
+    assert_eq!(aligned_edge.model, None);
+    assert_eq!(aligned_edge.mode, None);
 
     // Auth RPC error classification.
     let err = driver.map_rpc_error("session/new", -32603, "Not logged in; run codex login", None);
@@ -521,6 +552,100 @@ async fn acp_reviewer_enforces_read_only_boundaries_and_captures_verification_co
         }
     );
 
+    // Fail-closed on unrecognized tool kinds (e.g. "other" or None with innocent title).
+    let (_cancel_tx2, cancel_rx2) = tokio::sync::watch::channel(false);
+    let denied_unknown = handler
+        .request_permission(
+            PendingPermissionRequest {
+                request_id: "perm-unknown".to_string(),
+                session_id: "s".to_string(),
+                tool_call: ToolCallInfo {
+                    tool_call_id: "2".to_string(),
+                    title: Some("Create file".to_string()),
+                    kind: Some("other".to_string()),
+                    status: None,
+                    content: Vec::new(),
+                    locations: Vec::new(),
+                    raw_input: None,
+                    raw_output: None,
+                    extra: Map::new(),
+                },
+                options: options.clone(),
+            },
+            cancel_rx2,
+        )
+        .await;
+    assert_eq!(
+        denied_unknown,
+        PermissionOutcome::Selected {
+            option_id: "deny".to_string()
+        }
+    );
+
+    // Cancelled permission channel returns Cancelled immediately.
+    let (_cancel_tx3, cancel_rx3) = tokio::sync::watch::channel(true);
+    let cancelled_perm = handler
+        .request_permission(
+            PendingPermissionRequest {
+                request_id: "perm-cancelled".to_string(),
+                session_id: "s".to_string(),
+                tool_call: ToolCallInfo {
+                    tool_call_id: "3".to_string(),
+                    title: Some("Read file".to_string()),
+                    kind: Some("read".to_string()),
+                    status: None,
+                    content: Vec::new(),
+                    locations: Vec::new(),
+                    raw_input: None,
+                    raw_output: None,
+                    extra: Map::new(),
+                },
+                options: options.clone(),
+            },
+            cancel_rx3,
+        )
+        .await;
+    assert_eq!(cancelled_perm, PermissionOutcome::Cancelled);
+
+    // Blocks shell redirections, nested mutating shells, and ADS security violations.
+    for blocked_cmd in [
+        "echo x > README.md",
+        "rm -rf /tmp/foo",
+        "sed -i 's/a/b/' src/lib.rs",
+        "cd repo && bash -lc 'git push origin dev'",
+        "systemctl --user stop ads-web",
+    ] {
+        let (_tx, rx) = tokio::sync::watch::channel(false);
+        let outcome = handler
+            .request_permission(
+                PendingPermissionRequest {
+                    request_id: "perm-cmd".to_string(),
+                    session_id: "s".to_string(),
+                    tool_call: ToolCallInfo {
+                        tool_call_id: "cmd".to_string(),
+                        title: Some("Run command".to_string()),
+                        kind: Some("Execute".to_string()),
+                        status: None,
+                        content: Vec::new(),
+                        locations: Vec::new(),
+                        raw_input: Some(json!({ "command": blocked_cmd })),
+                        raw_output: None,
+                        extra: Map::new(),
+                    },
+                    options: options.clone(),
+                },
+                rx,
+            )
+            .await;
+        assert_eq!(
+            outcome,
+            PermissionOutcome::Selected {
+                option_id: "deny".to_string()
+            },
+            "expected command to be denied: {blocked_cmd}"
+        );
+    }
+
     // End-to-end run_acp_review through CodexDriver + mock-codex-acp.
     let db = StateDb::open(temp.path().join("state.db")).expect("db");
     {
@@ -577,10 +702,10 @@ async fn acp_reviewer_enforces_read_only_boundaries_and_captures_verification_co
     };
 
     let verdict = run_acp_review(AcpReviewRequest {
-        db,
-        driver,
-        payload,
-        repo_path,
+        db: db.clone(),
+        driver: Arc::clone(&driver),
+        payload: payload.clone(),
+        repo_path: repo_path.clone(),
         profile_id: None,
         job_id: "job-730".to_string(),
         timeout: Duration::from_secs(30),
@@ -594,9 +719,33 @@ async fn acp_reviewer_enforces_read_only_boundaries_and_captures_verification_co
     assert!(verdict.summary.contains("edit=False"));
     assert!(verdict.summary.contains("push=False"));
     assert!(verdict.summary.contains("test=True"));
-    let report = verification_report.lock().expect("report lock");
-    assert_eq!(report.commands.len(), 1);
-    assert_eq!(report.commands[0].command, "cargo test -p ads-acp");
-    assert_eq!(report.commands[0].exit_code, 0);
-    assert!(report.commands[0].started);
+    {
+        let report = verification_report.lock().expect("report lock");
+        assert_eq!(
+            report.commands.len(),
+            1,
+            "duplicate completed tool_call_update must be deduplicated by tool_call_id"
+        );
+        assert_eq!(report.commands[0].command, "cargo test -p ads-acp");
+        assert_eq!(report.commands[0].exit_code, 0);
+        assert!(report.commands[0].started);
+    }
+
+    // Pre-cancelled review exits with ReviewerError::Cancelled without running.
+    let cancelled = Cancellation::new();
+    cancelled.cancel();
+    let cancel_err = run_acp_review(AcpReviewRequest {
+        db,
+        driver,
+        payload,
+        repo_path,
+        profile_id: None,
+        job_id: "job-730-cancel".to_string(),
+        timeout: Duration::from_secs(30),
+        cancellation: cancelled,
+        verification_report: Arc::new(Mutex::new(ReviewVerificationReport::default())),
+    })
+    .await
+    .expect_err("expected cancellation error");
+    assert!(matches!(cancel_err, ads_reviewer::ReviewerError::Cancelled));
 }

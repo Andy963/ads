@@ -28,6 +28,13 @@ export function supportsAgentModel(args: { agentId: string; model: ModelConfig }
   const agentId = String(args.agentId ?? "").trim().toLowerCase();
   if (!agentId) return true;
 
+  // Models bound to a configured Settings -> Providers entry belong exclusively to Native runtime,
+  // even if upgraded DB rows carry legacy `allowedAgents: ["codex"]`.
+  const providerId = String(args.model.providerId ?? "").trim();
+  if (providerId) {
+    return agentId === "native";
+  }
+
   const allowed = getAllowedAgents(args.model);
   if (allowed) {
     return allowed.includes(agentId);
@@ -42,12 +49,6 @@ export function supportsAgentModel(args: { agentId: string; model: ModelConfig }
   }
   if (runtime === "agy") {
     return agentId === "agy" || agentId.startsWith("agy:");
-  }
-
-  // Models bound to a configured Settings -> Providers entry belong exclusively to Native runtime.
-  const providerId = String(args.model.providerId ?? "").trim();
-  if (providerId) {
-    return agentId === "native";
   }
 
   const provider = String(args.model.provider ?? "").trim().toLowerCase();

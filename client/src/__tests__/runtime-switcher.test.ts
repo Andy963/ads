@@ -52,14 +52,29 @@ describe("supportsAgentModel across native, codex, claude, and agy runtimes", ()
     },
   };
 
+  const legacyProviderWithCodexTag: ModelConfig = {
+    id: "model-legacy-provider",
+    modelId: "gpt-5",
+    displayName: "GPT-5 (Legacy Provider)",
+    provider: "OpenAI",
+    providerId: "provider-openai",
+    isEnabled: true,
+    isDefault: false,
+    configJson: {
+      allowedAgents: ["codex"],
+    },
+  };
+
   it("scopes Settings -> Providers models to native while codex and agy use ACP-discovered models", () => {
     expect(supportsAgentModel({ agentId: "native", model: providerBoundModel })).toBe(true);
+    expect(supportsAgentModel({ agentId: "native", model: legacyProviderWithCodexTag })).toBe(true);
     expect(supportsAgentModel({ agentId: "native", model: claudeModel })).toBe(true);
     expect(supportsAgentModel({ agentId: "native", model: codexAcpModel })).toBe(false);
     expect(supportsAgentModel({ agentId: "native", model: agyModel })).toBe(false);
 
     expect(supportsAgentModel({ agentId: "codex", model: codexAcpModel })).toBe(true);
     expect(supportsAgentModel({ agentId: "codex", model: providerBoundModel })).toBe(false);
+    expect(supportsAgentModel({ agentId: "codex", model: legacyProviderWithCodexTag })).toBe(false);
     expect(supportsAgentModel({ agentId: "codex", model: claudeModel })).toBe(false);
     expect(supportsAgentModel({ agentId: "codex", model: agyModel })).toBe(false);
 
