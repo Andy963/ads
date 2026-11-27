@@ -4,7 +4,11 @@ use std::path::PathBuf;
 use serde_json::{Map, Value};
 
 use crate::error::{AcpError, AcpResult};
-use crate::protocol::SessionMode;
+use crate::protocol::{
+    ClientCapabilities, ConfigOptionsState, InitializeResponse, SessionMode, SessionModeState,
+    SessionUpdate,
+};
+use crate::session::DesiredConfigAlignment;
 
 #[derive(Debug, Clone, Default)]
 pub struct AcpLaunchContext {
@@ -69,8 +73,37 @@ pub trait AcpDriver: Send + Sync {
 
     fn launch_spec(&self, context: &AcpLaunchContext) -> AcpResult<AcpLaunchSpec>;
 
-    fn extra_session_new_params(&self, _context: &AcpSessionContext) -> Map<String, Value> {
+    fn client_capabilities(&self, default: ClientCapabilities) -> ClientCapabilities {
+        default
+    }
+
+    fn extra_session_new_params(
+        &self,
+        _context: &AcpSessionContext,
+        _initialize: Option<&InitializeResponse>,
+    ) -> Map<String, Value> {
         Map::new()
+    }
+
+    fn intercept_non_json_stdout_line(&self, _line: &str) -> Option<AcpError> {
+        None
+    }
+
+    fn normalize_session_update(
+        &self,
+        _session_id: &str,
+        update: SessionUpdate,
+    ) -> Option<SessionUpdate> {
+        Some(update)
+    }
+
+    fn resolve_alignment(
+        &self,
+        _config_options: &ConfigOptionsState,
+        _modes: Option<&SessionModeState>,
+        desired: DesiredConfigAlignment,
+    ) -> DesiredConfigAlignment {
+        desired
     }
 
     fn map_model_id(&self, model: &str) -> String {
@@ -193,7 +226,11 @@ impl AcpDriver for GenericAcpDriver {
         })
     }
 
-    fn extra_session_new_params(&self, _context: &AcpSessionContext) -> Map<String, Value> {
+    fn extra_session_new_params(
+        &self,
+        _context: &AcpSessionContext,
+        _initialize: Option<&InitializeResponse>,
+    ) -> Map<String, Value> {
         self.extra_session_new_params.clone()
     }
 

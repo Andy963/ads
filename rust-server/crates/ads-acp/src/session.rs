@@ -18,7 +18,7 @@ use crate::protocol::{
     SessionSetModeRequest, SessionSetModeResponse, SessionUpdate, SessionUpdateNotification,
     StopReason, UsageUpdateInfo,
 };
-use crate::transport::{AcpTransport, AcpTransportConfig, Subscription};
+use crate::transport::{AcpTransport, AcpTransportConfig, StdoutLineInterceptor, Subscription};
 
 pub const DEFAULT_CANCEL_DRAIN_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -245,7 +245,15 @@ impl AcpSession {
         config: AcpSessionConfig,
     ) -> AcpResult<Arc<Self>> {
         let launch_spec = driver.launch_spec(launch_context)?;
-        let transport = AcpTransport::spawn(&launch_spec, config.transport.clone()).await?;
+        let driver_for_stdout = Arc::clone(&driver);
+        let interceptor: StdoutLineInterceptor =
+            Arc::new(move |line| driver_for_stdout.intercept_non_json_stdout_line(line));
+        let transport = AcpTransport::spawn_with_interceptor(
+            &launch_spec,
+            config.transport.clone(),
+            Some(interceptor),
+        )
+        .await?;
         Ok(Self::from_transport(transport, driver, permission_handler, config).await)
     }
 
@@ -276,10 +284,11 @@ impl AcpSession {
         // All transport handlers capture only Weak<SessionRuntimeState> and never hold a
         // strong AcpTransport clone, avoiding reference cycles so Drop always works.
         let update_state = Arc::downgrade(&state);
+        let update_driver = Arc::clone(&driver);
         let update_sub = transport
             .on_notification("session/update", move |params, _| {
                 if let Some(state) = update_state.upgrade() {
-                    handle_session_update(&state, params);
+                    handle_session_update(&state, update_driver.as_ref(), params);
                 }
             })
             .await;
@@ -477,7 +486,9 @@ impl AcpSession {
         }
         let params = InitializeRequest {
             protocol_version: ACP_PROTOCOL_VERSION,
-            client_capabilities: self.config.client_capabilities.clone(),
+            client_capabilities: self
+                .driver
+                .client_capabilities(self.config.client_capabilities.clone()),
             client_info: Some(self.config.client_info.clone()),
         };
         let value = self
@@ -505,13 +516,28 @@ impl AcpSession {
         Ok(response)
     }
 
+    pub async fn authenticate(&self, method_id: &str) -> AcpResult<Value> {
+        self.ensure_initialized()?;
+        let method_id = method_id.trim();
+        if method_id.is_empty() {
+            return Err(AcpError::InvalidState(
+                "auth method_id cannot be empty for authenticate".to_string(),
+            ));
+        }
+        self.rpc_request("authenticate", json!({ "methodId": method_id }), None)
+            .await
+    }
+
     pub async fn new_session(&self, context: &AcpSessionContext) -> AcpResult<SessionNewResponse> {
         self.ensure_initialized()?;
+        let initialize = self.initialize_response();
         let cwd = resolve_session_cwd(context);
         let request = SessionNewRequest {
             cwd,
             mcp_servers: context.mcp_servers.clone(),
-            extra: self.driver.extra_session_new_params(context),
+            extra: self
+                .driver
+                .extra_session_new_params(context, initialize.as_ref()),
         };
         let value = self
             .rpc_request("session/new", serde_json::to_value(request).unwrap(), None)
@@ -779,6 +805,14 @@ impl AcpSession {
         &self,
         desired: &DesiredConfigAlignment,
     ) -> AcpResult<ConfigAlignmentReport> {
+        let desired = {
+            let guard = self.state.lock().expect("session state lock");
+            self.driver.resolve_alignment(
+                &guard.config_options,
+                guard.modes.as_ref(),
+                desired.clone(),
+            )
+        };
         let mut report = ConfigAlignmentReport::default();
         if let Some(mode) = desired.mode.as_ref() {
             report.mode_changed = self.set_mode(mode).await?;
@@ -1103,10 +1137,20 @@ fn resolve_session_cwd(context: &AcpSessionContext) -> String {
         .to_string()
 }
 
-fn handle_session_update(state: &StdMutex<SessionRuntimeState>, params: Value) {
-    let Ok(notification) = SessionUpdateNotification::from_params(params) else {
+fn handle_session_update(
+    state: &StdMutex<SessionRuntimeState>,
+    driver: &dyn AcpDriver,
+    params: Value,
+) {
+    let Ok(mut notification) = SessionUpdateNotification::from_params(params) else {
         return;
     };
+    let Some(update) =
+        driver.normalize_session_update(&notification.session_id, notification.update)
+    else {
+        return;
+    };
+    notification.update = update;
     let bridge = {
         let mut guard = state.lock().expect("session state lock");
         if let Some(active_session_id) = guard.session_id.as_deref()
