@@ -47,4 +47,7 @@ pub use web_push::{
     WebPushNotificationType, WebPushService, WebPushTransport, encrypt_web_push_payload,
     is_allowed_web_push_endpoint, validate_subscription_keys,
 };
-pub use ws::{ActionsLaneMessage, WebSocketConfig, WebSocketHub, publish_actions_lane_message};
+pub use ws::{
+    ActionsLaneMessage, OUTBOUND_QUEUE_OVERFLOW_CLOSE_CODE, WebSocketConfig, WebSocketHub,
+    WebSocketMetrics, WebSocketMetricsSnapshot, publish_actions_lane_message,
+};

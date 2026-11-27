@@ -38,4 +38,5 @@ tower-http.workspace = true
 flate2.workspace = true
 http-body-util.workspace = true
 tempfile.workspace = true
+tokio-tungstenite.workspace = true
 tower.workspace = true
