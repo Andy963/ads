@@ -25,6 +25,7 @@ const MAX_MALFORMED_LINE_LEN: usize = 512;
 pub type ServerRequestFuture = Pin<Box<dyn Future<Output = AcpResult<Value>> + Send>>;
 pub type ServerRequestHandler =
     Arc<dyn Fn(Value, String, JsonRpcId) -> ServerRequestFuture + Send + Sync>;
+pub type StdoutLineInterceptor = Arc<dyn Fn(&str) -> Option<AcpError> + Send + Sync>;
 type NotificationHandler = Arc<dyn Fn(Value, String) + Send + Sync>;
 type CloseHandler = Arc<dyn Fn(AcpError) + Send + Sync>;
 
@@ -122,6 +123,7 @@ struct TransportInner {
     writer: Mutex<Option<Box<dyn AsyncWrite + Send + Unpin>>>,
     pid: Option<u32>,
     config: AcpTransportConfig,
+    stdout_line_interceptor: Option<StdoutLineInterceptor>,
     next_id: AtomicU64,
     pending: Mutex<HashMap<u64, PendingRequest>>,
     notification_handlers: Mutex<HashMap<String, HashMap<u64, NotificationHandler>>>,
@@ -158,6 +160,14 @@ impl Drop for TransportInner {
 
 impl AcpTransport {
     pub async fn spawn(spec: &AcpLaunchSpec, config: AcpTransportConfig) -> AcpResult<Self> {
+        Self::spawn_with_interceptor(spec, config, None).await
+    }
+
+    pub async fn spawn_with_interceptor(
+        spec: &AcpLaunchSpec,
+        config: AcpTransportConfig,
+        stdout_line_interceptor: Option<StdoutLineInterceptor>,
+    ) -> AcpResult<Self> {
         let mut command = Command::new(&spec.binary);
         command.args(&spec.args);
         if let Some(cwd) = spec.cwd.as_ref() {
@@ -189,7 +199,14 @@ impl AcpTransport {
         let stderr = child.stderr.take();
 
         let has_stderr = stderr.is_some();
-        let transport = Self::from_parts(stdout, stdin, pid, has_stderr, config);
+        let transport = Self::from_parts(
+            stdout,
+            stdin,
+            pid,
+            has_stderr,
+            config,
+            stdout_line_interceptor,
+        );
         if let Some(stderr) = stderr {
             drain_stderr(Arc::downgrade(&transport.inner), stderr);
         }
@@ -215,7 +232,20 @@ impl AcpTransport {
         R: AsyncRead + Send + Unpin + 'static,
         W: AsyncWrite + Send + Unpin + 'static,
     {
-        Self::from_parts(reader, writer, None, false, config)
+        Self::from_parts(reader, writer, None, false, config, None)
+    }
+
+    pub fn from_io_with_interceptor<R, W>(
+        reader: R,
+        writer: W,
+        config: AcpTransportConfig,
+        stdout_line_interceptor: Option<StdoutLineInterceptor>,
+    ) -> Self
+    where
+        R: AsyncRead + Send + Unpin + 'static,
+        W: AsyncWrite + Send + Unpin + 'static,
+    {
+        Self::from_parts(reader, writer, None, false, config, stdout_line_interceptor)
     }
 
     fn from_parts<R, W>(
@@ -224,6 +254,7 @@ impl AcpTransport {
         pid: Option<u32>,
         has_stderr: bool,
         config: AcpTransportConfig,
+        stdout_line_interceptor: Option<StdoutLineInterceptor>,
     ) -> Self
     where
         R: AsyncRead + Send + Unpin + 'static,
@@ -233,6 +264,7 @@ impl AcpTransport {
             writer: Mutex::new(Some(Box::new(writer))),
             pid,
             config,
+            stdout_line_interceptor,
             next_id: AtomicU64::new(1),
             pending: Mutex::new(HashMap::new()),
             notification_handlers: Mutex::new(HashMap::new()),
@@ -602,13 +634,9 @@ impl TransportInner {
         }
     }
 
-    async fn fail_with_malformed_frame(&self, line: &str, reason: impl Into<String>) {
-        let error = AcpError::MalformedFrame {
-            line: truncate_for_error(line),
-            reason: reason.into(),
-        };
+    async fn fail_with_fatal_error(&self, error: AcpError) {
         // Record the structured error and fail pending callers BEFORE tearing down
-        // the subprocess so child exit cannot race and mask the MalformedFrame error.
+        // the subprocess so child exit cannot race and mask the fatal error.
         self.mark_closed(None, Some(error)).await;
         self.close_stdin().await;
         if self.pid.is_some() && !self.child_exited.load(Ordering::Acquire) {
@@ -617,6 +645,14 @@ impl TransportInner {
                 self.kill_process_group_once();
             }
         }
+    }
+
+    async fn fail_with_malformed_frame(&self, line: &str, reason: impl Into<String>) {
+        let error = AcpError::MalformedFrame {
+            line: truncate_for_error(line),
+            reason: reason.into(),
+        };
+        self.fail_with_fatal_error(error).await;
     }
 
     async fn mark_closed(&self, exit_code: Option<i32>, explicit_error: Option<AcpError>) {
@@ -711,11 +747,19 @@ where
     }
 }
 
-/// Returns `false` if the frame was malformed and the transport has been terminated.
+/// Returns `false` if the frame was malformed or intercepted as a fatal error and the transport has been terminated.
 async fn dispatch_line(inner: &Arc<TransportInner>, line: &str) -> bool {
     let value = match serde_json::from_str::<Value>(line) {
         Ok(value) => value,
         Err(error) => {
+            if let Some(intercepted) = inner
+                .stdout_line_interceptor
+                .as_ref()
+                .and_then(|hook| hook(line))
+            {
+                inner.fail_with_fatal_error(intercepted).await;
+                return false;
+            }
             inner
                 .fail_with_malformed_frame(line, format!("invalid JSON: {error}"))
                 .await;

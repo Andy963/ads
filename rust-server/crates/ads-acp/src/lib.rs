@@ -1,6 +1,8 @@
 pub mod bridge;
 pub mod driver;
+pub mod drivers;
 pub mod error;
+pub mod prompt_runner;
 pub mod protocol;
 pub mod session;
 pub mod supervisor;
@@ -12,7 +14,17 @@ pub use bridge::{
     resolve_permission_outcome,
 };
 pub use driver::{AcpDriver, AcpLaunchContext, AcpLaunchSpec, AcpSessionContext, GenericAcpDriver};
+pub use drivers::{
+    AGY_APP_DATA_DIR_NAME, AGY_AUTH_STDOUT_PREFIX, AGY_BINARY_ENV, AGY_CODE_REDIRECT_URI,
+    AGY_DRIVER_ID, AGY_NO_BROWSER_PREFIX, AgyAuthConfig, AgyAuthMethod, AgyAuthUrlKind,
+    AgyAuthorizationUrl, AgyDriver, AgyDriverConfig, AgyIsolatedProfile, AgyLoginHandle,
+    AgyProbeCache, AgyProbeResult, AgyProbeStatus, AgyProfileMode, DEFAULT_AGY_BINARY,
+    DEFAULT_AGY_PROBE_TTL, PreparedAgyProfile, build_agy_launch_spec, logout_agy_profile,
+    parse_agy_authorization_url, prepare_agy_isolated_profile, probe_agy_runtime,
+    resolve_agy_binary, resolve_agy_profile_dir, start_agy_login, validate_agy_login_response,
+};
 pub use error::{AcpError, AcpResult, DriverErrorDetails, RpcErrorDetails};
+pub use prompt_runner::{ACP_THREAD_NAMESPACE, AcpPromptRunner, AcpPromptRunnerConfig};
 pub use protocol::{
     ACP_PROTOCOL_VERSION, AgentCapabilities, AuthMethod, AvailableCommand, ClientCapabilities,
     CompactionUpdateInfo, ConfigOption, ConfigOptionChoice, ConfigOptionGroup, ConfigOptionValue,
