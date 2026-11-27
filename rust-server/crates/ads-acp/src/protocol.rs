@@ -5,6 +5,14 @@ use serde_json::{Map, Value};
 
 pub const ACP_PROTOCOL_VERSION: u32 = 1;
 
+fn deserialize_null_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    T: Default + Deserialize<'de>,
+    D: Deserializer<'de>,
+{
+    Ok(Option::<T>::deserialize(deserializer)?.unwrap_or_default())
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum JsonRpcId {
@@ -33,9 +41,9 @@ pub struct ImplementationInfo {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FileSystemCapabilities {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_null_default")]
     pub read_text_file: bool,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_null_default")]
     pub write_text_file: bool,
 }
 
@@ -44,7 +52,7 @@ pub struct FileSystemCapabilities {
 pub struct ClientCapabilities {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fs: Option<FileSystemCapabilities>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_null_default")]
     pub terminal: bool,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
@@ -53,20 +61,20 @@ pub struct ClientCapabilities {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PromptCapabilities {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_null_default")]
     pub image: bool,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_null_default")]
     pub audio: bool,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_null_default")]
     pub embedded_context: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct McpCapabilities {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_null_default")]
     pub http: bool,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_null_default")]
     pub sse: bool,
 }
 
@@ -86,13 +94,13 @@ pub struct SessionCapabilities {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentCapabilities {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_null_default")]
     pub load_session: bool,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_null_default")]
     pub prompt_capabilities: PromptCapabilities,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_null_default")]
     pub mcp_capabilities: McpCapabilities,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_null_default")]
     pub session_capabilities: SessionCapabilities,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
@@ -131,7 +139,7 @@ pub struct AuthMethod {
 #[serde(rename_all = "camelCase")]
 pub struct InitializeRequest {
     pub protocol_version: u32,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_null_default")]
     pub client_capabilities: ClientCapabilities,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client_info: Option<ImplementationInfo>,
@@ -141,11 +149,11 @@ pub struct InitializeRequest {
 #[serde(rename_all = "camelCase")]
 pub struct InitializeResponse {
     pub protocol_version: u32,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_null_default")]
     pub agent_capabilities: AgentCapabilities,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_info: Option<ImplementationInfo>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_null_default")]
     pub auth_methods: Vec<AuthMethod>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
@@ -205,12 +213,18 @@ pub struct SessionModeInfo {
 #[serde(rename_all = "camelCase")]
 pub struct SessionModeState {
     pub current_mode_id: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_null_default")]
     pub available_modes: Vec<SessionModeInfo>,
 }
 
 fn default_select_option_type() -> String {
     "select".to_string()
+}
+
+fn deserialize_select_option_type<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<String, D::Error> {
+    Ok(Option::<String>::deserialize(deserializer)?.unwrap_or_else(default_select_option_type))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -227,7 +241,7 @@ pub struct ConfigOptionValue {
 pub struct ConfigOptionGroup {
     pub group: String,
     pub name: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_null_default")]
     pub options: Vec<ConfigOptionValue>,
 }
 
@@ -247,10 +261,14 @@ pub struct ConfigOption {
     pub description: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub category: Option<String>,
-    #[serde(rename = "type", default = "default_select_option_type")]
+    #[serde(
+        rename = "type",
+        default = "default_select_option_type",
+        deserialize_with = "deserialize_select_option_type"
+    )]
     pub option_type: String,
     pub current_value: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_null_default")]
     pub options: Vec<ConfigOptionChoice>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
@@ -327,6 +345,10 @@ impl ConfigOptionsState {
             .or_else(|| self.get_by_id("reasoning_effort"))
     }
 
+    pub fn resolve_mode(&self) -> Option<&ConfigOption> {
+        self.get_by_category("mode")
+    }
+
     pub fn is_empty(&self) -> bool {
         self.by_id.is_empty()
     }
@@ -344,7 +366,7 @@ impl ConfigOptionsState {
 #[serde(rename_all = "camelCase")]
 pub struct SessionNewRequest {
     pub cwd: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_null_default")]
     pub mcp_servers: Vec<Value>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
@@ -356,7 +378,7 @@ pub struct SessionNewResponse {
     pub session_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub modes: Option<SessionModeState>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_null_default")]
     pub config_options: Vec<ConfigOption>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
@@ -367,7 +389,7 @@ pub struct SessionNewResponse {
 pub struct SessionResumeRequest {
     pub session_id: String,
     pub cwd: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_null_default")]
     pub mcp_servers: Vec<Value>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
@@ -380,7 +402,7 @@ pub struct SessionResumeResponse {
     pub session_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub modes: Option<SessionModeState>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_null_default")]
     pub config_options: Vec<ConfigOption>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
@@ -391,7 +413,7 @@ pub struct SessionResumeResponse {
 pub struct SessionLoadRequest {
     pub session_id: String,
     pub cwd: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_null_default")]
     pub mcp_servers: Vec<Value>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
@@ -404,7 +426,7 @@ pub struct SessionLoadResponse {
     pub session_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub modes: Option<SessionModeState>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_null_default")]
     pub config_options: Vec<ConfigOption>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
@@ -437,7 +459,7 @@ pub struct SessionSetConfigOptionRequest {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionSetConfigOptionResponse {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_null_default")]
     pub config_options: Vec<ConfigOption>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
@@ -455,9 +477,38 @@ pub struct EmbeddedResource {
     pub blob: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ContentBlock {
+    Text {
+        text: String,
+        annotations: Option<Value>,
+    },
+    Resource {
+        resource: EmbeddedResource,
+        annotations: Option<Value>,
+    },
+    ResourceLink {
+        uri: String,
+        name: String,
+        title: Option<String>,
+        description: Option<String>,
+        mime_type: Option<String>,
+    },
+    Image {
+        data: String,
+        mime_type: String,
+        uri: Option<String>,
+    },
+    Audio {
+        data: String,
+        mime_type: String,
+    },
+    Unknown(Value),
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum KnownContentBlock {
     Text {
         text: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -485,6 +536,103 @@ pub enum ContentBlock {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         uri: Option<String>,
     },
+    Audio {
+        data: String,
+        #[serde(rename = "mimeType")]
+        mime_type: String,
+    },
+}
+
+impl Serialize for ContentBlock {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::Text { text, annotations } => KnownContentBlock::Text {
+                text: text.clone(),
+                annotations: annotations.clone(),
+            }
+            .serialize(serializer),
+            Self::Resource {
+                resource,
+                annotations,
+            } => KnownContentBlock::Resource {
+                resource: resource.clone(),
+                annotations: annotations.clone(),
+            }
+            .serialize(serializer),
+            Self::ResourceLink {
+                uri,
+                name,
+                title,
+                description,
+                mime_type,
+            } => KnownContentBlock::ResourceLink {
+                uri: uri.clone(),
+                name: name.clone(),
+                title: title.clone(),
+                description: description.clone(),
+                mime_type: mime_type.clone(),
+            }
+            .serialize(serializer),
+            Self::Image {
+                data,
+                mime_type,
+                uri,
+            } => KnownContentBlock::Image {
+                data: data.clone(),
+                mime_type: mime_type.clone(),
+                uri: uri.clone(),
+            }
+            .serialize(serializer),
+            Self::Audio { data, mime_type } => KnownContentBlock::Audio {
+                data: data.clone(),
+                mime_type: mime_type.clone(),
+            }
+            .serialize(serializer),
+            Self::Unknown(value) => value.serialize(serializer),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for ContentBlock {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = Value::deserialize(deserializer)?;
+        match serde_json::from_value::<KnownContentBlock>(value.clone()) {
+            Ok(KnownContentBlock::Text { text, annotations }) => {
+                Ok(Self::Text { text, annotations })
+            }
+            Ok(KnownContentBlock::Resource {
+                resource,
+                annotations,
+            }) => Ok(Self::Resource {
+                resource,
+                annotations,
+            }),
+            Ok(KnownContentBlock::ResourceLink {
+                uri,
+                name,
+                title,
+                description,
+                mime_type,
+            }) => Ok(Self::ResourceLink {
+                uri,
+                name,
+                title,
+                description,
+                mime_type,
+            }),
+            Ok(KnownContentBlock::Image {
+                data,
+                mime_type,
+                uri,
+            }) => Ok(Self::Image {
+                data,
+                mime_type,
+                uri,
+            }),
+            Ok(KnownContentBlock::Audio { data, mime_type }) => Ok(Self::Audio { data, mime_type }),
+            Err(_) => Ok(Self::Unknown(value)),
+        }
+    }
 }
 
 impl ContentBlock {
@@ -626,9 +774,9 @@ pub struct ToolCallInfo {
     pub kind: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_null_default")]
     pub content: Vec<Value>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_null_default")]
     pub locations: Vec<ToolCallLocation>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub raw_input: Option<Value>,
@@ -654,7 +802,7 @@ pub struct PlanEntry {
 #[serde(rename_all = "camelCase")]
 pub struct AvailableCommand {
     pub name: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_null_default")]
     pub description: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input: Option<Value>,
@@ -749,7 +897,7 @@ impl SessionUpdate {
             "plan" => {
                 #[derive(Deserialize)]
                 struct PlanPayload {
-                    #[serde(default)]
+                    #[serde(default, deserialize_with = "deserialize_null_default")]
                     entries: Vec<PlanEntry>,
                 }
                 let payload: PlanPayload = serde_json::from_value(value)
@@ -762,7 +910,7 @@ impl SessionUpdate {
                 #[derive(Deserialize)]
                 #[serde(rename_all = "camelCase")]
                 struct CommandsPayload {
-                    #[serde(default)]
+                    #[serde(default, deserialize_with = "deserialize_null_default")]
                     available_commands: Vec<AvailableCommand>,
                 }
                 let payload: CommandsPayload = serde_json::from_value(value)
@@ -787,7 +935,7 @@ impl SessionUpdate {
                 #[derive(Deserialize)]
                 #[serde(rename_all = "camelCase")]
                 struct ConfigPayload {
-                    #[serde(default)]
+                    #[serde(default, deserialize_with = "deserialize_null_default")]
                     config_options: Vec<ConfigOption>,
                 }
                 let payload: ConfigPayload = serde_json::from_value(value)
@@ -896,7 +1044,7 @@ pub struct PermissionOption {
 pub struct RequestPermissionParams {
     pub session_id: String,
     pub tool_call: ToolCallInfo,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_null_default")]
     pub options: Vec<PermissionOption>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
@@ -958,7 +1106,7 @@ mod tests {
     }
 
     #[test]
-    fn parses_session_update_variants_and_unknown_safely() {
+    fn parses_session_update_variants_null_fields_and_unknown_safely() {
         let chunk = SessionUpdateNotification::from_params(json!({
             "sessionId": "sess-1",
             "update": {
@@ -975,6 +1123,23 @@ mod tests {
             } if text == "hello"
         ));
 
+        let tool_update_with_nulls = SessionUpdateNotification::from_params(json!({
+            "sessionId": "sess-1",
+            "update": {
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": "tc-null",
+                "status": "completed",
+                "content": null,
+                "locations": null
+            }
+        }))
+        .expect("parse tool_call_update with nulls");
+        assert!(matches!(
+            tool_update_with_nulls.update,
+            SessionUpdate::ToolCallUpdate(ref info)
+                if info.tool_call_id == "tc-null" && info.content.is_empty() && info.locations.is_empty()
+        ));
+
         let unknown = SessionUpdateNotification::from_params(json!({
             "sessionId": "sess-1",
             "update": {
@@ -984,5 +1149,20 @@ mod tests {
         }))
         .expect("parse unknown");
         assert!(matches!(unknown.update, SessionUpdate::Unknown(_)));
+
+        let audio_chunk = SessionUpdateNotification::from_params(json!({
+            "sessionId": "sess-1",
+            "update": {
+                "sessionUpdate": "agent_message_chunk",
+                "content": { "type": "audio", "data": "AA==", "mimeType": "audio/wav" }
+            }
+        }))
+        .expect("parse audio block");
+        assert!(matches!(
+            audio_chunk.update,
+            SessionUpdate::AgentMessageChunk {
+                content: ContentBlock::Audio { .. }
+            }
+        ));
     }
 }

@@ -8,7 +8,7 @@ use tokio::sync::{Mutex, watch};
 
 use crate::bridge::{AcpStreamEvent, PermissionHandler};
 use crate::driver::{AcpDriver, AcpLaunchContext, AcpSessionContext};
-use crate::error::AcpResult;
+use crate::error::{AcpError, AcpResult};
 use crate::session::{AcpPromptRequest, AcpSession, AcpSessionConfig, AcpTurnResult};
 
 pub const DEFAULT_IDLE_TTL: Duration = Duration::from_secs(300);
@@ -19,8 +19,8 @@ pub struct AcpSupervisorConfig {
     pub idle_ttl: Duration,
     pub reap_interval: Duration,
     pub session: AcpSessionConfig,
-    /// When `session/resume` fails with a remote error (e.g., evicted/unknown session),
-    /// fall back to `session/new` automatically if true.
+    /// When `session/resume` or `session/load` fails because the remote session no longer
+    /// exists, fall back to `session/new` automatically if true.
     pub fallback_to_new_on_resume_error: bool,
 }
 
@@ -116,8 +116,31 @@ impl ManagedSessionEntry {
     }
 }
 
+struct InFlightGuard<'a> {
+    entries: &'a StdMutex<HashMap<String, ManagedSessionEntry>>,
+    session_key: String,
+    session: Option<Arc<AcpSession>>,
+}
+
+impl Drop for InFlightGuard<'_> {
+    fn drop(&mut self) {
+        let mut entries = self.entries.lock().expect("supervisor entries lock");
+        if let Some(entry) = entries.get_mut(&self.session_key) {
+            entry.in_flight = false;
+            entry.last_active_at = Instant::now();
+            if self
+                .session
+                .as_ref()
+                .is_some_and(|session| session.is_closed())
+            {
+                entry.session = None;
+            }
+        }
+    }
+}
+
 /// Manages one isolated ACP subprocess per active ADS session/thread with idle TTL
-/// reclamation and automatic `session/resume` re-attachment on subsequent turns.
+/// reclamation and automatic `session/resume` / `session/load` re-attachment on subsequent turns.
 pub struct AcpSessionSupervisor {
     driver: Arc<dyn AcpDriver>,
     permission_handler: Arc<dyn PermissionHandler>,
@@ -207,6 +230,9 @@ impl AcpSessionSupervisor {
         session_request: SupervisedSessionRequest,
         prompt_request: AcpPromptRequest,
     ) -> AcpResult<SupervisedTurnResult> {
+        if *self.shutdown_tx.borrow() {
+            return Err(AcpError::Cancelled);
+        }
         let session_key = session_request.session_key.trim().to_string();
         let session_lock = {
             let mut entries = self.entries.lock().expect("supervisor entries lock");
@@ -216,6 +242,9 @@ impl AcpSessionSupervisor {
             Arc::clone(&entry.session_lock)
         };
         let _guard = session_lock.lock().await;
+        if *self.shutdown_tx.borrow() {
+            return Err(AcpError::Cancelled);
+        }
 
         let (existing_live, saved_session_id) = {
             let mut entries = self.entries.lock().expect("supervisor entries lock");
@@ -234,24 +263,27 @@ impl AcpSessionSupervisor {
             (existing, saved)
         };
 
-        let (session, attach_mode, replayed_events) = match existing_live {
-            Some(session) => (session, SessionAttachMode::ReusedLive, Vec::new()),
-            None => match self
-                .spawn_and_attach(&session_request, saved_session_id.as_deref())
-                .await
-            {
-                Ok(attached) => attached,
-                Err(error) => {
-                    let mut entries = self.entries.lock().expect("supervisor entries lock");
-                    if let Some(entry) = entries.get_mut(&session_key) {
-                        entry.in_flight = false;
-                        entry.last_active_at = Instant::now();
-                    }
-                    return Err(error);
-                }
-            },
+        // RAII guard ensures `in_flight` is cleared even if this future is cancelled/dropped.
+        let mut in_flight_guard = InFlightGuard {
+            entries: &self.entries,
+            session_key: session_key.clone(),
+            session: existing_live.clone(),
         };
 
+        let (session, attach_mode, replayed_events) = match existing_live {
+            Some(session) => (session, SessionAttachMode::ReusedLive, Vec::new()),
+            None => {
+                self.spawn_and_attach(&session_request, saved_session_id.as_deref())
+                    .await?
+            }
+        };
+
+        if *self.shutdown_tx.borrow() {
+            session.shutdown().await;
+            return Err(AcpError::Cancelled);
+        }
+
+        in_flight_guard.session = Some(Arc::clone(&session));
         {
             let mut entries = self.entries.lock().expect("supervisor entries lock");
             if let Some(entry) = entries.get_mut(&session_key) {
@@ -260,20 +292,9 @@ impl AcpSessionSupervisor {
             }
         }
 
-        let turn_result = session.prompt(prompt_request).await;
+        let turn = session.prompt(prompt_request).await?;
+        drop(in_flight_guard);
 
-        {
-            let mut entries = self.entries.lock().expect("supervisor entries lock");
-            if let Some(entry) = entries.get_mut(&session_key) {
-                entry.in_flight = false;
-                entry.last_active_at = Instant::now();
-                if session.is_closed() {
-                    entry.session = None;
-                }
-            }
-        }
-
-        let turn = turn_result?;
         Ok(SupervisedTurnResult {
             attach_mode,
             replayed_events,
@@ -414,39 +435,52 @@ impl AcpSessionSupervisor {
             }
         };
 
+        let supports_resume = init.agent_capabilities.supports_resume();
+        let supports_load = init.agent_capabilities.supports_load_session();
+
         if let Some(saved_id) = saved_session_id.filter(|id| !id.trim().is_empty()) {
-            if request.prefer_load && init.agent_capabilities.supports_load_session() {
+            let attempt_load_first = (request.prefer_load || !supports_resume) && supports_load;
+
+            if attempt_load_first {
                 match session.load_session(saved_id, &session_ctx, None).await {
                     Ok(loaded) => {
                         return Ok((session, SessionAttachMode::Loaded, loaded.replayed_events));
                     }
                     Err(error) => {
-                        if !self.config.fallback_to_new_on_resume_error || session.is_closed() {
+                        if !self.should_fallback_to_new(&session, &error) {
                             session.shutdown().await;
                             return Err(error);
                         }
+                        return self.fallback_to_new(session, &session_ctx).await;
                     }
                 }
             } else {
                 match session.resume_session(saved_id, &session_ctx).await {
                     Ok(_) => return Ok((session, SessionAttachMode::Resumed, Vec::new())),
                     Err(error) => {
-                        if !self.config.fallback_to_new_on_resume_error
-                            || session.is_closed()
-                            || error.is_auth_required()
-                        {
+                        if is_method_not_found(&error) && supports_load {
+                            match session.load_session(saved_id, &session_ctx, None).await {
+                                Ok(loaded) => {
+                                    return Ok((
+                                        session,
+                                        SessionAttachMode::Loaded,
+                                        loaded.replayed_events,
+                                    ));
+                                }
+                                Err(load_error) => {
+                                    if !self.should_fallback_to_new(&session, &load_error) {
+                                        session.shutdown().await;
+                                        return Err(load_error);
+                                    }
+                                    return self.fallback_to_new(session, &session_ctx).await;
+                                }
+                            }
+                        }
+                        if !self.should_fallback_to_new(&session, &error) {
                             session.shutdown().await;
                             return Err(error);
                         }
-                        if let Err(new_error) = session.new_session(&session_ctx).await {
-                            session.shutdown().await;
-                            return Err(new_error);
-                        }
-                        return Ok((
-                            session,
-                            SessionAttachMode::CreatedAfterResumeFallback,
-                            Vec::new(),
-                        ));
+                        return self.fallback_to_new(session, &session_ctx).await;
                     }
                 }
             }
@@ -458,4 +492,31 @@ impl AcpSessionSupervisor {
         }
         Ok((session, SessionAttachMode::CreatedNew, Vec::new()))
     }
+
+    fn should_fallback_to_new(&self, session: &AcpSession, error: &AcpError) -> bool {
+        self.config.fallback_to_new_on_resume_error
+            && !session.is_closed()
+            && !error.is_auth_required()
+            && !error.is_timeout()
+    }
+
+    async fn fallback_to_new(
+        &self,
+        session: Arc<AcpSession>,
+        session_ctx: &AcpSessionContext,
+    ) -> AcpResult<(Arc<AcpSession>, SessionAttachMode, Vec<AcpStreamEvent>)> {
+        if let Err(new_error) = session.new_session(session_ctx).await {
+            session.shutdown().await;
+            return Err(new_error);
+        }
+        Ok((
+            session,
+            SessionAttachMode::CreatedAfterResumeFallback,
+            Vec::new(),
+        ))
+    }
+}
+
+fn is_method_not_found(error: &AcpError) -> bool {
+    matches!(error, AcpError::Rpc(details) if details.code == -32601)
 }

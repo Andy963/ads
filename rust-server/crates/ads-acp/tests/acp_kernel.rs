@@ -482,7 +482,7 @@ async fn supervisor_isolates_sessions_reclaims_idle_gracefully_and_resumes_on_ne
         driver,
         Arc::new(AutoApprovePermissionHandler),
         AcpSupervisorConfig {
-            idle_ttl: Duration::from_millis(120),
+            idle_ttl: Duration::from_millis(250),
             reap_interval: Duration::from_millis(30),
             session: AcpSessionConfig::default(),
             fallback_to_new_on_resume_error: true,
@@ -496,6 +496,7 @@ async fn supervisor_isolates_sessions_reclaims_idle_gracefully_and_resumes_on_ne
         .run_turn(req_a.clone(), AcpPromptRequest::text("a1", "echo_session"))
         .await
         .expect("turn a1");
+    let pid_a1 = supervisor.active_pid("thread-a").expect("pid a1");
     let turn_b1 = supervisor
         .run_turn(req_b.clone(), AcpPromptRequest::text("b1", "echo_session"))
         .await
@@ -505,7 +506,6 @@ async fn supervisor_isolates_sessions_reclaims_idle_gracefully_and_resumes_on_ne
     assert_eq!(turn_b1.attach_mode, SessionAttachMode::CreatedNew);
     assert_eq!(supervisor.active_process_count(), 2);
 
-    let pid_a1 = supervisor.active_pid("thread-a").expect("pid a1");
     let pid_b1 = supervisor.active_pid("thread-b").expect("pid b1");
     assert_ne!(pid_a1, pid_b1, "sessions must run in isolated subprocesses");
 
@@ -687,7 +687,40 @@ async fn failure_modes_crash_malformed_frame_timeout_auth_and_process_group_clea
             .await
             .expect_err("expected timeout error");
         assert!(err.is_timeout(), "expected Timeout, got {err:?}");
-        session.shutdown().await;
+        assert!(
+            session.is_closed(),
+            "timed-out prompt must close transport so desynchronized process is never reused"
+        );
+    }
+
+    // 3b) Dropping AcpSession without explicit shutdown() still terminates subprocess cleanly
+    #[cfg(unix)]
+    {
+        let temp = TempDir::new().expect("temp dir");
+        let session = AcpSession::spawn(
+            build_mock_driver(temp.path()),
+            &AcpLaunchContext {
+                session_key: "drop-cleanup".to_string(),
+                workspace_root: temp.path().to_path_buf(),
+                ..Default::default()
+            },
+            Arc::new(AutoApprovePermissionHandler),
+            AcpSessionConfig::default(),
+        )
+        .await
+        .expect("spawn");
+        session.initialize().await.expect("init");
+        let pid = session.transport().pid().expect("pid") as i32;
+        drop(session);
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        while unsafe { libc::kill(pid, 0) } == 0 {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "subprocess leaked when AcpSession was dropped without explicit shutdown()"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
     }
 
     // 4) Driver RPC error mapping (-32000 -> AuthenticationRequired)

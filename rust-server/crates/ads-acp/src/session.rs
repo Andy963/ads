@@ -162,6 +162,7 @@ struct SessionRuntimeState {
     available_commands: Vec<AvailableCommand>,
     active_bridge: Option<Arc<StdMutex<AcpEventBridge>>>,
     active_permission_cancel: Option<watch::Sender<bool>>,
+    close_cancel_tx: watch::Sender<bool>,
     subscriptions: Vec<SubscriptionHandle>,
 }
 
@@ -171,6 +172,52 @@ enum SubscriptionHandle {
     Close(Subscription),
 }
 
+struct LoadSessionGuard<'a> {
+    state: &'a StdMutex<SessionRuntimeState>,
+    previous_session_id: Option<String>,
+    committed: bool,
+}
+
+impl Drop for LoadSessionGuard<'_> {
+    fn drop(&mut self) {
+        let mut guard = self.state.lock().expect("session state lock");
+        guard.active_bridge = None;
+        if !self.committed {
+            guard.session_id = self.previous_session_id.take();
+        }
+    }
+}
+
+struct ActiveTurnGuard<'a> {
+    state: &'a StdMutex<SessionRuntimeState>,
+    transport: &'a AcpTransport,
+    perm_cancel_tx: watch::Sender<bool>,
+    completed_cleanly: bool,
+}
+
+impl Drop for ActiveTurnGuard<'_> {
+    fn drop(&mut self) {
+        let _ = self.perm_cancel_tx.send(true);
+        let mut guard = self.state.lock().expect("session state lock");
+        guard.active_bridge = None;
+        guard.active_permission_cancel = None;
+        if self.completed_cleanly {
+            if !self.transport.is_closed() && guard.lifecycle != AcpSessionLifecycle::Closed {
+                guard.lifecycle = AcpSessionLifecycle::Ready;
+            }
+        } else {
+            // Dropped mid-turn (e.g., outer future cancellation): mark closed and tear down
+            // transport asynchronously so a desynchronized subprocess is never reused.
+            guard.lifecycle = AcpSessionLifecycle::Closed;
+            let _ = guard.close_cancel_tx.send(true);
+            let transport = self.transport.clone();
+            tokio::spawn(async move {
+                transport.close().await;
+            });
+        }
+    }
+}
+
 pub struct AcpSession {
     transport: AcpTransport,
     driver: Arc<dyn AcpDriver>,
@@ -178,6 +225,16 @@ pub struct AcpSession {
     permission_handler: Arc<dyn PermissionHandler>,
     state: Arc<StdMutex<SessionRuntimeState>>,
     turn_lock: Mutex<()>,
+}
+
+impl Drop for AcpSession {
+    fn drop(&mut self) {
+        let guard = self.state.lock().expect("session state lock");
+        if let Some(cancel_tx) = guard.active_permission_cancel.as_ref() {
+            let _ = cancel_tx.send(true);
+        }
+        let _ = guard.close_cancel_tx.send(true);
+    }
 }
 
 impl AcpSession {
@@ -198,8 +255,13 @@ impl AcpSession {
         permission_handler: Arc<dyn PermissionHandler>,
         config: AcpSessionConfig,
     ) -> Arc<Self> {
+        let (close_cancel_tx, _) = watch::channel(transport.is_closed());
         let state = Arc::new(StdMutex::new(SessionRuntimeState {
-            lifecycle: AcpSessionLifecycle::Created,
+            lifecycle: if transport.is_closed() {
+                AcpSessionLifecycle::Closed
+            } else {
+                AcpSessionLifecycle::Created
+            },
             initialize_response: None,
             session_id: None,
             modes: None,
@@ -207,24 +269,27 @@ impl AcpSession {
             available_commands: Vec::new(),
             active_bridge: None,
             active_permission_cancel: None,
+            close_cancel_tx,
             subscriptions: Vec::new(),
         }));
 
-        let update_state = Arc::clone(&state);
+        // All transport handlers capture only Weak<SessionRuntimeState> and never hold a
+        // strong AcpTransport clone, avoiding reference cycles so Drop always works.
+        let update_state = Arc::downgrade(&state);
         let update_sub = transport
             .on_notification("session/update", move |params, _| {
-                handle_session_update(&update_state, params);
+                if let Some(state) = update_state.upgrade() {
+                    handle_session_update(&state, params);
+                }
             })
             .await;
 
-        let perm_state = Arc::clone(&state);
+        let perm_state = Arc::downgrade(&state);
         let perm_handler = Arc::clone(&permission_handler);
-        let perm_transport = transport.clone();
         let perm_sub = transport
             .on_server_request("session/request_permission", move |params, _, rpc_id| {
-                let perm_state = Arc::clone(&perm_state);
+                let perm_state = perm_state.clone();
                 let perm_handler = Arc::clone(&perm_handler);
-                let perm_transport = perm_transport.clone();
                 async move {
                     let parsed: RequestPermissionParams =
                         serde_json::from_value(params).map_err(|error| {
@@ -233,14 +298,23 @@ impl AcpSession {
                                 message: error.to_string(),
                             }
                         })?;
+                    let Some(state) = perm_state.upgrade() else {
+                        let response = RequestPermissionResponse {
+                            outcome: PermissionOutcome::Cancelled,
+                        };
+                        return serde_json::to_value(response).map_err(|error| {
+                            AcpError::InvalidResponse {
+                                method: "session/request_permission".to_string(),
+                                message: error.to_string(),
+                            }
+                        });
+                    };
                     let cancel_rx = {
-                        let guard = perm_state.lock().expect("session state lock");
+                        let guard = state.lock().expect("session state lock");
                         if let Some(tx) = guard.active_permission_cancel.as_ref() {
                             tx.subscribe()
                         } else {
-                            let (tx, rx) = watch::channel(perm_transport.is_closed());
-                            let _ = tx;
-                            rx
+                            guard.close_cancel_tx.subscribe()
                         }
                     };
                     let request = PendingPermissionRequest {
@@ -260,13 +334,16 @@ impl AcpSession {
             })
             .await;
 
-        let close_state = Arc::clone(&state);
+        let close_state = Arc::downgrade(&state);
         let close_sub = transport
             .on_close(move |_| {
-                let mut guard = close_state.lock().expect("session state lock");
-                guard.lifecycle = AcpSessionLifecycle::Closed;
-                if let Some(cancel_tx) = guard.active_permission_cancel.as_ref() {
-                    let _ = cancel_tx.send(true);
+                if let Some(state) = close_state.upgrade() {
+                    let mut guard = state.lock().expect("session state lock");
+                    guard.lifecycle = AcpSessionLifecycle::Closed;
+                    if let Some(cancel_tx) = guard.active_permission_cancel.as_ref() {
+                        let _ = cancel_tx.send(true);
+                    }
+                    let _ = guard.close_cancel_tx.send(true);
                 }
             })
             .await;
@@ -347,12 +424,17 @@ impl AcpSession {
     }
 
     pub fn current_mode_id(&self) -> Option<String> {
-        self.state
-            .lock()
-            .expect("session state lock")
+        let guard = self.state.lock().expect("session state lock");
+        guard
             .modes
             .as_ref()
             .map(|modes| modes.current_mode_id.clone())
+            .or_else(|| {
+                guard
+                    .config_options
+                    .resolve_mode()
+                    .map(|option| option.current_value.clone())
+            })
     }
 
     pub fn config_options(&self) -> Vec<ConfigOption> {
@@ -448,10 +530,14 @@ impl AcpSession {
         {
             let mut guard = self.state.lock().expect("session state lock");
             guard.session_id = Some(response.session_id.clone());
-            guard.modes = response.modes.clone();
-            guard
-                .config_options
-                .replace_all(response.config_options.clone());
+            if response.modes.is_some() {
+                guard.modes = response.modes.clone();
+            }
+            if !response.config_options.is_empty() {
+                guard
+                    .config_options
+                    .replace_all(response.config_options.clone());
+            }
             guard.lifecycle = AcpSessionLifecycle::Ready;
         }
         Ok(response)
@@ -483,11 +569,14 @@ impl AcpSession {
                 None,
             )
             .await?;
-        let response: SessionResumeResponse =
+        let response: SessionResumeResponse = if value.is_null() {
+            SessionResumeResponse::default()
+        } else {
             serde_json::from_value(value).map_err(|error| AcpError::InvalidResponse {
                 method: "session/resume".to_string(),
                 message: error.to_string(),
-            })?;
+            })?
+        };
         let resolved_session_id = response
             .session_id
             .clone()
@@ -529,11 +618,17 @@ impl AcpSession {
             format!("load-{session_id}"),
             replay_context,
         )));
-        {
+        let previous_session_id = {
             let mut guard = self.state.lock().expect("session state lock");
-            guard.session_id = Some(session_id.to_string());
+            let prev = guard.session_id.replace(session_id.to_string());
             guard.active_bridge = Some(Arc::clone(&bridge));
-        }
+            prev
+        };
+        let mut load_guard = LoadSessionGuard {
+            state: &self.state,
+            previous_session_id,
+            committed: false,
+        };
 
         let cwd = resolve_session_cwd(context);
         let request = SessionLoadRequest {
@@ -542,21 +637,18 @@ impl AcpSession {
             mcp_servers: context.mcp_servers.clone(),
             extra: Map::new(),
         };
-        let rpc_result = self
+        let value = self
             .rpc_request("session/load", serde_json::to_value(request).unwrap(), None)
-            .await;
+            .await?;
 
-        {
-            let mut guard = self.state.lock().expect("session state lock");
-            guard.active_bridge = None;
-        }
-
-        let value = rpc_result?;
-        let response: SessionLoadResponse =
+        let response: SessionLoadResponse = if value.is_null() {
+            SessionLoadResponse::default()
+        } else {
             serde_json::from_value(value).map_err(|error| AcpError::InvalidResponse {
                 method: "session/load".to_string(),
                 message: error.to_string(),
-            })?;
+            })?
+        };
         let resolved_session_id = response
             .session_id
             .clone()
@@ -575,6 +667,9 @@ impl AcpSession {
             }
             guard.lifecycle = AcpSessionLifecycle::Ready;
         }
+        load_guard.committed = true;
+        drop(load_guard);
+
         let replayed_events = bridge.lock().expect("replay bridge lock").events().to_vec();
         Ok(LoadedSessionResult {
             response,
@@ -588,6 +683,23 @@ impl AcpSession {
         if self.current_mode_id().as_deref() == Some(target_mode_id.as_str()) {
             return Ok(false);
         }
+        // Per ACP v1, if the agent exposes mode via `configOptions` (`category: "mode"`)
+        // without legacy `modes`, route through `session/set_config_option`.
+        let mode_config_id = {
+            let guard = self.state.lock().expect("session state lock");
+            if guard.modes.is_none() {
+                guard
+                    .config_options
+                    .resolve_mode()
+                    .map(|option| option.id.clone())
+            } else {
+                None
+            }
+        };
+        if let Some(config_id) = mode_config_id {
+            return self.set_config_option(&config_id, &target_mode_id).await;
+        }
+
         let request = SessionSetModeRequest {
             session_id,
             mode_id: target_mode_id.clone(),
@@ -599,7 +711,11 @@ impl AcpSession {
                 None,
             )
             .await?;
-        let response: SessionSetModeResponse = serde_json::from_value(value).unwrap_or_default();
+        let response: SessionSetModeResponse = if value.is_null() {
+            SessionSetModeResponse::default()
+        } else {
+            serde_json::from_value(value).unwrap_or_default()
+        };
         let mut guard = self.state.lock().expect("session state lock");
         if let Some(modes) = response.modes {
             guard.modes = Some(modes);
@@ -633,11 +749,14 @@ impl AcpSession {
                 None,
             )
             .await?;
-        let response: SessionSetConfigOptionResponse =
+        let response: SessionSetConfigOptionResponse = if raw.is_null() {
+            SessionSetConfigOptionResponse::default()
+        } else {
             serde_json::from_value(raw).map_err(|error| AcpError::InvalidResponse {
                 method: "session/set_config_option".to_string(),
                 message: error.to_string(),
-            })?;
+            })?
+        };
         let mut guard = self.state.lock().expect("session state lock");
         if !response.config_options.is_empty() {
             guard.config_options.replace_all(response.config_options);
@@ -736,11 +855,7 @@ impl AcpSession {
     pub async fn prompt(&self, request: AcpPromptRequest) -> AcpResult<AcpTurnResult> {
         let _turn_guard = self.turn_lock.lock().await;
         if self.is_closed() {
-            return Err(AcpError::Closed {
-                exit_code: None,
-                graceful: self.transport.is_gracefully_closed(),
-                stderr_tail: self.transport.stderr_tail(),
-            });
+            return Err(self.transport.closed_error());
         }
         let session_id = self.require_session_id()?;
         if request
@@ -759,6 +874,16 @@ impl AcpSession {
             ConfigAlignmentReport::default()
         };
 
+        // Re-check cancellation after alignment so we never send `session/prompt`
+        // (or race `session/cancel` before `session/prompt`) if already cancelled.
+        if request
+            .cancel
+            .as_ref()
+            .is_some_and(|cancel| *cancel.borrow())
+        {
+            return Err(AcpError::Cancelled);
+        }
+
         let bridge = Arc::new(StdMutex::new(AcpEventBridge::new(
             request.client_message_id.clone(),
             request.context.clone(),
@@ -770,6 +895,12 @@ impl AcpSession {
             guard.active_bridge = Some(Arc::clone(&bridge));
             guard.active_permission_cancel = Some(perm_cancel_tx.clone());
         }
+        let mut active_guard = ActiveTurnGuard {
+            state: &self.state,
+            transport: &self.transport,
+            perm_cancel_tx: perm_cancel_tx.clone(),
+            completed_cleanly: false,
+        };
 
         let rpc_params = SessionPromptRequest {
             session_id: session_id.clone(),
@@ -786,15 +917,21 @@ impl AcpSession {
             )
             .await;
 
-        // Always cancel lingering permission requests and restore idle/closed state.
-        let _ = perm_cancel_tx.send(true);
+        let settled_cleanly = match &prompt_result {
+            Ok(_) => true,
+            Err(error) => !error.is_timeout(),
+        };
+        if !settled_cleanly {
+            // A timed-out prompt or cancel-drain leaves the subprocess potentially mid-turn.
+            // Close the transport so callers/supervisors never reuse a desynchronized session.
+            self.transport.close().await;
+            self.state.lock().expect("session state lock").lifecycle = AcpSessionLifecycle::Closed;
+        }
+        active_guard.completed_cleanly = true;
+        drop(active_guard);
+
         let (config_options, available_commands) = {
-            let mut guard = self.state.lock().expect("session state lock");
-            guard.active_bridge = None;
-            guard.active_permission_cancel = None;
-            if !self.transport.is_closed() && guard.lifecycle != AcpSessionLifecycle::Closed {
-                guard.lifecycle = AcpSessionLifecycle::Ready;
-            }
+            let guard = self.state.lock().expect("session state lock");
             (
                 guard.config_options.snapshot(),
                 guard.available_commands.clone(),
@@ -835,6 +972,7 @@ impl AcpSession {
             if let Some(cancel_tx) = guard.active_permission_cancel.as_ref() {
                 let _ = cancel_tx.send(true);
             }
+            let _ = guard.close_cancel_tx.send(true);
             std::mem::take(&mut guard.subscriptions)
         };
         for handle in subscriptions {
@@ -860,21 +998,43 @@ impl AcpSession {
         cancel: Option<watch::Receiver<bool>>,
         perm_cancel_tx: &watch::Sender<bool>,
     ) -> AcpResult<Value> {
-        let mut prompt_fut =
-            Box::pin(self.rpc_request("session/prompt", params, Some(prompt_timeout)));
+        // Phase 1: Write and flush `session/prompt` BEFORE racing with cancellation so
+        // `session/cancel` can never be written to stdin ahead of `session/prompt`.
+        let pending = self
+            .transport
+            .start_request("session/prompt", params)
+            .await
+            .map_err(|error| self.map_error(error))?;
+        let mut wait_fut = Box::pin(async move {
+            pending
+                .wait(Some(prompt_timeout))
+                .await
+                .map_err(|error| self.map_error(error))
+        });
 
         let Some(mut cancel_rx) = cancel else {
-            return prompt_fut.await;
+            let result = wait_fut.await;
+            if matches!(result, Err(AcpError::Timeout { .. })) {
+                let _ = perm_cancel_tx.send(true);
+                let _ = self.send_cancel().await;
+            }
+            return result;
         };
 
         tokio::select! {
-            result = &mut prompt_fut => result,
+            result = &mut wait_fut => {
+                if matches!(result, Err(AcpError::Timeout { .. })) {
+                    let _ = perm_cancel_tx.send(true);
+                    let _ = self.send_cancel().await;
+                }
+                result
+            }
             _ = wait_for_cancel(&mut cancel_rx) => {
                 let _ = perm_cancel_tx.send(true);
                 let _ = self.send_cancel().await;
                 // Continue draining trailing `session/update` notifications until
                 // `session/prompt` resolves or the bounded cancel drain timeout expires.
-                match tokio::time::timeout(self.config.cancel_drain_timeout, &mut prompt_fut).await {
+                match tokio::time::timeout(self.config.cancel_drain_timeout, &mut wait_fut).await {
                     Ok(result) => result,
                     Err(_) => Err(AcpError::Timeout {
                         method: "session/cancel".to_string(),
@@ -891,15 +1051,21 @@ impl AcpSession {
         params: Value,
         timeout: Option<Duration>,
     ) -> AcpResult<Value> {
-        match self.transport.request(method, params, timeout).await {
-            Ok(value) => Ok(value),
-            Err(AcpError::Rpc(details)) => Err(self.driver.map_rpc_error(
+        self.transport
+            .request(method, params, timeout)
+            .await
+            .map_err(|error| self.map_error(error))
+    }
+
+    fn map_error(&self, error: AcpError) -> AcpError {
+        match error {
+            AcpError::Rpc(details) => self.driver.map_rpc_error(
                 &details.method,
                 details.code,
                 &details.message,
                 details.data,
-            )),
-            Err(other) => Err(other),
+            ),
+            other => other,
         }
     }
 

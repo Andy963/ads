@@ -18,6 +18,7 @@ use crate::protocol::JsonRpcId;
 pub const DEFAULT_RPC_TIMEOUT: Duration = Duration::from_secs(60);
 pub const DEFAULT_GRACEFUL_EXIT_TIMEOUT: Duration = Duration::from_secs(2);
 pub const DEFAULT_TERM_EXIT_TIMEOUT: Duration = Duration::from_secs(1);
+const PIPE_DRAIN_WAIT_ON_EXIT: Duration = Duration::from_millis(250);
 const MAX_STDERR_TAIL_LINES: usize = 32;
 const MAX_MALFORMED_LINE_LEN: usize = 512;
 
@@ -47,6 +48,52 @@ impl Default for AcpTransportConfig {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Subscription {
     id: u64,
+}
+
+/// Handle for an in-flight JSON-RPC request whose frame has already been written and
+/// flushed to the transport writer.
+pub struct PendingRpc {
+    inner: Arc<TransportInner>,
+    id: u64,
+    method: String,
+    receiver: Option<oneshot::Receiver<AcpResult<Value>>>,
+}
+
+impl PendingRpc {
+    pub async fn wait(mut self, timeout: Option<Duration>) -> AcpResult<Value> {
+        let receiver = self.receiver.take().expect("PendingRpc::wait called once");
+        let effective_timeout = timeout.unwrap_or(self.inner.config.rpc_timeout);
+        if effective_timeout.is_zero() {
+            return receiver.await.map_err(|_| self.inner.closed_error())?;
+        }
+        match tokio::time::timeout(effective_timeout, receiver).await {
+            Ok(Ok(result)) => result,
+            Ok(Err(_)) => Err(self.inner.closed_error()),
+            Err(_) => {
+                self.inner.pending.lock().await.remove(&self.id);
+                Err(AcpError::Timeout {
+                    method: self.method.clone(),
+                    timeout: effective_timeout,
+                })
+            }
+        }
+    }
+}
+
+impl Drop for PendingRpc {
+    fn drop(&mut self) {
+        if self.receiver.is_some() {
+            let inner = Arc::clone(&self.inner);
+            let id = self.id;
+            if let Ok(mut pending) = inner.pending.try_lock() {
+                pending.remove(&id);
+            } else {
+                tokio::spawn(async move {
+                    inner.pending.lock().await.remove(&id);
+                });
+            }
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -86,16 +133,23 @@ struct TransportInner {
     close_reported: AtomicBool,
     graceful_close_requested: AtomicBool,
     child_exited: AtomicBool,
+    stdout_done: AtomicBool,
+    stderr_done: AtomicBool,
     group_killed: AtomicBool,
     exit_code: std::sync::Mutex<Option<i32>>,
     fatal_error: std::sync::Mutex<Option<AcpError>>,
     stderr_tail: std::sync::Mutex<VecDeque<String>>,
     closed_notify: Notify,
     exit_notify: Notify,
+    pipe_drain_notify: Notify,
 }
 
 impl Drop for TransportInner {
     fn drop(&mut self) {
+        // Close stdin first so the child gets EOF, then terminate the process group if still alive.
+        if let Ok(mut guard) = self.writer.try_lock() {
+            drop(guard.take());
+        }
         if self.pid.is_some() && !self.child_exited.load(Ordering::Acquire) {
             self.kill_process_group_once();
         }
@@ -134,17 +188,24 @@ impl AcpTransport {
             .ok_or_else(|| AcpError::Spawn("missing ACP subprocess stdout".to_string()))?;
         let stderr = child.stderr.take();
 
-        let transport = Self::from_parts(stdout, stdin, pid, config);
+        let has_stderr = stderr.is_some();
+        let transport = Self::from_parts(stdout, stdin, pid, has_stderr, config);
         if let Some(stderr) = stderr {
             drain_stderr(Arc::downgrade(&transport.inner), stderr);
         }
-        let monitor = transport.clone();
+        // Hold only a Weak reference in the child reaper task so dropping all external
+        // AcpTransport handles triggers TransportInner::drop while the child is alive.
+        let weak_monitor = Arc::downgrade(&transport.inner);
         tokio::spawn(async move {
             let exit_code = child.wait().await.ok().and_then(|status| status.code());
-            monitor.inner.record_child_exit(exit_code);
-            // If the leader exited while descendants still hold open pipes, reap the group.
-            monitor.inner.kill_process_group_once();
-            monitor.inner.mark_closed(exit_code, None).await;
+            if let Some(inner) = weak_monitor.upgrade() {
+                inner.record_child_exit(exit_code);
+                // Reap any descendants that might still hold output pipes open.
+                inner.kill_process_group_once();
+                // Allow stdout/stderr readers to drain buffered frames before failing pending RPCs.
+                inner.wait_for_pipes_drained(PIPE_DRAIN_WAIT_ON_EXIT).await;
+                inner.mark_closed(exit_code, None).await;
+            }
         });
         Ok(transport)
     }
@@ -154,10 +215,16 @@ impl AcpTransport {
         R: AsyncRead + Send + Unpin + 'static,
         W: AsyncWrite + Send + Unpin + 'static,
     {
-        Self::from_parts(reader, writer, None, config)
+        Self::from_parts(reader, writer, None, false, config)
     }
 
-    fn from_parts<R, W>(reader: R, writer: W, pid: Option<u32>, config: AcpTransportConfig) -> Self
+    fn from_parts<R, W>(
+        reader: R,
+        writer: W,
+        pid: Option<u32>,
+        has_stderr: bool,
+        config: AcpTransportConfig,
+    ) -> Self
     where
         R: AsyncRead + Send + Unpin + 'static,
         W: AsyncWrite + Send + Unpin + 'static,
@@ -177,12 +244,15 @@ impl AcpTransport {
             close_reported: AtomicBool::new(false),
             graceful_close_requested: AtomicBool::new(false),
             child_exited: AtomicBool::new(pid.is_none()),
+            stdout_done: AtomicBool::new(false),
+            stderr_done: AtomicBool::new(!has_stderr),
             group_killed: AtomicBool::new(false),
             exit_code: std::sync::Mutex::new(None),
             fatal_error: std::sync::Mutex::new(None),
             stderr_tail: std::sync::Mutex::new(VecDeque::new()),
             closed_notify: Notify::new(),
             exit_notify: Notify::new(),
+            pipe_drain_notify: Notify::new(),
         });
         let weak = Arc::downgrade(&inner);
         tokio::spawn(read_stdout(weak, reader));
@@ -212,12 +282,12 @@ impl AcpTransport {
         self.inner.stderr_tail_string()
     }
 
-    pub async fn request(
-        &self,
-        method: &str,
-        params: Value,
-        timeout: Option<Duration>,
-    ) -> AcpResult<Value> {
+    pub(crate) fn closed_error(&self) -> AcpError {
+        self.inner.closed_error()
+    }
+
+    /// Registers a pending request and writes + flushes its JSON-RPC frame before returning.
+    pub async fn start_request(&self, method: &str, params: Value) -> AcpResult<PendingRpc> {
         if self.is_closed() {
             return Err(self.inner.closed_error());
         }
@@ -240,22 +310,24 @@ impl AcpTransport {
             self.inner.pending.lock().await.remove(&id);
             return Err(error);
         }
+        Ok(PendingRpc {
+            inner: Arc::clone(&self.inner),
+            id,
+            method: method.to_string(),
+            receiver: Some(receiver),
+        })
+    }
 
-        let effective_timeout = timeout.unwrap_or(self.inner.config.rpc_timeout);
-        if effective_timeout.is_zero() {
-            return receiver.await.map_err(|_| self.inner.closed_error())?;
-        }
-        match tokio::time::timeout(effective_timeout, receiver).await {
-            Ok(Ok(result)) => result,
-            Ok(Err(_)) => Err(self.inner.closed_error()),
-            Err(_) => {
-                self.inner.pending.lock().await.remove(&id);
-                Err(AcpError::Timeout {
-                    method: method.to_string(),
-                    timeout: effective_timeout,
-                })
-            }
-        }
+    pub async fn request(
+        &self,
+        method: &str,
+        params: Value,
+        timeout: Option<Duration>,
+    ) -> AcpResult<Value> {
+        self.start_request(method, params)
+            .await?
+            .wait(timeout)
+            .await
     }
 
     pub async fn notify(&self, method: &str, params: Value) -> AcpResult<()> {
@@ -486,6 +558,21 @@ impl TransportInner {
         true
     }
 
+    async fn wait_for_pipes_drained(&self, timeout: Duration) {
+        let deadline = tokio::time::Instant::now() + timeout;
+        while !(self.stdout_done.load(Ordering::Acquire)
+            && self.stderr_done.load(Ordering::Acquire))
+        {
+            let now = tokio::time::Instant::now();
+            if now >= deadline {
+                break;
+            }
+            let remaining = (deadline - now).min(Duration::from_millis(15));
+            let notified = self.pipe_drain_notify.notified();
+            let _ = tokio::time::timeout(remaining, notified).await;
+        }
+    }
+
     fn signal_process_group(&self, signal: i32) {
         #[cfg(unix)]
         if let Some(pid) = self.pid.and_then(|pid| i32::try_from(pid).ok()) {
@@ -554,13 +641,15 @@ impl TransportInner {
         }
         drop(pending);
 
-        let handlers = self
-            .close_handlers
-            .lock()
-            .await
-            .values()
-            .cloned()
-            .collect::<Vec<_>>();
+        let handlers = {
+            let mut close_handlers = self.close_handlers.lock().await;
+            close_handlers.drain().map(|(_, h)| h).collect::<Vec<_>>()
+        };
+        // Clear all handler tables on close so closures cannot keep references alive.
+        self.notification_handlers.lock().await.clear();
+        self.any_notification_handlers.lock().await.clear();
+        self.server_request_handlers.lock().await.clear();
+
         for handler in handlers {
             handler(close_error.clone());
         }
@@ -589,6 +678,8 @@ where
             Ok(None) => break,
             Err(error) => {
                 if let Some(inner) = inner.upgrade() {
+                    inner.stdout_done.store(true, Ordering::Release);
+                    inner.pipe_drain_notify.notify_waiters();
                     inner
                         .mark_closed(None, Some(AcpError::Transport(error.to_string())))
                         .await;
@@ -603,10 +694,14 @@ where
             return;
         };
         if !dispatch_line(&inner, &line).await {
+            inner.stdout_done.store(true, Ordering::Release);
+            inner.pipe_drain_notify.notify_waiters();
             return;
         }
     }
     if let Some(inner) = inner.upgrade() {
+        inner.stdout_done.store(true, Ordering::Release);
+        inner.pipe_drain_notify.notify_waiters();
         // Give the child wait task a brief chance to record exit_code on process crash.
         if inner.pid.is_some() && !inner.child_exited.load(Ordering::Acquire) {
             let _ = inner.wait_for_child_exit(Duration::from_millis(100)).await;
@@ -706,7 +801,7 @@ async fn dispatch_response(
     let Some(request) = inner.pending.lock().await.remove(&id) else {
         return;
     };
-    let result = if let Some(error) = object.get("error") {
+    let result = if let Some(error) = object.get("error").filter(|value| !value.is_null()) {
         let code = error.get("code").and_then(Value::as_i64).unwrap_or(-32603);
         let message = error
             .get("message")
@@ -801,6 +896,10 @@ fn drain_stderr(inner: Weak<TransportInner>, stderr: ChildStderr) {
                 tail.pop_front();
             }
             tail.push_back(line);
+        }
+        if let Some(inner) = inner.upgrade() {
+            inner.stderr_done.store(true, Ordering::Release);
+            inner.pipe_drain_notify.notify_waiters();
         }
     });
 }

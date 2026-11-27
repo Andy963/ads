@@ -37,5 +37,5 @@ pub use supervisor::{
 };
 pub use transport::{
     AcpTransport, AcpTransportConfig, DEFAULT_GRACEFUL_EXIT_TIMEOUT, DEFAULT_RPC_TIMEOUT,
-    DEFAULT_TERM_EXIT_TIMEOUT, ServerRequestFuture, ServerRequestHandler, Subscription,
+    DEFAULT_TERM_EXIT_TIMEOUT, PendingRpc, ServerRequestFuture, ServerRequestHandler, Subscription,
 };
