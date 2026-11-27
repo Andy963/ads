@@ -82,12 +82,11 @@ export interface AgyAccountView {
   hasApiKey: boolean;
   ready: boolean;
   status: string;
-  message?: string | null;
   version?: string | null;
+  error?: string | null;
   modelCount: number;
-  models: string[];
-  pendingAuthorizationUrl?: string | null;
-  probedAtMs: number;
+  loginPending: boolean;
+  authorizationUrl?: string | null;
 }
 
 export interface AgyLoginStartView {

@@ -4,14 +4,19 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use ads_acp::{
+    AcpDriver, AgyDriver, ConfigOptionsState, DesiredConfigAlignment, resolve_agy_profile_dir,
+};
 use ads_auth::{AuthConfig, AuthService, hash_password_scrypt};
 use ads_http::{
     AGY_DEFAULT_AGENT_ID, CODEX_AGENT_ID, CookieSecureMode, NATIVE_AGENT_ID, RouterConfig,
     RoutingPromptRunner, RuntimeRegistry, RuntimeRegistryConfig, WebSocketConfig, WebSocketHub,
     build_router,
 };
+use ads_runtime::scheduler::{ScheduleExecuteFuture, ScheduleExecutor, SchedulerExecutionInput};
 use ads_runtime::{
-    LaneTurn, PromptQueueFuture, PromptQueueRunOutcome, PromptQueueRunner, PromptRunContext,
+    LaneTurn, LaneTurnKey, LaneTurnKind, PromptQueueFuture, PromptQueueRunOutcome,
+    PromptQueueRunner, PromptRunContext,
 };
 use ads_state::{
     HistoryStore, StateDb, StateResult, WEB_ACTIONS_NAMESPACE, WorkspaceDb, insert_user,
@@ -30,17 +35,23 @@ use tower::ServiceExt;
 
 struct RecordingNativeRunner {
     calls: Mutex<Vec<String>>,
+    aborted: Mutex<Vec<String>>,
 }
 
 impl RecordingNativeRunner {
     fn new() -> Self {
         Self {
             calls: Mutex::new(Vec::new()),
+            aborted: Mutex::new(Vec::new()),
         }
     }
 
     fn calls(&self) -> Vec<String> {
         self.calls.lock().expect("calls lock").clone()
+    }
+
+    fn aborted(&self) -> Vec<String> {
+        self.aborted.lock().expect("aborted lock").clone()
     }
 }
 
@@ -70,7 +81,18 @@ impl PromptQueueRunner for RecordingNativeRunner {
         })
     }
 
-    fn abort_lane_turn(&self, _entry: &LaneTurn) {}
+    fn abort_lane_turn(&self, entry: &LaneTurn) {
+        self.aborted
+            .lock()
+            .expect("aborted lock")
+            .push(entry.client_message_id.clone());
+    }
+}
+
+impl ScheduleExecutor for RecordingNativeRunner {
+    fn execute<'a>(&'a self, input: SchedulerExecutionInput) -> ScheduleExecuteFuture<'a> {
+        Box::pin(async move { Ok(format!("scheduled-ok: {}", input.prompt)) })
+    }
 }
 
 fn write_mock_agy_script(dir: &Path, isolated_root: &Path) -> PathBuf {
@@ -94,8 +116,9 @@ if "--login" in args:
     if line == "ok-code":
         home = os.environ.get("GEMINI_HOME")
         if home:
-            os.makedirs(home, exist_ok=True)
-            with open(os.path.join(home, "oauth_creds.json"), "w") as fh:
+            acp_dir = os.path.join(home, "antigravity-acp")
+            os.makedirs(acp_dir, exist_ok=True)
+            with open(os.path.join(acp_dir, "oauth_creds.json"), "w") as fh:
                 json.dump({{"access_token": "tok"}}, fh)
         print("Authentication successful.", flush=True)
         sys.exit(0)
@@ -109,7 +132,7 @@ def is_authenticated():
     if not home or not home.startswith(ISOLATED_ROOT):
         # Host default profile is treated as pre-authenticated in tests.
         return True
-    return os.path.exists(os.path.join(home, "oauth_creds.json"))
+    return os.path.exists(os.path.join(home, "antigravity-acp", "oauth_creds.json"))
 
 def send(obj):
     sys.stdout.write(json.dumps(obj) + "\n")
@@ -257,6 +280,7 @@ fn build_runtime_fixture() -> TestRuntimeFixture {
     let mut reg_cfg = RuntimeRegistryConfig::new(db.clone(), state_dir.clone(), workspace.clone());
     reg_cfg.preferred_default_agent_id = NATIVE_AGENT_ID.to_string();
     reg_cfg.native_runner = Some(native_runner.clone());
+    reg_cfg.native_scheduler = Some(native_runner.clone());
     reg_cfg.codex_runner = Some(codex_runner);
     reg_cfg.codex_binary = dir
         .path()
@@ -485,16 +509,65 @@ async fn multi_account_agy_crud_encrypted_api_key_and_headless_oauth_flow() {
             );
         }
     }
-    let settings_json_path = fixture
-        .state_dir
-        .join("providers")
-        .join("agy")
-        .join(&api_account_id)
+    let api_profile_dir = resolve_agy_profile_dir(&fixture.state_dir, &api_account_id);
+    let settings_json_path = api_profile_dir
+        .join("antigravity-acp")
         .join("settings.json");
-    if settings_json_path.exists() {
-        let settings_text = fs::read_to_string(&settings_json_path).expect("settings.json");
-        assert!(!settings_text.contains(secret_key));
+    assert!(
+        settings_json_path.exists(),
+        "expected isolated settings.json at {}",
+        settings_json_path.display()
+    );
+    let settings_text = fs::read_to_string(&settings_json_path).expect("settings.json");
+    assert!(!settings_text.contains(secret_key));
+
+    // Verify reserved 'agy' and path-traversal account IDs are rejected.
+    for bad_id in ["agy", "default", "../escape", "bad/id"] {
+        let resp = fixture
+            .app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/runtimes/agy/accounts")
+                    .header(header::COOKIE, &cookie)
+                    .header(header::ORIGIN, "http://localhost")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({
+                            "id": bad_id,
+                            "label": "Invalid",
+                            "authMethod": "oauth-personal",
+                        })
+                        .to_string(),
+                    ))
+                    .expect("bad id req"),
+            )
+            .await
+            .expect("bad id resp");
+        assert_eq!(
+            resp.status(),
+            StatusCode::BAD_REQUEST,
+            "expected 400 for account id '{bad_id}'"
+        );
     }
+
+    // Disallowed CSRF Origin must be rejected with 403 Forbidden.
+    let csrf_resp = fixture
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/runtimes/refresh")
+                .header(header::COOKIE, &cookie)
+                .header(header::ORIGIN, "https://evil.example")
+                .body(Body::empty())
+                .expect("csrf req"),
+        )
+        .await
+        .expect("csrf resp");
+    assert_eq!(csrf_resp.status(), StatusCode::FORBIDDEN);
 
     // 2. Create an isolated OAuth account, run headless start -> complete -> logout -> delete.
     let create_oauth_resp = fixture
@@ -547,6 +620,29 @@ async fn multi_account_agy_crud_encrypted_api_key_and_headless_oauth_flow() {
             .starts_with("https://accounts.google.com/o/oauth2/auth?")
     );
 
+    // Verify malformed code returns 400 WITHOUT killing the live login subprocess,
+    // so retrying immediately with the valid code succeeds.
+    let bad_code_resp = fixture
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!(
+                    "/api/runtimes/agy/accounts/{oauth_id}/login/complete"
+                ))
+                .header(header::COOKIE, &cookie)
+                .header(header::ORIGIN, "http://localhost")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({ "code": "https://evil.example/cb?code=x&state=wrong" }).to_string(),
+                ))
+                .expect("bad complete login"),
+        )
+        .await
+        .expect("bad complete login response");
+    assert_eq!(bad_code_resp.status(), StatusCode::BAD_REQUEST);
+
     let complete_resp = fixture
         .app
         .clone()
@@ -568,8 +664,18 @@ async fn multi_account_agy_crud_encrypted_api_key_and_headless_oauth_flow() {
     let completed = response_json(complete_resp).await;
     assert_eq!(completed["ready"], true);
     assert_eq!(completed["modelCount"], 2);
+    assert_eq!(completed["loginPending"], false);
 
-    // Logout removes credentials and marks account unready.
+    let oauth_profile_dir = resolve_agy_profile_dir(&fixture.state_dir, &oauth_id);
+    assert!(
+        oauth_profile_dir
+            .join("antigravity-acp")
+            .join("oauth_creds.json")
+            .exists(),
+        "expected oauth_creds.json inside hashed antigravity-acp profile dir"
+    );
+
+    // Logout removes credentials on disk; re-probing via /refresh confirms authentication_required.
     let logout_resp = fixture
         .app
         .clone()
@@ -588,6 +694,32 @@ async fn multi_account_agy_crud_encrypted_api_key_and_headless_oauth_flow() {
     let logged_out = response_json(logout_resp).await;
     assert_eq!(logged_out["ready"], false);
     assert_eq!(logged_out["status"], "authentication_required");
+    assert!(
+        !oauth_profile_dir
+            .join("antigravity-acp")
+            .join("oauth_creds.json")
+            .exists(),
+        "logout must delete oauth_creds.json on disk"
+    );
+
+    let refresh_after_logout = fixture
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/runtimes/agy/accounts/{oauth_id}/refresh"))
+                .header(header::COOKIE, &cookie)
+                .header(header::ORIGIN, "http://localhost")
+                .body(Body::empty())
+                .expect("refresh after logout"),
+        )
+        .await
+        .expect("refresh after logout resp");
+    assert_eq!(refresh_after_logout.status(), StatusCode::OK);
+    let refreshed = response_json(refresh_after_logout).await;
+    assert_eq!(refreshed["ready"], false);
+    assert_eq!(refreshed["status"], "authentication_required");
 
     // Deleting built-in default profile is rejected.
     let del_default = fixture
@@ -606,7 +738,11 @@ async fn multi_account_agy_crud_encrypted_api_key_and_headless_oauth_flow() {
         .expect("delete default resp");
     assert_eq!(del_default.status(), StatusCode::BAD_REQUEST);
 
-    // Deleting isolated account succeeds and removes profile directory.
+    // Deleting isolated account succeeds and removes the hashed profile directory.
+    assert!(
+        oauth_profile_dir.exists(),
+        "expected hashed profile dir to exist before deletion"
+    );
     let del_oauth = fixture
         .app
         .clone()
@@ -623,12 +759,8 @@ async fn multi_account_agy_crud_encrypted_api_key_and_headless_oauth_flow() {
         .expect("delete oauth resp");
     assert_eq!(del_oauth.status(), StatusCode::OK);
     assert!(
-        !fixture
-            .state_dir
-            .join("providers")
-            .join("agy")
-            .join(&oauth_id)
-            .exists()
+        !oauth_profile_dir.exists(),
+        "expected hashed profile dir to be deleted"
     );
 
     fixture.registry.shutdown_all().await;
@@ -843,6 +975,156 @@ async fn ws_set_agent_persists_per_lane_and_routes_prompts_dynamically() {
     );
 
     drop(ws2);
+    server.abort();
+    fixture.registry.shutdown_all().await;
+}
+
+#[tokio::test]
+async fn handoff_turns_abort_scheduler_model_collision_and_multiplexed_broadcast() {
+    let fixture = build_runtime_fixture();
+    fixture.registry.probe_all().await;
+
+    // 1. Model ID collision prefixing (`agy:`) and AgyDriver stripping in map_model_id / resolve_alignment.
+    let mut existing_ids = HashSet::new();
+    existing_ids.insert("gemini-2.5-pro".to_string());
+    let merged = fixture.registry.discovered_agy_models(&existing_ids);
+    let collided = merged
+        .iter()
+        .find(|m| m.model_id == "gemini-2.5-pro")
+        .expect("collided model");
+    assert_eq!(collided.id, "agy:gemini-2.5-pro");
+    let driver = AgyDriver::from_env();
+    assert_eq!(driver.map_model_id("agy:gemini-2.5-pro"), "gemini-2.5-pro");
+    let aligned = driver.resolve_alignment(
+        &ConfigOptionsState::default(),
+        None,
+        DesiredConfigAlignment {
+            model: Some("agy:gemini-2.5-pro".to_string()),
+            ..DesiredConfigAlignment::default()
+        },
+    );
+    assert_eq!(aligned.model.as_deref(), Some("gemini-2.5-pro"));
+
+    // 2. LaneTurnKind::AgentHandoff with legacy `"agentId": "codex"` routes to the lane's
+    // active ready runtime (`native`) even when `codex` is unavailable.
+    let routing = RoutingPromptRunner::new(Arc::clone(&fixture.registry));
+    let mut handoff_payload = serde_json::Map::new();
+    handoff_payload.insert("agentId".to_string(), json!(CODEX_AGENT_ID));
+    handoff_payload.insert("text".to_string(), json!("review handoff wake"));
+    let handoff_turn = LaneTurn {
+        kind: LaneTurnKind::AgentHandoff,
+        key: LaneTurnKey::AgentHandoff("42".to_string()),
+        client_message_id: "handoff-42".to_string(),
+        auth_user_id: "user-1".to_string(),
+        user_id: 1,
+        session_id: "proj-1".to_string(),
+        chat_session_id: "acopilot".to_string(),
+        history_key: "user-1::proj-1::acopilot".to_string(),
+        logical_history_key: "user-1::proj-1::acopilot".to_string(),
+        lane_namespace: ads_state::WEB_ACOPILOT_NAMESPACE.to_string(),
+        lane_generation: 1,
+        workspace_root: "/tmp/ws".to_string(),
+        payload: handoff_payload,
+        history_display_text: None,
+        created_at: 1_000,
+    };
+    let emitted = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let emitted_clone = Arc::clone(&emitted);
+    let outcome = routing
+        .run_lane_turn(
+            handoff_turn.clone(),
+            PromptRunContext::new(Arc::new(move |val| {
+                emitted_clone.lock().expect("emitted").push(val);
+            })),
+        )
+        .await
+        .expect("handoff run");
+    assert!(outcome.ok);
+    assert_eq!(
+        fixture.native_runner.calls(),
+        vec!["review handoff wake".to_string()]
+    );
+
+    // 3. abort_lane_turn & ScheduleExecutor resolution (native, agy, and unready codex fallback).
+    routing.abort_lane_turn(&handoff_turn);
+    assert_eq!(
+        fixture.native_runner.aborted(),
+        vec!["handoff-42".to_string()]
+    );
+    assert!(
+        fixture
+            .registry
+            .schedule_executor_for(Some(NATIVE_AGENT_ID))
+            .is_some()
+    );
+    assert!(
+        fixture
+            .registry
+            .schedule_executor_for(Some(AGY_DEFAULT_AGENT_ID))
+            .is_some()
+    );
+    assert!(
+        fixture
+            .registry
+            .schedule_executor_for(Some(CODEX_AGENT_ID))
+            .is_some()
+    );
+
+    // 4. Multiplexed WebSocket receives unsequenced `agents` broadcast on BOTH lanes without activeAgentId.
+    let cookie = login_cookie(&fixture.app).await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let app = fixture.app.clone();
+    let server = tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+    let req = Request::builder()
+        .method("GET")
+        .uri(format!("ws://{addr}/ws"))
+        .header(header::HOST, addr.to_string())
+        .header(header::CONNECTION, "Upgrade")
+        .header(header::UPGRADE, "websocket")
+        .header(header::SEC_WEBSOCKET_VERSION, "13")
+        .header(header::SEC_WEBSOCKET_KEY, "dGhlIHNhbXBsZSBub25jZQ==")
+        .header(
+            header::SEC_WEBSOCKET_PROTOCOL,
+            "ads-session.mux-1, ads-chat.main, ads-chat.acopilot",
+        )
+        .header(header::COOKIE, &cookie)
+        .header(header::ORIGIN, "http://localhost")
+        .body(())
+        .expect("mux ws req");
+    let (mut mux_ws, _) = connect_async(req).await.expect("mux ws connect");
+    // Drain initial bootstrap frames for both lanes (2 welcome + 2 agents + optional snapshots).
+    let mut initial_agents = 0;
+    while initial_agents < 2 {
+        let frame = recv_json_frame(&mut mux_ws).await;
+        if frame["type"] == "agents" {
+            initial_agents += 1;
+        }
+    }
+    // Trigger runtime refresh broadcast -> both multiplexed lanes must receive an unsequenced
+    // `agents` frame omitting `activeAgentId`.
+    fixture.registry.probe_all().await;
+    let mut broadcast_lanes = HashSet::new();
+    for _ in 0..10 {
+        let frame = recv_json_frame(&mut mux_ws).await;
+        if frame["type"] == "agents" && frame.get("activeAgentId").is_none() {
+            if let Some(lane) = frame.get("lane").and_then(Value::as_str) {
+                broadcast_lanes.insert(lane.to_string());
+            }
+            if broadcast_lanes.len() == 2 {
+                break;
+            }
+        }
+    }
+    assert_eq!(
+        broadcast_lanes.len(),
+        2,
+        "both multiplexed lanes must receive agents broadcast"
+    );
+
+    drop(mux_ws);
     server.abort();
     fixture.registry.shutdown_all().await;
 }

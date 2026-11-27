@@ -182,9 +182,10 @@ describe("AntigravityAccountsPanel inside ModelManager Runtimes tab", () => {
         ready: true,
         status: "ready",
         version: "1.5.18",
+        error: null,
         modelCount: 2,
-        models: ["gemini-2.5-pro", "gemini-2.5-flash"],
-        probedAtMs: 1,
+        loginPending: false,
+        authorizationUrl: null,
       },
     ];
 
@@ -205,21 +206,24 @@ describe("AntigravityAccountsPanel inside ModelManager Runtimes tab", () => {
             hasApiKey: false,
             ready: false,
             status: "authentication_required",
-            message: "Sign in required",
+            error: "Sign in required for this Antigravity account.",
             modelCount: 0,
-            models: [],
-            probedAtMs: 2,
+            loginPending: false,
+            authorizationUrl: null,
           };
           accounts.push(created);
           return structuredClone(created);
         }
         if (url === "/api/runtimes/agy/accounts/work-google/login/start") {
+          const acc = accounts.find((a) => a.id === "work-google")!;
+          acc.loginPending = true;
+          acc.authorizationUrl = "https://accounts.google.com/o/oauth2/auth?response_type=code&state=s1";
           return {
             accountId: "work-google",
             agentId: "agy:work-google",
             flowId: "flow-1",
-            authorizationUrl: "https://accounts.google.com/o/oauth2/auth?response_type=code&state=s1",
-            redirectUri: "https://codeassist.google.com/authcode",
+            authorizationUrl: acc.authorizationUrl,
+            redirectUri: "https://antigravity.google/oauth-callback",
             state: "s1",
           };
         }
@@ -227,14 +231,20 @@ describe("AntigravityAccountsPanel inside ModelManager Runtimes tab", () => {
           const acc = accounts.find((a) => a.id === "work-google")!;
           acc.ready = true;
           acc.status = "ready";
+          acc.error = null;
           acc.modelCount = 2;
+          acc.loginPending = false;
+          acc.authorizationUrl = null;
           return structuredClone(acc);
         }
         if (url === "/api/runtimes/agy/accounts/work-google/logout") {
           const acc = accounts.find((a) => a.id === "work-google")!;
           acc.ready = false;
           acc.status = "authentication_required";
+          acc.error = "Signed out. Sign in again to use this account.";
           acc.modelCount = 0;
+          acc.loginPending = false;
+          acc.authorizationUrl = null;
           return structuredClone(acc);
         }
         if (url === "/api/runtimes/refresh") {
@@ -275,10 +285,14 @@ describe("AntigravityAccountsPanel inside ModelManager Runtimes tab", () => {
       "/api/runtimes/agy/accounts",
       expect.objectContaining({ label: "Work Google", authMethod: "oauth-personal" }),
     );
-    expect(wrapper.get('[data-testid="agy-account-row-work-google"]').text()).toContain("Sign in required");
+    expect(wrapper.get('[data-testid="agy-account-row-work-google"]').text()).toContain("Sign in required for this Antigravity account.");
 
-    // Start and complete OAuth flow.
+    // Start OAuth flow and verify reopening the tab restores loginPending / authorizationUrl.
     await wrapper.get('[data-testid="agy-login-start-work-google"]').trigger("click");
+    await flushPromises();
+    await wrapper.get('[data-testid="provider-settings-tab"]').trigger("click");
+    await flushPromises();
+    await wrapper.get('[data-testid="runtime-settings-tab"]').trigger("click");
     await flushPromises();
     expect(wrapper.get('[data-testid="agy-login-link-work-google"]').attributes("href")).toContain(
       "https://accounts.google.com/o/oauth2/auth",

@@ -1263,7 +1263,8 @@ async fn serve(
             sender: control_tx.clone(),
             overflow_notify: overflow_tx.clone(),
         });
-        let active_agent_id = resolve_lane_active_agent(&state, &lane.logical_history_key);
+        let active_agent_id =
+            resolve_lane_active_agent_async(&state, &lane.logical_history_key).await;
         let connection = ConnectionContext {
             state: &state,
             lane,
@@ -2294,11 +2295,29 @@ fn prompt_history_text(payload: &Map<String, Value>) -> Option<String> {
     (!joined.is_empty()).then_some(joined)
 }
 
-fn resolve_lane_active_agent(state: &AppState, logical_history_key: &str) -> String {
-    if let Some(registry) = state.runtime_registry.as_ref() {
-        return registry.resolve_active_agent_for_lane(logical_history_key);
+async fn resolve_lane_active_agent_async(state: &AppState, logical_history_key: &str) -> String {
+    let Some(registry) = state.runtime_registry.clone() else {
+        return "codex".to_string();
+    };
+    let key = logical_history_key.to_string();
+    tokio::task::spawn_blocking(move || registry.resolve_active_agent_for_lane(&key))
+        .await
+        .unwrap_or_else(|_| "codex".to_string())
+}
+
+async fn save_lane_agent_async(
+    registry: &Arc<crate::runtimes::RuntimeRegistry>,
+    logical_history_key: &str,
+    agent_id: &str,
+) {
+    let registry = Arc::clone(registry);
+    let key = logical_history_key.to_string();
+    let agent_id = agent_id.to_string();
+    match tokio::task::spawn_blocking(move || registry.save_lane_agent(&key, &agent_id)).await {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => eprintln!("[ads-ws] failed to persist lane agent: {error}"),
+        Err(error) => eprintln!("[ads-ws] lane agent persist worker failed: {error}"),
     }
-    "codex".to_string()
 }
 
 fn build_welcome(
@@ -2874,37 +2893,6 @@ async fn handle_prompt_message(
         .await;
     };
     let mut queue_payload = normalize_prompt_queue_payload(payload);
-    if let Some(registry) = connection.state.runtime_registry.as_ref() {
-        let explicit_agent_id = queue_payload
-            .get("agentId")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(str::to_string);
-        let effective_agent_id = if let Some(explicit) = explicit_agent_id {
-            if let Err(message) = registry.is_agent_ready(&explicit) {
-                return send_json(socket, json!({ "type": "error", "message": message })).await;
-            }
-            explicit
-        } else if registry.is_agent_ready(&connection.active_agent_id).is_ok() {
-            connection.active_agent_id.clone()
-        } else {
-            let fallback = registry.default_active_agent_id();
-            if let Err(message) = registry.is_agent_ready(&fallback) {
-                return send_json(socket, json!({ "type": "error", "message": message })).await;
-            }
-            fallback
-        };
-        if effective_agent_id != connection.active_agent_id {
-            connection.active_agent_id = effective_agent_id.clone();
-            if let Err(error) =
-                registry.save_lane_agent(&connection.lane.logical_history_key, &effective_agent_id)
-            {
-                eprintln!("[ads-ws] failed to persist lane agent: {error}");
-            }
-        }
-        queue_payload.insert("agentId".to_string(), json!(effective_agent_id));
-    }
     let text = prompt_history_text(&queue_payload);
     let replay_incomplete = queue_payload.get("replay_incomplete") == Some(&Value::Bool(true));
     let retry_original = queue_payload.get("retry_original") == Some(&Value::Bool(true));
@@ -2940,6 +2928,40 @@ async fn handle_prompt_message(
             }
             return send_json(socket, ack).await;
         }
+    }
+
+    if let Some(registry) = connection.state.runtime_registry.as_ref() {
+        let explicit_agent_id = queue_payload
+            .get("agentId")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+        let effective_agent_id = if let Some(explicit) = explicit_agent_id {
+            if let Err(message) = registry.is_agent_ready(&explicit) {
+                return send_json(socket, json!({ "type": "error", "message": message })).await;
+            }
+            explicit
+        } else if registry.is_agent_ready(&connection.active_agent_id).is_ok() {
+            connection.active_agent_id.clone()
+        } else {
+            let fallback = registry.default_active_agent_id();
+            if let Err(message) = registry.is_agent_ready(&fallback) {
+                return send_json(socket, json!({ "type": "error", "message": message })).await;
+            }
+            fallback
+        };
+        if !replay_incomplete && !retry_original && effective_agent_id != connection.active_agent_id
+        {
+            connection.active_agent_id = effective_agent_id.clone();
+            save_lane_agent_async(
+                registry,
+                &connection.lane.logical_history_key,
+                &effective_agent_id,
+            )
+            .await;
+        }
+        queue_payload.insert("agentId".to_string(), json!(effective_agent_id));
     }
 
     let lane = prompt_queue_lane(&connection.lane);
@@ -3031,11 +3053,7 @@ async fn handle_set_agent(
             .await;
         }
         connection.active_agent_id = requested.clone();
-        if let Err(error) =
-            registry.save_lane_agent(&connection.lane.logical_history_key, &requested)
-        {
-            eprintln!("[ads-ws] failed to persist lane agent: {error}");
-        }
+        save_lane_agent_async(registry, &connection.lane.logical_history_key, &requested).await;
         return send_json(
             socket,
             build_agents(connection.state, &connection.active_agent_id),
@@ -3931,7 +3949,7 @@ async fn switch_chat_and_reply(
     }
     socket.rebind(&connection.lane.chat_session_id);
     connection.active_agent_id =
-        resolve_lane_active_agent(state, &connection.lane.logical_history_key);
+        resolve_lane_active_agent_async(state, &connection.lane.logical_history_key).await;
     send_bootstrap_frames(
         socket,
         state,
@@ -4007,7 +4025,7 @@ async fn apply_session_switch(
     };
     socket.rebind(&connection.lane.chat_session_id);
     connection.active_agent_id =
-        resolve_lane_active_agent(state, &connection.lane.logical_history_key);
+        resolve_lane_active_agent_async(state, &connection.lane.logical_history_key).await;
     send_bootstrap_frames(
         socket,
         state,

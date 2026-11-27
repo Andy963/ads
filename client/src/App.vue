@@ -1520,7 +1520,7 @@ const readyAgyAgentSignature = computed(() => {
 });
 
 watch(readyAgyAgentSignature, (next, prev) => {
-  if (!loggedIn.value || !next || next === prev) return;
+  if (!loggedIn.value || next === prev) return;
   void loadModels().catch(() => {});
 });
 

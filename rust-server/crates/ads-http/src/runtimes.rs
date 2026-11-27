@@ -1,21 +1,22 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, RwLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use ads_acp::{
     AcpDriver, AcpPromptRunner, AcpPromptRunnerConfig, AgyAuthConfig, AgyAuthMethod, AgyDriver,
     AgyDriverConfig, AgyIsolatedProfile, AgyLoginHandle, AgyProbeResult, AgyProbeStatus,
     AgyProfileMode, logout_agy_profile, probe_agy_runtime, resolve_agy_binary,
-    resolve_agy_profile_dir, start_agy_login,
+    resolve_agy_profile_dir, start_agy_login, validate_agy_login_response,
 };
 use ads_contract::models::ModelConfig;
 use ads_contract::time::now_unix_millis;
 use ads_runtime::scheduler::{ScheduleExecuteFuture, ScheduleExecutor, SchedulerExecutionInput};
 use ads_runtime::{
-    LaneTurn, LaneTurnKey, PromptQueueFuture, PromptQueueRunOutcome, PromptQueueRunner,
-    PromptRunContext,
+    LaneTurn, LaneTurnKey, LaneTurnKind, PromptQueueFuture, PromptQueueRunOutcome,
+    PromptQueueRunner, PromptRunContext,
 };
 use ads_state::{StateDb, StateError, StateResult, UpstreamCredentialStore, UpstreamCredentials};
 use rusqlite::{OptionalExtension, params};
@@ -36,6 +37,7 @@ const AGY_CREDENTIAL_OWNER: &str = "runtime:agy";
 const AGY_CREDENTIAL_BASE_URL: &str = "https://generativelanguage.googleapis.com/v1";
 const AGY_CREDENTIAL_PROVIDER: &str = "antigravity";
 const MAX_AGY_ACCOUNTS: usize = 32;
+const ACTIVE_LOGIN_TTL: Duration = Duration::from_secs(10 * 60);
 const EFFORT_ORDER: [&str; 6] = ["minimal", "low", "medium", "high", "xhigh", "max"];
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -127,6 +129,7 @@ pub enum RuntimeApiError {
     BadRequest(String),
     NotFound(String),
     Conflict(String),
+    Unavailable(String),
     Internal(String),
 }
 
@@ -136,6 +139,7 @@ impl std::fmt::Display for RuntimeApiError {
             Self::BadRequest(msg)
             | Self::NotFound(msg)
             | Self::Conflict(msg)
+            | Self::Unavailable(msg)
             | Self::Internal(msg) => write!(f, "{msg}"),
         }
     }
@@ -153,6 +157,7 @@ impl From<StateError> for RuntimeApiError {
 }
 
 struct ManagedAgyRuntime {
+    generation: u64,
     account_id: String,
     agent_id: String,
     label: String,
@@ -168,6 +173,7 @@ struct ManagedAgyRuntime {
 
 struct ActiveAgyLogin {
     authorization_url: String,
+    created_at: Instant,
     handle: AgyLoginHandle,
 }
 
@@ -243,8 +249,10 @@ pub struct RuntimeRegistry {
     codex_status: RwLock<(bool, Option<String>)>,
     agy_binary: String,
     agy_probe_timeout: Duration,
+    next_generation: AtomicU64,
     agy_entries: RwLock<BTreeMap<String, ManagedAgyRuntime>>,
     active_logins: Mutex<HashMap<String, ActiveAgyLogin>>,
+    mutation_lock: Mutex<()>,
     probe_lock: Mutex<()>,
     ws_hub: RwLock<Option<Arc<WebSocketHub>>>,
 }
@@ -254,6 +262,7 @@ impl RuntimeRegistry {
         let credentials = UpstreamCredentialStore::for_state_db(config.db.path());
         let codex_initial = probe_codex_binary(&config.codex_binary, config.codex_runner.is_some());
         let mut agy_entries = BTreeMap::new();
+        let mut generation_seq: u64 = 1;
 
         // Register host-default `agy` runtime.
         let default_cfg = AgyDriverConfig::default()
@@ -266,9 +275,12 @@ impl RuntimeRegistry {
             AGY_DEFAULT_AGENT_ID,
             None,
         );
+        let default_gen = generation_seq;
+        generation_seq += 1;
         agy_entries.insert(
             AGY_DEFAULT_AGENT_ID.to_string(),
             ManagedAgyRuntime {
+                generation: default_gen,
                 account_id: AGY_DEFAULT_ACCOUNT_ID.to_string(),
                 agent_id: AGY_DEFAULT_AGENT_ID.to_string(),
                 label: "Antigravity".to_string(),
@@ -302,9 +314,12 @@ impl RuntimeRegistry {
                     &agent_id,
                     Some(&record.id),
                 );
+                let entry_gen = generation_seq;
+                generation_seq += 1;
                 agy_entries.insert(
                     agent_id.clone(),
                     ManagedAgyRuntime {
+                        generation: entry_gen,
                         account_id: record.id,
                         agent_id,
                         label: record.label,
@@ -335,11 +350,36 @@ impl RuntimeRegistry {
             codex_status: RwLock::new(codex_initial),
             agy_binary: config.agy_binary,
             agy_probe_timeout: config.agy_probe_timeout,
+            next_generation: AtomicU64::new(generation_seq),
             agy_entries: RwLock::new(agy_entries),
             active_logins: Mutex::new(HashMap::new()),
+            mutation_lock: Mutex::new(()),
             probe_lock: Mutex::new(()),
             ws_hub: RwLock::new(None),
         })
+    }
+
+    fn alloc_generation(&self) -> u64 {
+        self.next_generation.fetch_add(1, Ordering::Relaxed)
+    }
+
+    async fn sweep_expired_logins(&self) {
+        let expired: Vec<ActiveAgyLogin> = {
+            let mut guard = self.active_logins.lock().await;
+            let now = Instant::now();
+            let expired_keys: Vec<String> = guard
+                .iter()
+                .filter(|(_, login)| now.duration_since(login.created_at) >= ACTIVE_LOGIN_TTL)
+                .map(|(k, _)| k.clone())
+                .collect();
+            expired_keys
+                .into_iter()
+                .filter_map(|key| guard.remove(&key))
+                .collect()
+        };
+        for login in expired {
+            login.handle.cancel().await;
+        }
     }
 
     pub fn attach_ws_hub(&self, hub: Arc<WebSocketHub>) {
@@ -357,21 +397,34 @@ impl RuntimeRegistry {
 
     pub async fn probe_all(&self) {
         let _guard = self.probe_lock.lock().await;
-        let codex_state = probe_codex_binary(&self.codex_binary, self.codex_runner.is_some());
+        let codex_binary = self.codex_binary.clone();
+        let has_codex = self.codex_runner.is_some();
+        let codex_state =
+            tokio::task::spawn_blocking(move || probe_codex_binary(&codex_binary, has_codex))
+                .await
+                .unwrap_or((false, Some("Codex binary probe failed.".to_string())));
         *self.codex_status.write().expect("codex status lock") = codex_state;
 
-        let targets: Vec<(String, AgyDriverConfig)> = {
+        let targets: Vec<(String, u64, AgyDriverConfig)> = {
             let entries = self.agy_entries.read().expect("agy entries read lock");
             entries
                 .values()
-                .map(|entry| (entry.agent_id.clone(), entry.driver_config.clone()))
+                .map(|entry| {
+                    (
+                        entry.agent_id.clone(),
+                        entry.generation,
+                        entry.driver_config.clone(),
+                    )
+                })
                 .collect()
         };
 
-        for (agent_id, driver_config) in targets {
+        for (agent_id, captured_generation, driver_config) in targets {
             let probe = probe_agy_runtime(&driver_config, &self.default_workspace_root).await;
             let mut entries = self.agy_entries.write().expect("agy entries write lock");
-            if let Some(entry) = entries.get_mut(&agent_id) {
+            if let Some(entry) = entries.get_mut(&agent_id)
+                && entry.generation == captured_generation
+            {
                 entry.probe = probe;
             }
         }
@@ -657,6 +710,7 @@ impl RuntimeRegistry {
     }
 
     pub async fn list_agy_accounts(&self) -> Vec<AgyAccountView> {
+        self.sweep_expired_logins().await;
         let pending_urls: HashMap<String, String> = {
             let logins = self.active_logins.lock().await;
             logins
@@ -694,24 +748,15 @@ impl RuntimeRegistry {
                 "Account label must be between 1 and 80 characters.".to_string(),
             ));
         }
-        let account_id = match input.id.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
-            Some(raw) => validate_account_id(raw)?,
-            None => derive_unique_account_id(&self.db, &label)?,
+        let requested_id = match input.id.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
+            Some(raw) => Some(validate_account_id(raw)?),
+            None => None,
         };
-        if account_id == AGY_DEFAULT_ACCOUNT_ID {
-            return Err(RuntimeApiError::BadRequest(
-                "Account ID 'default' is reserved for the host Antigravity profile.".to_string(),
-            ));
-        }
-
-        let existing_records = load_agy_account_records(&self.db)?;
-        let existing = existing_records
-            .iter()
-            .find(|r| r.id == account_id)
-            .cloned();
-        if existing.is_none() && existing_records.len() >= MAX_AGY_ACCOUNTS {
+        if let Some(ref id) = requested_id
+            && is_reserved_account_id(id)
+        {
             return Err(RuntimeApiError::BadRequest(format!(
-                "Maximum of {MAX_AGY_ACCOUNTS} Antigravity accounts reached."
+                "Account ID '{id}' is reserved for the host Antigravity profile."
             )));
         }
 
@@ -727,122 +772,167 @@ impl RuntimeRegistry {
             .map(str::trim)
             .filter(|v| !v.is_empty())
             .map(str::to_string);
-
-        let existing_api_key = read_account_api_key(&self.db, &self.credentials, &account_id);
         let submitted_api_key = input
             .api_key
             .as_deref()
             .map(str::trim)
             .filter(|v| !v.is_empty())
             .map(str::to_string);
-        let effective_api_key = match input.auth_method {
-            AgyAuthMethod::GeminiApiKey | AgyAuthMethod::AgentPlatform => {
-                submitted_api_key.clone().or(existing_api_key)
-            }
-            AgyAuthMethod::OAuthPersonal | AgyAuthMethod::OAuthBusiness => None,
-        };
+        let auth_method = input.auth_method;
 
-        let auth_cfg = AgyAuthConfig {
-            method: input.auth_method,
-            api_key: effective_api_key.clone(),
-            gcp_project: gcp_project.clone(),
-            gcp_location: gcp_location.clone(),
-        };
-        auth_cfg.validate().map_err(RuntimeApiError::BadRequest)?;
+        let (account_id, agent_id, generation, driver_config, old_runner) = {
+            let _mutation = self.mutation_lock.lock().await;
+            let db = self.db.clone();
+            let credentials = self.credentials.clone();
+            let state_dir = self.state_dir.clone();
+            let label_for_db = label.clone();
+            let gcp_project_for_db = gcp_project.clone();
+            let gcp_location_for_db = gcp_location.clone();
+            let submitted_for_db = submitted_api_key.clone();
 
-        let now = now_unix_millis();
-        let profile_dir = resolve_agy_profile_dir(&self.state_dir, &account_id);
-        let record = AgyAccountRecord {
-            id: account_id.clone(),
-            label: label.clone(),
-            auth_method: input.auth_method,
-            gcp_project: gcp_project.clone(),
-            gcp_location: gcp_location.clone(),
-            profile_dir: profile_dir.to_string_lossy().to_string(),
-            created_at: existing.as_ref().map_or(now, |r| r.created_at),
-            updated_at: now,
-        };
-
-        // Persist API key encrypted via UpstreamCredentialStore (never plaintext in kv_state or settings.json).
-        {
-            let connection = self.db.connect()?;
-            let cred_profile = agy_credential_profile(&account_id);
-            match input.auth_method {
-                AgyAuthMethod::GeminiApiKey | AgyAuthMethod::AgentPlatform => {
-                    if let Some(new_key) = submitted_api_key.as_deref() {
-                        self.credentials.save(
-                            &connection,
-                            AGY_CREDENTIAL_OWNER,
-                            &UpstreamCredentials {
-                                base_url: AGY_CREDENTIAL_BASE_URL.to_string(),
-                                provider: AGY_CREDENTIAL_PROVIDER.to_string(),
-                                api_key: new_key.to_string(),
-                            },
-                            Some(&cred_profile),
-                        )?;
+            let (account_id, record, effective_api_key) =
+                tokio::task::spawn_blocking(move || -> Result<_, RuntimeApiError> {
+                    let account_id = match requested_id {
+                        Some(id) => id,
+                        None => derive_unique_account_id(&db, &label_for_db)?,
+                    };
+                    let existing_records = load_agy_account_records(&db)?;
+                    let existing = existing_records
+                        .iter()
+                        .find(|r| r.id == account_id)
+                        .cloned();
+                    if existing.is_none() && existing_records.len() >= MAX_AGY_ACCOUNTS {
+                        return Err(RuntimeApiError::BadRequest(format!(
+                            "Maximum of {MAX_AGY_ACCOUNTS} Antigravity accounts reached."
+                        )));
                     }
-                }
-                AgyAuthMethod::OAuthPersonal | AgyAuthMethod::OAuthBusiness => {
-                    let _ = self.credentials.delete(
-                        &connection,
-                        AGY_CREDENTIAL_OWNER,
-                        Some(&cred_profile),
-                    );
-                }
+
+                    let existing_api_key = read_account_api_key(&db, &credentials, &account_id);
+                    let effective_api_key = match auth_method {
+                        AgyAuthMethod::GeminiApiKey | AgyAuthMethod::AgentPlatform => {
+                            submitted_for_db.clone().or(existing_api_key)
+                        }
+                        AgyAuthMethod::OAuthPersonal | AgyAuthMethod::OAuthBusiness => None,
+                    };
+
+                    let auth_cfg = AgyAuthConfig {
+                        method: auth_method,
+                        api_key: effective_api_key.clone(),
+                        gcp_project: gcp_project_for_db.clone(),
+                        gcp_location: gcp_location_for_db.clone(),
+                    };
+                    auth_cfg.validate().map_err(RuntimeApiError::BadRequest)?;
+
+                    let now = now_unix_millis();
+                    let profile_dir = resolve_agy_profile_dir(&state_dir, &account_id);
+                    let record = AgyAccountRecord {
+                        id: account_id.clone(),
+                        label: label_for_db,
+                        auth_method,
+                        gcp_project: gcp_project_for_db,
+                        gcp_location: gcp_location_for_db,
+                        profile_dir: profile_dir.to_string_lossy().to_string(),
+                        created_at: existing.as_ref().map_or(now, |r| r.created_at),
+                        updated_at: now,
+                    };
+
+                    // Persist API key encrypted via UpstreamCredentialStore (never plaintext in kv_state or settings.json).
+                    let connection = db.connect()?;
+                    let cred_profile = agy_credential_profile(&account_id);
+                    match auth_method {
+                        AgyAuthMethod::GeminiApiKey | AgyAuthMethod::AgentPlatform => {
+                            if let Some(new_key) = submitted_for_db.as_deref() {
+                                credentials.save(
+                                    &connection,
+                                    AGY_CREDENTIAL_OWNER,
+                                    &UpstreamCredentials {
+                                        base_url: AGY_CREDENTIAL_BASE_URL.to_string(),
+                                        provider: AGY_CREDENTIAL_PROVIDER.to_string(),
+                                        api_key: new_key.to_string(),
+                                    },
+                                    Some(&cred_profile),
+                                )?;
+                            }
+                        }
+                        AgyAuthMethod::OAuthPersonal | AgyAuthMethod::OAuthBusiness => {
+                            let _ = credentials.delete(
+                                &connection,
+                                AGY_CREDENTIAL_OWNER,
+                                Some(&cred_profile),
+                            );
+                        }
+                    }
+                    save_agy_account_record(&db, &record)?;
+                    Ok((account_id, record, effective_api_key))
+                })
+                .await
+                .map_err(|error| RuntimeApiError::Internal(error.to_string()))??;
+
+            if let Some(active) = self.active_logins.lock().await.remove(&account_id) {
+                active.handle.cancel().await;
             }
-        }
-        save_agy_account_record(&self.db, &record)?;
 
-        let agent_id = agy_agent_id(&account_id);
-        let driver_config = build_isolated_agy_driver_config(
-            &self.agy_binary,
-            self.agy_probe_timeout,
-            &record,
-            effective_api_key.clone(),
-        );
-        let runner = build_agy_runner(
-            self.db.clone(),
-            driver_config.clone(),
-            &agent_id,
-            Some(&account_id),
-        );
-
-        let probe = if !input.auth_method.uses_browser() {
-            let _guard = self.probe_lock.lock().await;
-            probe_agy_runtime(&driver_config, &self.default_workspace_root).await
-        } else {
+            let agent_id = agy_agent_id(&account_id);
+            let driver_config = build_isolated_agy_driver_config(
+                &self.agy_binary,
+                self.agy_probe_timeout,
+                &record,
+                effective_api_key.clone(),
+            );
+            let runner = build_agy_runner(
+                self.db.clone(),
+                driver_config.clone(),
+                &agent_id,
+                Some(&account_id),
+            );
             let mut initial = initial_agy_probe_state(&driver_config, false);
-            if initial.status != AgyProbeStatus::BinaryNotFound {
+            if auth_method.uses_browser() && initial.status != AgyProbeStatus::BinaryNotFound {
                 initial.status = AgyProbeStatus::AuthenticationRequired;
                 initial.message =
                     Some("Sign in required for this Antigravity account.".to_string());
             }
-            initial
+
+            let generation = self.alloc_generation();
+            let old_runner = {
+                let mut entries = self.agy_entries.write().expect("agy entries write lock");
+                entries
+                    .insert(
+                        agent_id.clone(),
+                        ManagedAgyRuntime {
+                            generation,
+                            account_id: account_id.clone(),
+                            agent_id: agent_id.clone(),
+                            label: record.label.clone(),
+                            is_default: false,
+                            auth_method: record.auth_method,
+                            gcp_project: record.gcp_project.clone(),
+                            gcp_location: record.gcp_location.clone(),
+                            has_api_key: effective_api_key.is_some(),
+                            driver_config: driver_config.clone(),
+                            runner,
+                            probe: initial,
+                        },
+                    )
+                    .map(|old| old.runner)
+            };
+            (account_id, agent_id, generation, driver_config, old_runner)
         };
 
-        let old_runner = {
-            let mut entries = self.agy_entries.write().expect("agy entries write lock");
-            entries
-                .insert(
-                    agent_id.clone(),
-                    ManagedAgyRuntime {
-                        account_id: account_id.clone(),
-                        agent_id: agent_id.clone(),
-                        label: record.label.clone(),
-                        is_default: false,
-                        auth_method: record.auth_method,
-                        gcp_project: record.gcp_project.clone(),
-                        gcp_location: record.gcp_location.clone(),
-                        has_api_key: effective_api_key.is_some(),
-                        driver_config,
-                        runner,
-                        probe,
-                    },
-                )
-                .map(|old| old.runner)
-        };
         if let Some(old_runner) = old_runner {
             old_runner.shutdown().await;
+        }
+
+        if !auth_method.uses_browser() {
+            let probe = {
+                let _guard = self.probe_lock.lock().await;
+                probe_agy_runtime(&driver_config, &self.default_workspace_root).await
+            };
+            let mut entries = self.agy_entries.write().expect("agy entries write lock");
+            if let Some(entry) = entries.get_mut(&agent_id)
+                && entry.generation == generation
+            {
+                entry.probe = probe;
+            }
         }
 
         self.broadcast_agents_snapshot();
@@ -851,12 +941,13 @@ impl RuntimeRegistry {
 
     pub async fn delete_agy_account(&self, account_id: &str) -> Result<bool, RuntimeApiError> {
         let account_id = validate_account_id(account_id)?;
-        if account_id == AGY_DEFAULT_ACCOUNT_ID {
+        if is_reserved_account_id(&account_id) {
             return Err(RuntimeApiError::BadRequest(
                 "Cannot delete the built-in default Antigravity profile.".to_string(),
             ));
         }
 
+        let _mutation = self.mutation_lock.lock().await;
         if let Some(active) = self.active_logins.lock().await.remove(&account_id) {
             active.handle.cancel().await;
         }
@@ -871,21 +962,28 @@ impl RuntimeRegistry {
             entry.runner.shutdown().await;
         }
 
-        let deleted_record = delete_agy_account_record(&self.db, &account_id)?;
-        {
-            let connection = self.db.connect()?;
-            let _ = self.credentials.delete(
-                &connection,
-                AGY_CREDENTIAL_OWNER,
-                Some(&agy_credential_profile(&account_id)),
-            );
-        }
-
-        let profile_dir = resolve_agy_profile_dir(&self.state_dir, &account_id);
-        let providers_root = self.state_dir.join("providers").join("agy");
-        if profile_dir.starts_with(&providers_root) && profile_dir.exists() {
-            let _ = fs::remove_dir_all(&profile_dir);
-        }
+        let db = self.db.clone();
+        let credentials = self.credentials.clone();
+        let state_dir = self.state_dir.clone();
+        let id_for_db = account_id.clone();
+        let deleted_record =
+            tokio::task::spawn_blocking(move || -> Result<bool, RuntimeApiError> {
+                let deleted_record = delete_agy_account_record(&db, &id_for_db)?;
+                let connection = db.connect()?;
+                let _ = credentials.delete(
+                    &connection,
+                    AGY_CREDENTIAL_OWNER,
+                    Some(&agy_credential_profile(&id_for_db)),
+                );
+                let profile_dir = resolve_agy_profile_dir(&state_dir, &id_for_db);
+                let providers_root = state_dir.join("providers").join("agy");
+                if profile_dir.starts_with(&providers_root) && profile_dir.exists() {
+                    let _ = fs::remove_dir_all(&profile_dir);
+                }
+                Ok(deleted_record)
+            })
+            .await
+            .map_err(|error| RuntimeApiError::Internal(error.to_string()))??;
 
         self.broadcast_agents_snapshot();
         Ok(deleted_record)
@@ -895,14 +993,16 @@ impl RuntimeRegistry {
         &self,
         account_id: &str,
     ) -> Result<AgyLoginStartView, RuntimeApiError> {
+        self.sweep_expired_logins().await;
         let account_id = normalize_target_account_id(account_id)?;
-        let (agent_id, driver_config, uses_browser) = {
+        let (agent_id, captured_generation, driver_config, uses_browser) = {
             let entries = self.agy_entries.read().expect("agy entries read lock");
             let entry = find_entry_by_account_id(&entries, &account_id).ok_or_else(|| {
                 RuntimeApiError::NotFound(format!("Unknown Antigravity account '{account_id}'."))
             })?;
             (
                 entry.agent_id.clone(),
+                entry.generation,
                 entry.driver_config.clone(),
                 entry.auth_method.uses_browser(),
             )
@@ -920,17 +1020,41 @@ impl RuntimeRegistry {
 
         let handle = start_agy_login(&driver_config, &HashMap::new())
             .await
-            .map_err(|error| RuntimeApiError::Internal(error.to_string()))?;
+            .map_err(|error| {
+                eprintln!("[ads-http] agy login startup failed for {account_id}: {error}");
+                RuntimeApiError::Unavailable(
+                    "Unable to start Antigravity sign-in flow. Ensure 'agy' CLI is installed and reachable."
+                        .to_string(),
+                )
+            })?;
         let auth = handle.authorization().clone();
         let flow_id = format!("agy-login-{}", uuid::Uuid::new_v4().simple());
 
-        self.active_logins.lock().await.insert(
+        let still_valid = {
+            let entries = self.agy_entries.read().expect("agy entries read lock");
+            entries
+                .get(&agent_id)
+                .is_some_and(|entry| entry.generation == captured_generation)
+        };
+        if !still_valid {
+            handle.cancel().await;
+            return Err(RuntimeApiError::Conflict(
+                "Account changed or was removed while starting sign-in. Please try again."
+                    .to_string(),
+            ));
+        }
+
+        let replaced = self.active_logins.lock().await.insert(
             account_id.clone(),
             ActiveAgyLogin {
                 authorization_url: auth.authorization_url.clone(),
+                created_at: Instant::now(),
                 handle,
             },
         );
+        if let Some(previous) = replaced {
+            previous.handle.cancel().await;
+        }
 
         Ok(AgyLoginStartView {
             account_id,
@@ -947,6 +1071,7 @@ impl RuntimeRegistry {
         account_id: &str,
         code: &str,
     ) -> Result<AgyAccountView, RuntimeApiError> {
+        self.sweep_expired_logins().await;
         let account_id = normalize_target_account_id(account_id)?;
         let code = code.trim();
         if code.is_empty() {
@@ -955,16 +1080,23 @@ impl RuntimeRegistry {
             ));
         }
 
-        let mut active = self
-            .active_logins
-            .lock()
-            .await
-            .remove(&account_id)
-            .ok_or_else(|| {
-                RuntimeApiError::BadRequest(
+        let mut active = {
+            let mut logins = self.active_logins.lock().await;
+            let Some(existing) = logins.get(&account_id) else {
+                return Err(RuntimeApiError::BadRequest(
                     "No active sign-in flow for this account. Start sign-in first.".to_string(),
-                )
-            })?;
+                ));
+            };
+            if validate_agy_login_response(existing.handle.authorization(), code).is_none() {
+                return Err(RuntimeApiError::BadRequest(
+                    "Invalid authorization code or callback URL. Check the value and try again."
+                        .to_string(),
+                ));
+            }
+            logins
+                .remove(&account_id)
+                .expect("validated active login entry")
+        };
 
         if let Err(error) = active.handle.submit_response(code).await {
             return Err(RuntimeApiError::BadRequest(error.to_string()));
@@ -977,6 +1109,7 @@ impl RuntimeRegistry {
         &self,
         account_id: &str,
     ) -> Result<bool, RuntimeApiError> {
+        self.sweep_expired_logins().await;
         let account_id = normalize_target_account_id(account_id)?;
         if let Some(active) = self.active_logins.lock().await.remove(&account_id) {
             active.handle.cancel().await;
@@ -990,19 +1123,33 @@ impl RuntimeRegistry {
         account_id: &str,
     ) -> Result<AgyAccountView, RuntimeApiError> {
         let account_id = normalize_target_account_id(account_id)?;
+        let _mutation = self.mutation_lock.lock().await;
         if let Some(active) = self.active_logins.lock().await.remove(&account_id) {
             active.handle.cancel().await;
         }
 
+        let new_generation = self.alloc_generation();
         let (agent_id, runner, isolated_dir) = {
-            let entries = self.agy_entries.read().expect("agy entries read lock");
-            let entry = find_entry_by_account_id(&entries, &account_id).ok_or_else(|| {
-                RuntimeApiError::NotFound(format!("Unknown Antigravity account '{account_id}'."))
-            })?;
+            let mut entries = self.agy_entries.write().expect("agy entries write lock");
+            let entry = entries
+                .values_mut()
+                .find(|entry| entry.account_id == account_id)
+                .ok_or_else(|| {
+                    RuntimeApiError::NotFound(format!(
+                        "Unknown Antigravity account '{account_id}'."
+                    ))
+                })?;
             let isolated_dir = match &entry.driver_config.profile {
                 AgyProfileMode::Isolated(profile) => Some(profile.profile_dir.clone()),
                 AgyProfileMode::HostDefault => None,
             };
+            if isolated_dir.is_none() {
+                return Err(RuntimeApiError::BadRequest(
+                    "Sign-out is supported on isolated Antigravity accounts; use 'agy' CLI to sign out the host default profile."
+                        .to_string(),
+                ));
+            }
+            entry.generation = new_generation;
             (
                 entry.agent_id.clone(),
                 Arc::clone(&entry.runner),
@@ -1012,18 +1159,17 @@ impl RuntimeRegistry {
 
         runner.shutdown().await;
         if let Some(profile_dir) = isolated_dir {
-            logout_agy_profile(&profile_dir)
+            tokio::task::spawn_blocking(move || logout_agy_profile(&profile_dir))
+                .await
+                .map_err(|error| RuntimeApiError::Internal(error.to_string()))?
                 .map_err(|error| RuntimeApiError::Internal(error.to_string()))?;
-        } else {
-            return Err(RuntimeApiError::BadRequest(
-                "Sign-out is supported on isolated Antigravity accounts; use 'agy' CLI to sign out the host default profile."
-                    .to_string(),
-            ));
         }
 
         {
             let mut entries = self.agy_entries.write().expect("agy entries write lock");
-            if let Some(entry) = entries.get_mut(&agent_id) {
+            if let Some(entry) = entries.get_mut(&agent_id)
+                && entry.generation == new_generation
+            {
                 entry.probe = AgyProbeResult {
                     status: AgyProbeStatus::AuthenticationRequired,
                     binary_path: entry.probe.binary_path.clone(),
@@ -1048,12 +1194,16 @@ impl RuntimeRegistry {
         account_id: &str,
     ) -> Result<AgyAccountView, RuntimeApiError> {
         let account_id = normalize_target_account_id(account_id)?;
-        let (agent_id, driver_config) = {
+        let (agent_id, captured_generation, driver_config) = {
             let entries = self.agy_entries.read().expect("agy entries read lock");
             let entry = find_entry_by_account_id(&entries, &account_id).ok_or_else(|| {
                 RuntimeApiError::NotFound(format!("Unknown Antigravity account '{account_id}'."))
             })?;
-            (entry.agent_id.clone(), entry.driver_config.clone())
+            (
+                entry.agent_id.clone(),
+                entry.generation,
+                entry.driver_config.clone(),
+            )
         };
 
         let probe = {
@@ -1062,7 +1212,9 @@ impl RuntimeRegistry {
         };
         {
             let mut entries = self.agy_entries.write().expect("agy entries write lock");
-            if let Some(entry) = entries.get_mut(&agent_id) {
+            if let Some(entry) = entries.get_mut(&agent_id)
+                && entry.generation == captured_generation
+            {
                 entry.probe = probe;
             }
         }
@@ -1091,6 +1243,7 @@ impl RuntimeRegistry {
         &self,
         account_id: &str,
     ) -> Result<AgyAccountView, RuntimeApiError> {
+        self.sweep_expired_logins().await;
         let pending_url = self
             .active_logins
             .lock()
@@ -1152,6 +1305,14 @@ impl RoutingPromptRunner {
     }
 
     fn resolve_target_agent(&self, entry: &LaneTurn) -> String {
+        // Reviewer → Acopilot handoff wakes historically carry a legacy `"agentId": "codex"`
+        // field from `ReviewVerdictHandoff::to_payload_map()`; always route handoffs to the
+        // lane's active ready runtime (falling back to the default ready runtime).
+        if entry.kind == LaneTurnKind::AgentHandoff {
+            return self
+                .registry
+                .resolve_active_agent_for_lane(&entry.logical_history_key);
+        }
         if let Some(explicit) = entry
             .payload
             .get("agentId")
@@ -1264,12 +1425,16 @@ fn agy_credential_profile(account_id: &str) -> String {
     format!("agy-account-{account_id}")
 }
 
+fn is_reserved_account_id(account_id: &str) -> bool {
+    account_id == AGY_DEFAULT_ACCOUNT_ID || account_id == AGY_DEFAULT_AGENT_ID
+}
+
 fn normalize_target_account_id(raw: &str) -> Result<String, RuntimeApiError> {
-    let trimmed = raw.trim();
-    if trimmed == AGY_DEFAULT_ACCOUNT_ID || trimmed == AGY_DEFAULT_AGENT_ID {
+    let trimmed = raw.trim().to_ascii_lowercase();
+    if is_reserved_account_id(&trimmed) {
         return Ok(AGY_DEFAULT_ACCOUNT_ID.to_string());
     }
-    validate_account_id(trimmed)
+    validate_account_id(&trimmed)
 }
 
 fn validate_account_id(raw: &str) -> Result<String, RuntimeApiError> {
@@ -1311,7 +1476,7 @@ fn derive_unique_account_id(db: &StateDb, label: &str) -> Result<String, Runtime
         }
     }
     let base = slug.trim_matches('-').to_string();
-    let base = if base.is_empty() || base == AGY_DEFAULT_ACCOUNT_ID {
+    let base = if base.is_empty() || is_reserved_account_id(&base) {
         format!("acct-{}", &uuid::Uuid::new_v4().simple().to_string()[..8])
     } else {
         base

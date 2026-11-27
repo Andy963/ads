@@ -39,9 +39,12 @@ fn map_runtime_error(error: RuntimeApiError) -> ApiError {
         RuntimeApiError::BadRequest(message) => ApiError::bad_request(message),
         RuntimeApiError::NotFound(message) => ApiError::not_found(message),
         RuntimeApiError::Conflict(message) => ApiError::new(StatusCode::CONFLICT, message),
+        RuntimeApiError::Unavailable(message) => {
+            ApiError::new(StatusCode::SERVICE_UNAVAILABLE, message)
+        }
         RuntimeApiError::Internal(message) => {
             eprintln!("[ads-http] runtime operation failed: {message}");
-            ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, message)
+            ApiError::internal()
         }
     }
 }

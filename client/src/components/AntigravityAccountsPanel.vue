@@ -56,7 +56,7 @@ const needsGcp = computed(
 function syncPendingLogins(list: AgyAccountView[]): void {
   const next: Record<string, { authorizationUrl: string; code: string }> = {};
   for (const account of list) {
-    const pendingUrl = account.pendingAuthorizationUrl?.trim();
+    const pendingUrl = account.loginPending ? account.authorizationUrl?.trim() : "";
     if (pendingUrl) {
       next[account.id] = {
         authorizationUrl: pendingUrl,
@@ -188,10 +188,15 @@ async function completeLogin(account: AgyAccountView): Promise<void> {
     return;
   }
   await perform(async () => {
-    await props.api.post<AgyAccountView>(
-      `/api/runtimes/agy/accounts/${encodeURIComponent(account.id)}/login/complete`,
-      { code },
-    );
+    try {
+      await props.api.post<AgyAccountView>(
+        `/api/runtimes/agy/accounts/${encodeURIComponent(account.id)}/login/complete`,
+        { code },
+      );
+    } catch (err) {
+      await load().catch(() => {});
+      throw err;
+    }
     const next = { ...activeLogins.value };
     delete next[account.id];
     activeLogins.value = next;
@@ -298,7 +303,7 @@ onBeforeUnmount(() => {
               <small class="settingsDetail">
                 {{ AUTH_METHOD_LABELS[account.authMethod] || account.authMethod }} · {{ account.agentId }}
               </small>
-              <small v-if="account.message && !account.ready" class="settingsDetail">{{ account.message }}</small>
+              <small v-if="account.error && !account.ready" class="settingsDetail">{{ account.error }}</small>
             </span>
             <span class="runtimeBadge" :class="{ ready: account.ready }">{{ statusLabel(account) }}</span>
           </div>
@@ -310,7 +315,7 @@ onBeforeUnmount(() => {
               class="agyActionBtn"
               :class="{ primary: !account.ready }"
               :data-testid="`agy-login-start-${account.id}`"
-              :disabled="busy"
+              :disabled="busy || account.status === 'binary_not_found'"
               @click="startLogin(account)"
             >
               {{ account.ready ? "Re-authenticate" : "Sign in" }}
