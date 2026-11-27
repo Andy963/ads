@@ -1499,6 +1499,19 @@ fn read_agy_profile_email_extracts_oauth_email_and_ignores_non_oauth_or_malforme
     .expect("write invalid email");
     assert_eq!(ads_acp::read_agy_profile_email(&malformed_cfg), None);
 
+    // Non-string unrelated email candidate (e.g. boolean active) must not break valid id_token_email
+    fs::write(
+        malformed_dir
+            .join(ads_acp::AGY_APP_DATA_DIR_NAME)
+            .join("antigravity-oauth-token"),
+        r#"{"active":true,"id_token_email":"mixed.types@example.com"}"#,
+    )
+    .expect("write mixed types");
+    assert_eq!(
+        ads_acp::read_agy_profile_email(&malformed_cfg).as_deref(),
+        Some("mixed.types@example.com")
+    );
+
     // 6. Missing profile returns None
     let missing_cfg = AgyDriverConfig::isolated(AgyIsolatedProfile::new(temp.path().join("nope")));
     assert_eq!(ads_acp::read_agy_profile_email(&missing_cfg), None);

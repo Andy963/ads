@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::env;
-use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::fs::{self, File, OpenOptions};
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{Arc, Mutex as StdMutex};
@@ -1797,11 +1797,11 @@ pub struct AgyProbeResult {
 #[derive(Deserialize)]
 struct OAuthTokenEmailMeta {
     #[serde(default)]
-    id_token_email: Option<String>,
+    id_token_email: Option<Value>,
     #[serde(default)]
-    active: Option<String>,
+    active: Option<Value>,
     #[serde(default)]
-    email: Option<String>,
+    email: Option<Value>,
 }
 
 fn normalize_account_email(raw: &str) -> Option<String> {
@@ -1828,17 +1828,26 @@ fn normalize_account_email(raw: &str) -> Option<String> {
 }
 
 fn read_email_from_oauth_file(path: &Path) -> Option<String> {
-    let meta = fs::metadata(path).ok()?;
-    if !meta.is_file() || meta.len() == 0 || meta.len() > MAX_OAUTH_META_FILE_BYTES {
+    let meta = fs::symlink_metadata(path).ok()?;
+    if !meta.file_type().is_file() || meta.len() == 0 || meta.len() > MAX_OAUTH_META_FILE_BYTES {
         return None;
     }
-    let raw = fs::read_to_string(path).ok()?;
-    let parsed: OAuthTokenEmailMeta = serde_json::from_str(&raw).ok()?;
+    let file = File::open(path).ok()?;
+    let mut bytes = Vec::new();
+    file.take(MAX_OAUTH_META_FILE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    if bytes.is_empty() || (bytes.len() as u64) > MAX_OAUTH_META_FILE_BYTES {
+        return None;
+    }
+    let parsed: OAuthTokenEmailMeta = serde_json::from_slice(&bytes).ok()?;
     for candidate in [parsed.id_token_email, parsed.active, parsed.email]
         .into_iter()
         .flatten()
     {
-        if let Some(email) = normalize_account_email(&candidate) {
+        if let Some(raw_email) = candidate.as_str()
+            && let Some(email) = normalize_account_email(raw_email)
+        {
             return Some(email);
         }
     }
@@ -1994,7 +2003,15 @@ pub fn normalize_agy_tier(id: Option<&str>, name: Option<&str>) -> Option<String
 
     loop {
         let lower = label.to_ascii_lowercase();
-        let stripped = [" tier", "-tier", "_tier", " plan", "-plan", " subscription"]
+        let stripped = [
+            " tier",
+            "-tier",
+            "_tier",
+            " plan",
+            "-plan",
+            "_plan",
+            " subscription",
+        ]
             .iter()
             .find_map(|suffix| {
                 lower
@@ -2224,8 +2241,16 @@ pub async fn probe_agy_runtime(config: &AgyDriverConfig, workspace_root: &Path) 
                 })
                 .unwrap_or_default();
             let tier = extract_agy_tier_from_session_extra(&created.extra);
-            let account_email = read_agy_profile_email(&effective_config)
-                .or_else(|| extract_agy_email_from_session_extra(&created.extra));
+            let is_oauth_profile = match &effective_config.profile {
+                AgyProfileMode::HostDefault => true,
+                AgyProfileMode::Isolated(isolated) => isolated.auth.method.uses_browser(),
+            };
+            let account_email = if is_oauth_profile {
+                read_agy_profile_email(&effective_config)
+                    .or_else(|| extract_agy_email_from_session_extra(&created.extra))
+            } else {
+                None
+            };
             AgyProbeResult {
                 status: AgyProbeStatus::Ready,
                 binary_path: Some(binary_str),
