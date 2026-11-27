@@ -1400,6 +1400,11 @@ impl AcpDriver for AgyDriver {
         AcpError::rpc(method, code, message, data)
     }
 
+    fn map_model_id(&self, model: &str) -> String {
+        let trimmed = model.trim();
+        trimmed.strip_prefix("agy:").unwrap_or(trimmed).to_string()
+    }
+
     fn resolve_alignment(
         &self,
         config_options: &ConfigOptionsState,
@@ -1409,37 +1414,38 @@ impl AcpDriver for AgyDriver {
         if let Some(raw_model) = desired
             .model
             .as_deref()
-            .map(str::trim)
+            .map(|value| self.map_model_id(value))
             .filter(|value| !value.is_empty())
-            .map(str::to_string)
-            && let Some(model_option) = config_options.resolve_model()
         {
-            let option_values: Vec<&str> = model_option
-                .flattened_values()
-                .into_iter()
-                .map(|entry| entry.value.as_str())
-                .collect();
-            if !option_values.is_empty() && !option_values.contains(&raw_model.as_str()) {
-                let mut candidates: Vec<&str> = option_values
-                    .iter()
-                    .copied()
-                    .filter(|family| raw_model.starts_with(&format!("{family}-")))
+            desired.model = Some(raw_model.clone());
+            if let Some(model_option) = config_options.resolve_model() {
+                let option_values: Vec<&str> = model_option
+                    .flattened_values()
+                    .into_iter()
+                    .map(|entry| entry.value.as_str())
                     .collect();
-                candidates.sort_by_key(|family| std::cmp::Reverse(family.len()));
-                if let Some(family) = candidates.into_iter().next() {
-                    let suffix = &raw_model[family.len() + 1..];
-                    let suffix_supported = KNOWN_THOUGHT_LEVELS.contains(&suffix)
-                        || config_options
-                            .resolve_thought_level()
-                            .is_some_and(|opt| opt.supports_value(suffix));
-                    if suffix_supported {
-                        desired.model = Some(family.to_string());
-                        if desired
-                            .thought_level
-                            .as_deref()
-                            .is_none_or(|value| value.trim().is_empty())
-                        {
-                            desired.thought_level = Some(suffix.to_string());
+                if !option_values.is_empty() && !option_values.contains(&raw_model.as_str()) {
+                    let mut candidates: Vec<&str> = option_values
+                        .iter()
+                        .copied()
+                        .filter(|family| raw_model.starts_with(&format!("{family}-")))
+                        .collect();
+                    candidates.sort_by_key(|family| std::cmp::Reverse(family.len()));
+                    if let Some(family) = candidates.into_iter().next() {
+                        let suffix = &raw_model[family.len() + 1..];
+                        let suffix_supported = KNOWN_THOUGHT_LEVELS.contains(&suffix)
+                            || config_options
+                                .resolve_thought_level()
+                                .is_some_and(|opt| opt.supports_value(suffix));
+                        if suffix_supported {
+                            desired.model = Some(family.to_string());
+                            if desired
+                                .thought_level
+                                .as_deref()
+                                .is_none_or(|value| value.trim().is_empty())
+                            {
+                                desired.thought_level = Some(suffix.to_string());
+                            }
                         }
                     }
                 }

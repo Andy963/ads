@@ -11,10 +11,10 @@ use ads_codex_app_server::{
     run_codex_review,
 };
 use ads_http::{
-    ActionsLaneMessage, CookieSecureMode, ReviewVerdictMessage, RouterConfig, WebSocketConfig,
-    WebSocketHub, WebSocketScheduleNotifier, build_router, detect_workspace_root,
-    enqueue_review_verdict_message, parse_allowed_origins, publish_actions_lane_message,
-    resolve_allowed_dirs, resolve_client_dir,
+    ActionsLaneMessage, CookieSecureMode, NATIVE_AGENT_ID, ReviewVerdictMessage, RouterConfig,
+    RoutingPromptRunner, RuntimeRegistry, RuntimeRegistryConfig, WebSocketConfig, WebSocketHub,
+    WebSocketScheduleNotifier, build_router, detect_workspace_root, enqueue_review_verdict_message,
+    parse_allowed_origins, publish_actions_lane_message, resolve_allowed_dirs, resolve_client_dir,
 };
 use ads_native::{
     ActionTools, ModelResolver, NativePromptRunner, NativePromptRunnerOptions,
@@ -22,7 +22,9 @@ use ads_native::{
 };
 use ads_runtime::PromptQueueRunner;
 use ads_runtime::scheduler::{ScheduleExecutor, SchedulerRuntime, SchedulerRuntimeOptions};
-use ads_state::{StateDb, WorkspaceDb, resolve_state_db_path, resolve_workspaces_db_path};
+use ads_state::{
+    StateDb, WorkspaceDb, resolve_ads_state_dir, resolve_state_db_path, resolve_workspaces_db_path,
+};
 use tokio::net::TcpListener;
 
 #[tokio::main]
@@ -47,6 +49,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let workspace_db = Arc::new(WorkspaceDb::open(&workspaces_db_path)?);
     let websocket_hub = Arc::new(WebSocketHub::new(WebSocketConfig::from_env()));
     let runtime_backend = resolve_agent_runtime(std::env::var("ADS_AGENT_RUNTIME").ok().as_deref());
+    let current_dir = std::env::current_dir()?;
+    let fallback_allowed_dir = detect_workspace_root(&current_dir);
+    let state_dir = resolve_ads_state_dir();
     let review_queue = build_review_queue(
         state_db.clone(),
         Arc::clone(&websocket_hub),
@@ -55,30 +60,38 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let model_resolver = ModelResolver::new(state_db.clone());
     let mut native_options =
         NativePromptRunnerOptions::new(state_db.clone(), model_resolver.clone());
+    native_options.agent_id = NATIVE_AGENT_ID.to_string();
     let native_action_tools = review_action_tools_factory(Arc::clone(&review_queue));
     native_options.action_tools_factory = Some(Arc::clone(&native_action_tools));
     let native_runner = Arc::new(NativePromptRunner::new(native_options));
-    let (prompt_runner, schedule_executor): (
-        Arc<dyn PromptQueueRunner>,
-        Arc<dyn ScheduleExecutor>,
-    ) = match runtime_backend {
-        AgentRuntimeBackend::Native => (native_runner.clone(), native_runner.clone()),
-        AgentRuntimeBackend::CodexAppServer => {
-            let factory: CodexActionToolsFactory = Arc::new(move |entry| {
-                native_action_tools(entry)
-                    .map(|tools: ActionTools| AgentActionTools::from_native(tools))
-            });
-            let mut prompt_options =
-                CodexAppServerPromptRunnerOptions::new(state_db.clone(), SpawnOptions::default());
-            prompt_options.action_tools_factory = Some(factory);
-            let runner = Arc::new(CodexAppServerPromptRunner::new(prompt_options));
-            (runner.clone(), runner)
-        }
-    };
+
+    let codex_action_tools: CodexActionToolsFactory = Arc::new(move |entry| {
+        native_action_tools(entry).map(|tools: ActionTools| AgentActionTools::from_native(tools))
+    });
+    let mut codex_options =
+        CodexAppServerPromptRunnerOptions::new(state_db.clone(), SpawnOptions::default());
+    codex_options.action_tools_factory = Some(codex_action_tools);
+    let codex_runner = Arc::new(CodexAppServerPromptRunner::new(codex_options));
+
+    let mut registry_config = RuntimeRegistryConfig::new(
+        state_db.clone(),
+        state_dir.clone(),
+        fallback_allowed_dir.clone(),
+    );
+    registry_config.native_runner = Some(native_runner.clone());
+    registry_config.native_scheduler = Some(native_runner.clone());
+    registry_config.codex_runner = Some(codex_runner.clone());
+    registry_config.codex_scheduler = Some(codex_runner.clone());
+    let runtime_registry = RuntimeRegistry::new(registry_config);
+    runtime_registry.attach_ws_hub(Arc::clone(&websocket_hub));
+    let _startup_probe = runtime_registry.spawn_startup_probe();
+
+    let routing_runner = Arc::new(RoutingPromptRunner::new(Arc::clone(&runtime_registry)));
+    let prompt_runner: Arc<dyn PromptQueueRunner> = routing_runner.clone();
+    let schedule_executor: Arc<dyn ScheduleExecutor> = routing_runner;
+
     let schedule_compiler = Arc::new(NativeScheduleCompiler::new(model_resolver));
     let auth = Arc::new(AuthService::new(state_db, AuthConfig::from_env()));
-    let current_dir = std::env::current_dir()?;
-    let fallback_allowed_dir = detect_workspace_root(&current_dir);
     let allowed_dirs_raw = std::env::var("ALLOWED_DIRS").ok();
     let allowed_dirs = resolve_allowed_dirs(allowed_dirs_raw.as_deref(), &fallback_allowed_dir);
     let allowed_origins =
@@ -99,25 +112,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         fallback_allowed_dir.clone(),
     )
     .with_client_dir(Some(client_dir))
+    .with_workspace_state_dir(state_dir)
     .with_prompt_queue_runner(prompt_runner)
     .with_schedule_compiler(schedule_compiler)
     .with_scheduler(Arc::clone(&scheduler))
     .with_websocket_hub(websocket_hub)
-    .with_review_queue(review_queue);
+    .with_review_queue(review_queue)
+    .with_runtime_registry(Arc::clone(&runtime_registry));
     let app = build_router(auth, config);
 
     let listener = TcpListener::bind(address).await?;
     println!(
-        "[ads-rust] listening on http://{} (state: {}, workspaces: {}, runtime: {:?})",
+        "[ads-rust] listening on http://{} (state: {}, workspaces: {}, default_agent: {})",
         listener.local_addr()?,
         db_path.display(),
         workspaces_db_path.display(),
-        runtime_backend
+        runtime_registry.default_active_agent_id()
     );
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
         .await?;
     scheduler.stop();
+    runtime_registry.shutdown_all().await;
     Ok(())
 }
 

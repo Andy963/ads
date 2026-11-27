@@ -1505,6 +1505,25 @@ async function onSettingsChanged(): Promise<void> {
   }
 }
 
+const readyAgyAgentSignature = computed(() => {
+  const ids = new Set<string>();
+  for (const runtime of [activeRuntime.value, activeAcopilotRuntime.value]) {
+    const list = runtime?.availableAgents?.value ?? [];
+    for (const agent of list) {
+      const id = String(agent?.id ?? "").trim();
+      if (agent?.ready && (id === "agy" || id.startsWith("agy:"))) {
+        ids.add(id);
+      }
+    }
+  }
+  return Array.from(ids).sort().join(",");
+});
+
+watch(readyAgyAgentSignature, (next, prev) => {
+  if (!loggedIn.value || !next || next === prev) return;
+  void loadModels().catch(() => {});
+});
+
 const runningTaskCount = computed(() => 0);
 
 const authConnectionState = ref<"checking" | "offline" | "unavailable" | "request-failed">("checking");

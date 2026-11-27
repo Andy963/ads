@@ -82,4 +82,5 @@
 - 0071 - [ADR 0071: Authenticate WebSockets Before Upgrade and Bound Outbound Delivery](0071-authenticated-bounded-websocket-delivery.md)
 - 0072 - [ADR 0072: Generic ACP v1 Runtime Kernel](0072-generic-acp-v1-runtime-kernel.md)
 - 0073 - [ADR 0073: Implement AgyDriver and AcpPromptRunner for agy acp (Phase 2A)](0073-agy-driver-and-acp-prompt-runner.md)
+- 0074 - [ADR 0074: Dynamic Runtime Auto-Probing, Multi-Account Antigravity Support, and Client-Side Runtime Switching (Phase 2B)](0074-dynamic-runtime-autoprobing-and-multi-account-switcher.md)
 <!-- ADS:ADR_INDEX_END -->

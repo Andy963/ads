@@ -12,6 +12,7 @@ pub mod static_files;
 mod ws;
 
 mod routes;
+pub mod runtimes;
 mod skills;
 mod state;
 mod task_notifications;
@@ -34,6 +35,11 @@ pub use paths::{
 pub use routes::{
     RouterConfig, build_router,
     pull_requests::{DefaultGhRunner, GhRunner, PullRequestManager},
+};
+pub use runtimes::{
+    AGY_DEFAULT_AGENT_ID, AgyAccountView, AgyLoginStartView, CODEX_AGENT_ID, NATIVE_AGENT_ID,
+    RoutingPromptRunner, RuntimeAgentDescriptor, RuntimeRegistry, RuntimeRegistryConfig,
+    UpsertAgyAccountInput, resolve_initial_default_agent,
 };
 pub use skills::{
     SkillEntrypoint, SkillMetadata, SkillPaths, SkillRequiredEnv, SkillSource, SkillTriggers,

@@ -454,6 +454,30 @@ impl WebSocketHub {
         self.dispatch_targets(targets)
     }
 
+    pub fn broadcast_agents(&self, frame: &Value) -> usize {
+        let targets = {
+            let connections = self
+                .connections
+                .lock()
+                .expect("websocket connection registry lock");
+            connections
+                .values()
+                .filter(|connection| !connection.connector)
+                .map(|connection| {
+                    (
+                        OutboundTarget {
+                            lane_index: connection.lane_index,
+                            sender: connection.sender.clone(),
+                            overflow_notify: connection.overflow_notify.clone(),
+                        },
+                        ControlEvent::Frame(frame.clone()),
+                    )
+                })
+                .collect()
+        };
+        self.dispatch_targets(targets)
+    }
+
     fn delta_coalescer(&self, namespace: &str, lane_key: &str) -> Arc<DeltaStreamCoalescer> {
         let key = format!("{namespace}::{lane_key}");
         let mut coalescers = self
@@ -1239,12 +1263,14 @@ async fn serve(
             sender: control_tx.clone(),
             overflow_notify: overflow_tx.clone(),
         });
+        let active_agent_id = resolve_lane_active_agent(&state, &lane.logical_history_key);
         let connection = ConnectionContext {
             state: &state,
             lane,
             connection_id: connection_guard.id(),
             history_config,
             current_cwd,
+            active_agent_id,
             last_received_at: 0,
         };
         let meta = LaneMeta {
@@ -1270,8 +1296,14 @@ async fn serve(
             meta, connection, ..
         } = runtime;
         let mut lane_socket = LaneSocket::new(&mut socket, meta, Some(overflow_rx.clone()));
-        if !send_bootstrap_frames(&mut lane_socket, &state, &bootstrap, Some(&connection.lane))
-            .await
+        if !send_bootstrap_frames(
+            &mut lane_socket,
+            &state,
+            &bootstrap,
+            Some(&connection.lane),
+            &connection.active_agent_id,
+        )
+        .await
         {
             return;
         }
@@ -1544,11 +1576,18 @@ async fn send_bootstrap_frames(
     state: &AppState,
     bootstrap: &Bootstrap,
     prompt_queue_lane: Option<&LaneBinding>,
+    active_agent_id: &str,
 ) -> bool {
     let in_flight = bootstrap_in_flight(state, prompt_queue_lane);
     if !send_json(
         socket,
-        build_welcome(state, bootstrap, &bootstrap.chat_session_id, in_flight),
+        build_welcome(
+            state,
+            bootstrap,
+            &bootstrap.chat_session_id,
+            in_flight,
+            active_agent_id,
+        ),
     )
     .await
     {
@@ -1559,7 +1598,7 @@ async fn send_bootstrap_frames(
             return false;
         }
     }
-    if !send_json(socket, build_agents()).await {
+    if !send_json(socket, build_agents(state, active_agent_id)).await {
         return false;
     }
     if let Some(history_payload) = &bootstrap.history_payload {
@@ -2255,11 +2294,19 @@ fn prompt_history_text(payload: &Map<String, Value>) -> Option<String> {
     (!joined.is_empty()).then_some(joined)
 }
 
+fn resolve_lane_active_agent(state: &AppState, logical_history_key: &str) -> String {
+    if let Some(registry) = state.runtime_registry.as_ref() {
+        return registry.resolve_active_agent_for_lane(logical_history_key);
+    }
+    "codex".to_string()
+}
+
 fn build_welcome(
     state: &AppState,
     bootstrap: &Bootstrap,
     chat_session_id: &str,
     in_flight: bool,
+    active_agent_id: &str,
 ) -> Value {
     let mut frame = Map::new();
     frame.insert("type".to_string(), json!("welcome"));
@@ -2290,15 +2337,24 @@ fn build_welcome(
     if let Some(effort) = bootstrap.effective_model_reasoning_effort.as_deref() {
         frame.insert("effectiveModelReasoningEffort".to_string(), json!(effort));
     }
-    frame.insert("activeAgentId".to_string(), json!("codex"));
+    frame.insert("activeAgentId".to_string(), json!(active_agent_id));
     frame.insert("contextMode".to_string(), json!("fresh"));
     Value::Object(frame)
 }
 
-fn build_agents() -> Value {
+fn build_agents(state: &AppState, active_agent_id: &str) -> Value {
+    if let Some(registry) = state.runtime_registry.as_ref() {
+        let agents = registry.list_agents();
+        return json!({
+            "type": "agents",
+            "activeAgentId": active_agent_id,
+            "agents": agents,
+            "threadId": null,
+        });
+    }
     json!({
         "type": "agents",
-        "activeAgentId": "codex",
+        "activeAgentId": active_agent_id,
         "agents": [{ "id": "codex", "name": "Codex", "ready": true }],
         "threadId": null,
     })
@@ -2310,6 +2366,7 @@ struct ConnectionContext<'a> {
     connection_id: u64,
     history_config: HistoryConfig,
     current_cwd: PathBuf,
+    active_agent_id: String,
     last_received_at: i64,
 }
 
@@ -2606,6 +2663,7 @@ async fn handle_text_frame(
         "retry_agent_message" => {
             handle_retry_agent_message(socket, connection, frame.get("payload")).await
         }
+        "set_agent" => handle_set_agent(socket, connection, frame.get("payload")).await,
         _ => true,
     }
 }
@@ -2815,7 +2873,38 @@ async fn handle_prompt_message(
         )
         .await;
     };
-    let queue_payload = normalize_prompt_queue_payload(payload);
+    let mut queue_payload = normalize_prompt_queue_payload(payload);
+    if let Some(registry) = connection.state.runtime_registry.as_ref() {
+        let explicit_agent_id = queue_payload
+            .get("agentId")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+        let effective_agent_id = if let Some(explicit) = explicit_agent_id {
+            if let Err(message) = registry.is_agent_ready(&explicit) {
+                return send_json(socket, json!({ "type": "error", "message": message })).await;
+            }
+            explicit
+        } else if registry.is_agent_ready(&connection.active_agent_id).is_ok() {
+            connection.active_agent_id.clone()
+        } else {
+            let fallback = registry.default_active_agent_id();
+            if let Err(message) = registry.is_agent_ready(&fallback) {
+                return send_json(socket, json!({ "type": "error", "message": message })).await;
+            }
+            fallback
+        };
+        if effective_agent_id != connection.active_agent_id {
+            connection.active_agent_id = effective_agent_id.clone();
+            if let Err(error) =
+                registry.save_lane_agent(&connection.lane.logical_history_key, &effective_agent_id)
+            {
+                eprintln!("[ads-ws] failed to persist lane agent: {error}");
+            }
+        }
+        queue_payload.insert("agentId".to_string(), json!(effective_agent_id));
+    }
     let text = prompt_history_text(&queue_payload);
     let replay_incomplete = queue_payload.get("replay_incomplete") == Some(&Value::Bool(true));
     let retry_original = queue_payload.get("retry_original") == Some(&Value::Bool(true));
@@ -2893,6 +2982,82 @@ async fn handle_prompt_message(
             "queue_position": current.position,
             "queue_attempts": current.attempts,
         }),
+    )
+    .await
+}
+
+async fn handle_set_agent(
+    socket: &mut LaneSocket<'_>,
+    connection: &mut ConnectionContext<'_>,
+    payload: Option<&Value>,
+) -> bool {
+    let requested = match payload {
+        Some(Value::String(value)) => value.trim().to_string(),
+        Some(Value::Object(map)) => map
+            .get("agentId")
+            .or_else(|| map.get("agent_id"))
+            .or_else(|| map.get("id"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or_default()
+            .to_string(),
+        _ => String::new(),
+    };
+    if requested.is_empty() {
+        if !send_json(
+            socket,
+            json!({ "type": "error", "message": "Agent ID is required." }),
+        )
+        .await
+        {
+            return false;
+        }
+        return send_json(
+            socket,
+            build_agents(connection.state, &connection.active_agent_id),
+        )
+        .await;
+    }
+
+    if let Some(registry) = connection.state.runtime_registry.as_ref() {
+        if let Err(message) = registry.is_agent_ready(&requested) {
+            if !send_json(socket, json!({ "type": "error", "message": message })).await {
+                return false;
+            }
+            return send_json(
+                socket,
+                build_agents(connection.state, &connection.active_agent_id),
+            )
+            .await;
+        }
+        connection.active_agent_id = requested.clone();
+        if let Err(error) =
+            registry.save_lane_agent(&connection.lane.logical_history_key, &requested)
+        {
+            eprintln!("[ads-ws] failed to persist lane agent: {error}");
+        }
+        return send_json(
+            socket,
+            build_agents(connection.state, &connection.active_agent_id),
+        )
+        .await;
+    }
+
+    if requested != "codex" {
+        if !send_json(
+            socket,
+            json!({ "type": "error", "message": format!("Unknown runtime agent '{requested}'.") }),
+        )
+        .await
+        {
+            return false;
+        }
+    } else {
+        connection.active_agent_id = requested;
+    }
+    send_json(
+        socket,
+        build_agents(connection.state, &connection.active_agent_id),
     )
     .await
 }
@@ -3765,7 +3930,16 @@ async fn switch_chat_and_reply(
         );
     }
     socket.rebind(&connection.lane.chat_session_id);
-    send_bootstrap_frames(socket, state, &bootstrap, Some(&connection.lane)).await
+    connection.active_agent_id =
+        resolve_lane_active_agent(state, &connection.lane.logical_history_key);
+    send_bootstrap_frames(
+        socket,
+        state,
+        &bootstrap,
+        Some(&connection.lane),
+        &connection.active_agent_id,
+    )
+    .await
 }
 
 async fn apply_session_switch(
@@ -3832,7 +4006,16 @@ async fn apply_session_switch(
         }
     };
     socket.rebind(&connection.lane.chat_session_id);
-    send_bootstrap_frames(socket, state, &bootstrap, Some(&connection.lane)).await
+    connection.active_agent_id =
+        resolve_lane_active_agent(state, &connection.lane.logical_history_key);
+    send_bootstrap_frames(
+        socket,
+        state,
+        &bootstrap,
+        Some(&connection.lane),
+        &connection.active_agent_id,
+    )
+    .await
 }
 
 fn switch_lane_state(
@@ -4009,7 +4192,7 @@ async fn reset_shared_and_reply(
     if !send_json(socket, reset_payload).await {
         return false;
     }
-    if !send_bootstrap_frames(socket, state, &bootstrap, None).await {
+    if !send_bootstrap_frames(socket, state, &bootstrap, None, &connection.active_agent_id).await {
         return false;
     }
     send_json(
@@ -4093,7 +4276,7 @@ async fn reset_lane_and_reply(
     if !send_json(socket, reset_payload).await {
         return false;
     }
-    if !send_bootstrap_frames(socket, state, &bootstrap, None).await {
+    if !send_bootstrap_frames(socket, state, &bootstrap, None, &connection.active_agent_id).await {
         return false;
     }
     send_json(
@@ -4163,7 +4346,14 @@ async fn apply_lane_reset(
             .await;
         }
     };
-    send_bootstrap_frames(socket, connection.state, &bootstrap, None).await
+    send_bootstrap_frames(
+        socket,
+        connection.state,
+        &bootstrap,
+        None,
+        &connection.active_agent_id,
+    )
+    .await
 }
 
 fn reset_shared_state(
@@ -5922,6 +6112,7 @@ mod tests {
                 Arc::new(crate::routes::pull_requests::DefaultGhRunner),
             )),
             web_push,
+            runtime_registry: None,
         };
 
         let make_entry = |channel: Option<&str>| {

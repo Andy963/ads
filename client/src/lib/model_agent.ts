@@ -27,12 +27,18 @@ export function supportsAgentModel(args: { agentId: string; model: ModelConfig }
 
   const provider = String(args.model.provider ?? "").trim().toLowerCase();
   const modelId = String(args.model.modelId ?? args.model.id ?? "").trim();
+  if (agentId === "native") {
+    return provider !== "antigravity";
+  }
+  if (agentId === "agy" || agentId.startsWith("agy:")) {
+    return provider === "antigravity";
+  }
   if (agentId === "claude") {
     if (provider.includes("anthropic")) return true;
     return isClaudeModelId(modelId);
   }
   if (agentId === "codex") {
-    if (provider.includes("anthropic")) return false;
+    if (provider.includes("anthropic") || provider === "antigravity") return false;
     if (isClaudeModelId(modelId)) return false;
     return true;
   }

@@ -319,11 +319,16 @@ pub(super) async fn list_conversation_models(
 ) -> Result<Json<Vec<ModelConfig>>, ApiError> {
     let _session = require_session(&state, &headers).await?;
     let db = state.auth.db().clone();
-    let models = model_db(db, move |connection| {
+    let mut models = model_db(db, move |connection| {
         initialize_model_services(&connection)?;
         Ok(list_service_models(&connection, CONVERSATION_SERVICE)?)
     })
     .await?;
+    if let Some(registry) = state.runtime_registry.as_ref() {
+        let existing_ids: std::collections::HashSet<String> =
+            models.iter().map(|model| model.id.clone()).collect();
+        models.extend(registry.discovered_agy_models(&existing_ids));
+    }
     Ok(Json(models))
 }
 

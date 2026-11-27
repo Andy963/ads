@@ -49,6 +49,56 @@ export interface ModelProvider {
   hasCredential: boolean;
 }
 
+export interface RuntimeAgentDescriptor {
+  id: string;
+  name: string;
+  kind: string;
+  ready: boolean;
+  error?: string | null;
+  accountId?: string | null;
+  authMethod?: string | null;
+  version?: string | null;
+}
+
+export interface RuntimesSnapshot {
+  activeAgentId: string;
+  agents: RuntimeAgentDescriptor[];
+}
+
+export type AgyAuthMethod =
+  | "oauth-personal"
+  | "oauth-business"
+  | "gemini-api-key"
+  | "agent-platform";
+
+export interface AgyAccountView {
+  id: string;
+  agentId: string;
+  label: string;
+  isDefault: boolean;
+  authMethod: AgyAuthMethod;
+  gcpProject?: string | null;
+  gcpLocation?: string | null;
+  hasApiKey: boolean;
+  ready: boolean;
+  status: string;
+  message?: string | null;
+  version?: string | null;
+  modelCount: number;
+  models: string[];
+  pendingAuthorizationUrl?: string | null;
+  probedAtMs: number;
+}
+
+export interface AgyLoginStartView {
+  accountId: string;
+  agentId: string;
+  flowId: string;
+  authorizationUrl: string;
+  redirectUri: string;
+  state: string;
+}
+
 /**
  * Lane identifiers as the API reports them.
  *
