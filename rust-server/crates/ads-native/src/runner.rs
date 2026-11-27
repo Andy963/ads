@@ -51,6 +51,7 @@ pub type NativePromptRunOutcome = PromptQueueRunOutcome;
 pub struct NativePromptRunnerOptions {
     pub db: StateDb,
     pub resolver: ModelResolver,
+    pub agent_id: String,
     pub role: String,
     pub history_max_entries_per_session: usize,
     pub history_max_text_length: usize,
@@ -73,6 +74,7 @@ impl NativePromptRunnerOptions {
         Self {
             db,
             resolver,
+            agent_id: "codex".to_string(),
             role: "acopilot".to_string(),
             history_max_entries_per_session: DEFAULT_HISTORY_MAX_ENTRIES_PER_SESSION,
             history_max_text_length: DEFAULT_HISTORY_MAX_TEXT_LENGTH,
@@ -854,7 +856,7 @@ impl NativePromptRunner {
             &entry.history_key,
             &entry.client_message_id,
             &PromptExecutionMetadata {
-                effective_agent_id: Some("codex".to_string()),
+                effective_agent_id: Some(self.options.agent_id.clone()),
                 effective_model: Some(model.model.clone()),
                 effective_model_reasoning_effort: effective_effort.map(str::to_string),
                 ..PromptExecutionMetadata::default()
@@ -886,6 +888,7 @@ impl NativePromptRunner {
             &entry.client_message_id,
             &output,
             &item_id,
+            &self.options.agent_id,
             &model.model,
             effective_effort,
         ));
@@ -1642,6 +1645,7 @@ fn result_event(
     client_message_id: &str,
     output: &str,
     item_id: &str,
+    active_agent_id: &str,
     effective_model: &str,
     effort: Option<&str>,
 ) -> Value {
@@ -1654,7 +1658,7 @@ fn result_event(
         "threadId": null,
         "effectiveModel": effective_model,
         "effectiveModelReasoningEffort": effort,
-        "activeAgentId": "codex",
+        "activeAgentId": active_agent_id,
         "contextMode": "fresh",
     })
 }

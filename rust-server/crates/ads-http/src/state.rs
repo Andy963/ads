@@ -31,4 +31,5 @@ pub struct AppState {
     pub review_queue: Option<Arc<ReviewQueue>>,
     pub pull_request_manager: Arc<crate::routes::pull_requests::PullRequestManager>,
     pub web_push: Arc<WebPushService>,
+    pub runtime_registry: Option<Arc<crate::runtimes::RuntimeRegistry>>,
 }

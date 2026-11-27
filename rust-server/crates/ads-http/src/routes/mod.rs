@@ -7,6 +7,7 @@ mod projects;
 mod providers;
 pub mod pull_requests;
 mod role_profiles;
+mod runtimes;
 mod schedules;
 mod web_push;
 
@@ -27,7 +28,7 @@ use axum::extract::{DefaultBodyLimit, FromRequest, Request, State};
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, patch, post, put};
+use axum::routing::{delete, get, patch, post, put};
 use rusqlite::Connection;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
@@ -58,6 +59,7 @@ pub struct RouterConfig {
     pub review_queue: Option<Arc<ReviewQueue>>,
     pub gh_runner: Option<Arc<dyn pull_requests::GhRunner>>,
     pub web_push_service: Option<Arc<WebPushService>>,
+    pub runtime_registry: Option<Arc<crate::runtimes::RuntimeRegistry>>,
 }
 
 impl RouterConfig {
@@ -83,6 +85,7 @@ impl RouterConfig {
             review_queue: None,
             gh_runner: None,
             web_push_service: None,
+            runtime_registry: None,
         }
     }
 
@@ -130,6 +133,14 @@ impl RouterConfig {
         self.web_push_service = Some(service);
         self
     }
+
+    pub fn with_runtime_registry(
+        mut self,
+        registry: Arc<crate::runtimes::RuntimeRegistry>,
+    ) -> Self {
+        self.runtime_registry = Some(registry);
+        self
+    }
 }
 
 pub fn build_router(auth: Arc<AuthService>, config: RouterConfig) -> Router {
@@ -143,6 +154,12 @@ pub fn build_router(auth: Arc<AuthService>, config: RouterConfig) -> Router {
             WebPushConfig::from_env(),
         ))
     });
+    let ws = config
+        .websocket_hub
+        .unwrap_or_else(|| Arc::new(WebSocketHub::new(WebSocketConfig::from_env())));
+    if let Some(registry) = config.runtime_registry.as_ref() {
+        registry.attach_ws_hub(Arc::clone(&ws));
+    }
     let mut state = AppState {
         auth,
         cookie_secure: config.cookie_secure,
@@ -152,9 +169,7 @@ pub fn build_router(auth: Arc<AuthService>, config: RouterConfig) -> Router {
         workspace_db: config.workspace_db,
         default_workspace_root: Arc::new(config.default_workspace_root),
         workspace_state_dir: Arc::new(config.workspace_state_dir),
-        ws: config
-            .websocket_hub
-            .unwrap_or_else(|| Arc::new(WebSocketHub::new(WebSocketConfig::from_env()))),
+        ws,
         prompt_queue: None,
         agent_messages: None,
         schedule_compiler: config.schedule_compiler,
@@ -162,6 +177,7 @@ pub fn build_router(auth: Arc<AuthService>, config: RouterConfig) -> Router {
         review_queue: config.review_queue,
         pull_request_manager,
         web_push,
+        runtime_registry: config.runtime_registry,
     };
     if let Some(runner) = config.prompt_queue_runner {
         start_prompt_queue(&mut state, Arc::clone(&runner));
@@ -226,6 +242,36 @@ pub fn build_router(auth: Arc<AuthService>, config: RouterConfig) -> Router {
         .route(
             "/api/role-profiles/{profile_id}",
             put(role_profiles::update),
+        )
+        .route("/api/runtimes", get(runtimes::list_runtimes))
+        .route("/api/runtimes/refresh", post(runtimes::refresh_runtimes))
+        .route(
+            "/api/runtimes/agy/accounts",
+            get(runtimes::list_agy_accounts).post(runtimes::upsert_agy_account),
+        )
+        .route(
+            "/api/runtimes/agy/accounts/{account_id}",
+            delete(runtimes::delete_agy_account),
+        )
+        .route(
+            "/api/runtimes/agy/accounts/{account_id}/login/start",
+            post(runtimes::start_agy_login),
+        )
+        .route(
+            "/api/runtimes/agy/accounts/{account_id}/login/complete",
+            post(runtimes::complete_agy_login),
+        )
+        .route(
+            "/api/runtimes/agy/accounts/{account_id}/login/cancel",
+            post(runtimes::cancel_agy_login),
+        )
+        .route(
+            "/api/runtimes/agy/accounts/{account_id}/logout",
+            post(runtimes::logout_agy_account),
+        )
+        .route(
+            "/api/runtimes/agy/accounts/{account_id}/refresh",
+            post(runtimes::refresh_agy_account),
         )
         .route(
             "/api/schedules",

@@ -12,6 +12,7 @@ import {
   normalizeModelTokenLimit,
   readModelTokenLimit,
 } from "../shared/modelTokenBudget";
+import AntigravityAccountsPanel from "./AntigravityAccountsPanel.vue";
 import ModelServicePicker from "./ModelServicePicker.vue";
 import RoleSettings from "./RoleSettings.vue";
 import VoiceSettings from "./VoiceSettings.vue";
@@ -26,6 +27,7 @@ const activeTab = ref<SettingsTab>(props.initialTab);
 const section = ref("providers");
 const sections = [
   { id: "providers", label: "Providers", title: "Providers", icon: "M4 7h16M4 17h16M7 4v6m10 4v6" },
+  { id: "runtimes", label: "Runtimes", title: "Runtimes", icon: "M12 2v4m0 12v4M4.93 4.93l2.83 2.83m8.48 8.48 2.83 2.83M2 12h4m12 0h4M4.93 19.07l2.83-2.83m8.48-8.48 2.83-2.83" },
   { id: "conversation", label: "Chat", title: "Conversation", icon: "M21 11.5a8.5 8.5 0 0 1-8.5 8.5H4l-1 1v-9.5A8.5 8.5 0 0 1 11.5 3h1a8.5 8.5 0 0 1 8.5 8.5Z" },
   { id: "transcription", label: "Speech", title: "Transcription", icon: "M9 5a3 3 0 0 1 6 0v7a3 3 0 0 1-6 0ZM5 10v2a7 7 0 0 0 14 0v-2M12 19v3m-4 0h8" },
   { id: "correction", label: "Correction", title: "Correction", icon: "m4 13 5 5L20 6M4 5h6M4 9h3" },
@@ -304,7 +306,7 @@ onBeforeUnmount(() => {
     <template v-if="activeTab === 'models'">
       <nav class="settingsDestinations" aria-label="Model services">
         <button v-for="tab in sections" :key="tab.id" type="button" :class="{ active: section === tab.id }" :aria-pressed="section === tab.id"
-          :data-testid="(tab.id === 'transcription' ? 'voice' : tab.id === 'providers' ? 'provider' : tab.id) + '-settings-tab'" @click="section = tab.id">
+          :data-testid="(tab.id === 'transcription' ? 'voice' : tab.id === 'providers' ? 'provider' : tab.id === 'runtimes' ? 'runtime' : tab.id) + '-settings-tab'" @click="section = tab.id">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path :d="tab.icon" /></svg>
           <span>{{ tab.label }}</span>
         </button>
@@ -351,6 +353,7 @@ onBeforeUnmount(() => {
             <p v-if="!group.provider" class="settingsNote">Choose a provider when editing these legacy models.</p>
           </article>
         </div>
+        <AntigravityAccountsPanel v-else-if="section === 'runtimes'" :api="api" @changed="emit('changed')" />
         <ModelServicePicker v-else-if="section === 'conversation'" :api="api" service="conversation" @changed="emit('changed')" />
         <VoiceSettings v-else :key="section" :api="api" :section="section === 'correction' ? 'correction' : 'transcription'" @changed="emit('changed')" />
       </div>

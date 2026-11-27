@@ -103,6 +103,7 @@ dependencies = [
 name = "ads-http"
 version = "0.1.0"
 dependencies = [
+ "ads-acp",
  "ads-actions",
  "ads-auth",
  "ads-contract",
