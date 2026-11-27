@@ -212,6 +212,21 @@ impl UpstreamCredentialStore {
         Ok(())
     }
 
+    pub fn delete(
+        &self,
+        connection: &rusqlite::Connection,
+        owner: &str,
+        profile: Option<&str>,
+    ) -> StateResult<bool> {
+        let normalized_profile = profile_key(profile)?;
+        require_owner(owner)?;
+        let deleted = connection.execute(
+            "DELETE FROM kv_state WHERE namespace = ?1 AND key = ?2",
+            params![NAMESPACE, record_key(owner, &normalized_profile)],
+        )?;
+        Ok(deleted > 0)
+    }
+
     fn read_envelope(
         &self,
         connection: &rusqlite::Connection,

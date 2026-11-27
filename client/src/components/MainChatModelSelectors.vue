@@ -206,16 +206,24 @@ watch(
 );
 
 const selectedModelLabel = computed(() => selectedModel.value ? formatModelLabel(selectedModel.value) : effectiveModelId.value || "Model");
+const activeAgent = computed(() =>
+  agentOptions.value.find((agent) => String(agent?.id ?? "").trim() === selectedAgentId.value) ?? null,
+);
+const hasMultipleAgents = computed(() => agentOptions.value.length > 1);
 const canChange = computed(() => props.connected && !props.busy && !props.inputLocked);
+const canOpenPicker = computed(() =>
+  canChange.value && (compatibleModelOptions.value.length > 0 || hasMultipleAgents.value),
+);
 
 const capsuleLabel = computed(() => {
-  if (!compatibleModelOptions.value.length) return "No models";
+  const agentPrefix = hasMultipleAgents.value && activeAgent.value ? `${activeAgent.value.name} · ` : "";
+  if (!compatibleModelOptions.value.length) return `${agentPrefix}No models`;
   const name = selectedModelLabel.value;
   if (!reasoningEffortOptions.value.length || (reasoningEffortOptions.value.length === 1 && (reasoningEffortOptions.value[0] === "none" || reasoningEffortOptions.value[0] === "off"))) {
-    return name;
+    return `${agentPrefix}${name}`;
   }
   const effort = REASONING_EFFORT_SHORT_LABELS[reasoningEffortValue.value] || REASONING_EFFORT_LABELS[reasoningEffortValue.value] || reasoningEffortValue.value;
-  return `${name} · ${effort}`;
+  return `${agentPrefix}${name} · ${effort}`;
 });
 
 const displayEfforts = computed(() => reasoningEffortOptions.value.map(id => ({
@@ -223,7 +231,7 @@ const displayEfforts = computed(() => reasoningEffortOptions.value.map(id => ({
 })));
 
 function togglePicker(): void {
-  if (!canChange.value || !compatibleModelOptions.value.length) return;
+  if (!canOpenPicker.value) return;
   pickerOpen.value = !pickerOpen.value;
   if (!pickerOpen.value) emit("pickerClose");
 }
@@ -231,6 +239,12 @@ function togglePicker(): void {
 function closePicker(): void {
   pickerOpen.value = false;
   emit("pickerClose");
+}
+
+function selectAgent(agentId: string): void {
+  if (!canChange.value || !readyAgentIds.value.includes(agentId)) return;
+  if (agentId === selectedAgentId.value) return;
+  emit("switchAgent", agentId);
 }
 
 function selectModel(modelId: string): void {
@@ -244,7 +258,7 @@ function selectReasoningEffort(effort: string): void {
 }
 
 function openPicker(): void {
-  if (!canChange.value || !compatibleModelOptions.value.length) return;
+  if (!canOpenPicker.value) return;
   pickerOpen.value = true;
 }
 
@@ -258,6 +272,7 @@ defineExpose({
   capsuleLabel,
   canChange,
   compatibleModelOptions,
+  selectedAgentId,
 });
 </script>
 
@@ -267,14 +282,15 @@ defineExpose({
     <button
       type="button"
       class="modelCapsule"
-      :class="{ 'modelCapsule--disabled': !canChange || !compatibleModelOptions.length }"
+      :class="{ 'modelCapsule--disabled': !canOpenPicker }"
       data-testid="chat-model-capsule"
-      :disabled="!canChange || !compatibleModelOptions.length"
+      :disabled="!canOpenPicker"
       :title="capsuleLabel"
       @click="togglePicker"
     >
-      <span class="modelCapsuleText" data-testid="chat-capsule-text">{{ selectedModelLabel }}</span>
-      <span class="modelCapsuleEffort" data-testid="chat-capsule-effort">{{ REASONING_EFFORT_SHORT_LABELS[reasoningEffortValue] || reasoningEffortValue }}</span>
+      <span v-if="hasMultipleAgents && activeAgent" class="modelCapsuleAgent" data-testid="chat-capsule-agent">{{ activeAgent.name }}</span>
+      <span class="modelCapsuleText" data-testid="chat-capsule-text">{{ compatibleModelOptions.length ? selectedModelLabel : "No models" }}</span>
+      <span v-if="compatibleModelOptions.length" class="modelCapsuleEffort" data-testid="chat-capsule-effort">{{ REASONING_EFFORT_SHORT_LABELS[reasoningEffortValue] || reasoningEffortValue }}</span>
       <span class="modelCapsuleChevron" aria-hidden="true">▾</span>
     </button>
 
@@ -341,6 +357,28 @@ defineExpose({
       @close="closePicker"
       @submit="closePicker"
     >
+      <div v-if="hasMultipleAgents" class="settingsBlock" data-testid="agent-picker-section">
+        <h2 class="settingsBlockTitle">Runtime</h2>
+        <div class="settingsList">
+          <button
+            v-for="agent in agentOptions"
+            :key="agent.id"
+            type="button"
+            class="settingsRow"
+            :aria-pressed="agent.id === selectedAgentId"
+            :disabled="!canChange || !agent.ready"
+            :data-testid="`agent-picker-item-${agent.id}`"
+            @click="selectAgent(agent.id)"
+          >
+            <span class="settingsRowContent">
+              <span>{{ agent.name }}</span>
+              <small v-if="!agent.ready" class="settingsDetail">{{ agent.error || 'Unavailable' }}</small>
+              <small v-else class="settingsDetail">{{ agent.id }}</small>
+            </span>
+            <span class="settingsCheckmark" aria-hidden="true">{{ agent.id === selectedAgentId ? '✓' : '' }}</span>
+          </button>
+        </div>
+      </div>
       <div class="settingsBlock">
         <h2 class="settingsBlockTitle">Conversation models</h2>
         <div class="settingsList">
@@ -401,6 +439,16 @@ defineExpose({
   .modelCapsule {
     max-width: 100%;
   }
+}
+
+.modelCapsuleAgent {
+  flex: 0 0 auto;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 6px;
+  background: rgba(15, 23, 42, 0.07);
+  color: var(--text);
 }
 
 .modelCapsuleEffort { flex: 0 0 auto; font-size: 11px; opacity: .8; }

@@ -342,6 +342,7 @@ struct TurnState {
     thread_id_from_started: Option<String>,
     turn_id: Option<String>,
     failed: Option<String>,
+    failed_payload: Option<Value>,
     blocked_command_ids: HashSet<String>,
     side_effect_observed: bool,
 }
@@ -532,8 +533,13 @@ impl CodexAppServerAgent {
                 Ok(result) => return Ok(result),
                 Err(error) => error,
             };
-            let side_effect_observed = state.lock().expect("turn state lock").side_effect_observed;
-            if attempt >= max_attempts || side_effect_observed || !is_retryable_agent_error(&error)
+            let (side_effect_observed, failed_payload) = {
+                let guard = state.lock().expect("turn state lock");
+                (guard.side_effect_observed, guard.failed_payload.clone())
+            };
+            if attempt >= max_attempts
+                || side_effect_observed
+                || !is_retryable_agent_error(&error, failed_payload.as_ref())
             {
                 return Err(error);
             }
@@ -611,6 +617,7 @@ impl CodexAppServerAgent {
                     current.thread_id_from_started = None;
                     current.turn_id = None;
                     current.failed = None;
+                    current.failed_payload = None;
                 }
                 self.emit_session_fallback(&thread_id, &error.to_string());
                 thread_id = self.ensure_thread(client, &state).await?;
@@ -1098,7 +1105,11 @@ impl CodexAppServerAgent {
                     });
                     return;
                 }
-                state.lock().expect("turn state lock").failed = Some(message.clone());
+                {
+                    let mut current = state.lock().expect("turn state lock");
+                    current.failed = Some(message.clone());
+                    current.failed_payload = Some(params.clone());
+                }
                 self.emit(AgentEvent {
                     phase: "error".to_string(),
                     title: "执行失败".to_string(),
@@ -2070,54 +2081,33 @@ fn is_missing_provider_session(message: &str) -> bool {
                 || normalized.contains("conversation")))
 }
 
-fn is_retryable_agent_error(error: &AgentError) -> bool {
-    let message = error.to_string();
-    let eligible = matches!(
-        error,
-        AgentError::TurnFailed(_)
-            | AgentError::Rpc(RpcError::Transport(_))
-            | AgentError::Rpc(RpcError::Closed { .. })
-            | AgentError::Rpc(RpcError::Timeout { .. })
-            | AgentError::Rpc(RpcError::Remote { .. })
-    );
-    eligible && is_transient_upstream_model_error(&message)
-}
-
-fn is_transient_upstream_model_error(message: &str) -> bool {
-    let normalized = message
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-        .to_lowercase();
-    if normalized.is_empty() {
-        return false;
+fn is_retryable_agent_error(error: &AgentError, failed_payload: Option<&Value>) -> bool {
+    match error {
+        AgentError::TurnFailed(message) => {
+            if let Some(decision) =
+                failed_payload.and_then(ads_native::is_transient_upstream_payload)
+            {
+                return decision;
+            }
+            ads_native::is_transient_upstream_model_error(message)
+        }
+        AgentError::Rpc(RpcError::Remote { message, data, .. }) => {
+            if let Some(decision) = data
+                .as_ref()
+                .and_then(ads_native::is_transient_upstream_payload)
+            {
+                return decision;
+            }
+            ads_native::is_transient_upstream_model_error(message)
+        }
+        AgentError::Rpc(RpcError::Transport(message)) => {
+            ads_native::is_transient_upstream_model_error(message)
+        }
+        AgentError::Rpc(RpcError::Closed { .. } | RpcError::Timeout { .. }) => {
+            ads_native::is_transient_upstream_model_error(&error.to_string())
+        }
+        _ => false,
     }
-    normalized.contains("we're currently experiencing high demand")
-        || normalized.contains("we are currently experiencing high demand")
-        || (normalized.contains("high demand") && normalized.contains("temporary errors"))
-        || contains_http_status(&normalized, "429")
-        || (contains_http_status(&normalized, "503") && normalized.contains("service unavailable"))
-        || ["520", "521", "522", "523", "524"]
-            .iter()
-            .any(|status| contains_http_status(&normalized, status))
-        || normalized.contains("bad_response_status_code")
-        || normalized.contains("stream disconnected")
-        || normalized.contains("stream closed before response.completed")
-        || normalized.contains("econnreset")
-        || normalized.contains("etimedout")
-        || normalized.contains("econnrefused")
-        || normalized.contains("socket hang up")
-        || normalized.contains("premature close")
-        || normalized.contains("fetch failed")
-}
-
-fn contains_http_status(message: &str, status: &str) -> bool {
-    message.match_indices(status).any(|(index, _)| {
-        let before = message[..index].chars().next_back();
-        let after = message[index + status.len()..].chars().next();
-        !before.is_some_and(|value| value.is_ascii_digit())
-            && !after.is_some_and(|value| value.is_ascii_digit())
-    })
 }
 
 fn retry_delay_ms(config: &RetryConfig, attempt: usize, _message: &str) -> u64 {

@@ -802,16 +802,19 @@ fn provider_failure(value: &Value) -> NativeError {
         .and_then(|error| error.get("status"))
         .and_then(Value::as_u64)
         .and_then(|value| u16::try_from(value).ok());
-    let retryable = code.is_some_and(|code| RETRYABLE_CODES.contains(&code))
-        || status.is_some_and(|status| RETRYABLE_HTTP.contains(&status));
-    NativeError::provider(
-        if retryable {
+    let retryable = match status {
+        Some(status) => RETRYABLE_HTTP.contains(&status),
+        None => code.is_some_and(|code| RETRYABLE_CODES.contains(&code)),
+    };
+    NativeError::Provider {
+        message: "Native Responses upstream failed [redacted]".to_string(),
+        kind: if retryable {
             NativeProviderErrorKind::Transient
         } else {
             NativeProviderErrorKind::Permanent
         },
-        "Native Responses upstream failed [redacted]",
-    )
+        status,
+    }
 }
 
 async fn parse_response_stream(
@@ -1721,5 +1724,23 @@ mod tests {
             format_error_chain(&err),
             "error sending request: connection reset by peer"
         );
+    }
+
+    #[test]
+    fn provider_failure_gives_non_retryable_http_status_precedence_over_code() {
+        let auth_err = provider_failure(&json!({
+            "status": 401,
+            "code": "server_error",
+            "message": "unauthorized"
+        }));
+        assert!(!auth_err.is_transient());
+        assert!(!crate::is_retryable_model_error(&auth_err));
+
+        let rate_err = provider_failure(&json!({
+            "status": 429,
+            "code": "unknown_code"
+        }));
+        assert!(rate_err.is_transient());
+        assert!(crate::is_retryable_model_error(&rate_err));
     }
 }

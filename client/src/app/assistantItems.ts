@@ -35,6 +35,18 @@ export function applyAssistantItem(
     return next;
   }
   if (!item.text.trim()) return next;
+  for (let index = start; index < end; index++) {
+    const message = next[index]!;
+    if (
+      message.role === "assistant" &&
+      message.kind === "text" &&
+      message.streaming &&
+      String(message.content ?? "").trim() &&
+      !message.id.startsWith("live-")
+    ) {
+      next[index] = { ...message, streaming: false };
+    }
+  }
   let insertAt = end;
   while (insertAt > start && next[insertAt - 1]!.id.startsWith("live-")) insertAt--;
   next.splice(insertAt, 0, {
@@ -80,6 +92,16 @@ export function reconcileAssistantItems(
     }
   }
   const [start, end] = turnRange(next, turnId)!;
+  next = next.map((message, index) =>
+    index >= start &&
+    index < end &&
+    message.role === "assistant" &&
+    message.kind === "text" &&
+    message.streaming &&
+    !message.id.startsWith("live-")
+      ? { ...message, streaming: false }
+      : message,
+  );
   const owned = next.slice(start, end).filter(message => message.role === "assistant" && message.kind === "text");
   // Text equality selects the display shape, never the owning turn or item.
   // Restore missing item/command anchors before collapsing transformed output.

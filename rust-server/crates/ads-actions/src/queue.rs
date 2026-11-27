@@ -728,9 +728,9 @@ impl ReviewQueue {
             job,
             repo_path,
             format!(
-                "Review complete for {}.\n\n{}",
+                "Review complete for {} ({}).",
                 review_target_label(job),
-                format_review_verdict_presentation(verdict, None)
+                verdict.status.as_str()
             ),
             format!("action_step:{}:completed", job.id),
             LaneMessageRole::Status,

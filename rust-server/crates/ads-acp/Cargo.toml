@@ -1,0 +1,30 @@
+[package]
+name = "ads-acp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "ads-acp-mock-server"
+path = "src/bin/mock_acp_server.rs"
+
+[dependencies]
+ads-contract.workspace = true
+ads-native.workspace = true
+ads-runtime.workspace = true
+ads-state.workspace = true
+async-trait.workspace = true
+base64.workspace = true
+libc.workspace = true
+rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["io-std"] }
+url.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

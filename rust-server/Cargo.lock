@@ -9,6 +9,28 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
+name = "ads-acp"
+version = "0.1.0"
+dependencies = [
+ "ads-contract",
+ "ads-native",
+ "ads-runtime",
+ "ads-state",
+ "async-trait",
+ "base64 0.22.1",
+ "libc",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "url",
+ "uuid",
+]
+
+[[package]]
 name = "ads-actions"
 version = "0.1.0"
 dependencies = [
@@ -81,6 +103,7 @@ dependencies = [
 name = "ads-http"
 version = "0.1.0"
 dependencies = [
+ "ads-acp",
  "ads-actions",
  "ads-auth",
  "ads-contract",
@@ -106,6 +129,7 @@ dependencies = [
  "sha2 0.10.9",
  "tempfile",
  "tokio",
+ "tokio-tungstenite",
  "toml",
  "tower",
  "tower-http",

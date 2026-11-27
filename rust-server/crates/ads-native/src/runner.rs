@@ -51,6 +51,7 @@ pub type NativePromptRunOutcome = PromptQueueRunOutcome;
 pub struct NativePromptRunnerOptions {
     pub db: StateDb,
     pub resolver: ModelResolver,
+    pub agent_id: String,
     pub role: String,
     pub history_max_entries_per_session: usize,
     pub history_max_text_length: usize,
@@ -73,6 +74,7 @@ impl NativePromptRunnerOptions {
         Self {
             db,
             resolver,
+            agent_id: "codex".to_string(),
             role: "acopilot".to_string(),
             history_max_entries_per_session: DEFAULT_HISTORY_MAX_ENTRIES_PER_SESSION,
             history_max_text_length: DEFAULT_HISTORY_MAX_TEXT_LENGTH,
@@ -414,11 +416,13 @@ impl NativePromptRunner {
                 let streamed_final = Arc::new(AtomicBool::new(false));
                 let make_delta = {
                     let delta_context = context.clone();
+                    let delta_client_message_id = entry.client_message_id.clone();
                     let delta_item_id = item_id.clone();
                     let delta_executor = Arc::clone(&tool_executor);
                     let streamed_final = Arc::clone(&streamed_final);
                     move |emitted: Arc<AtomicBool>| -> NativeTextDelta {
                         let delta_context = delta_context.clone();
+                        let delta_client_message_id = delta_client_message_id.clone();
                         let delta_item_id = delta_item_id.clone();
                         let delta_executor = Arc::clone(&delta_executor);
                         let streamed_final = Arc::clone(&streamed_final);
@@ -438,6 +442,7 @@ impl NativePromptRunner {
                                 streamed_final.store(true, Ordering::SeqCst);
                                 delta_context.emit(json!({
                                     "type": "delta",
+                                    "clientMessageId": delta_client_message_id,
                                     "delta": delta,
                                     "assistantItemId": delta_item_id,
                                     "ts": now_ms(),
@@ -512,6 +517,7 @@ impl NativePromptRunner {
                     if !completion.text.is_empty() && !streamed_final.load(Ordering::SeqCst) {
                         context.emit(json!({
                             "type": "delta",
+                            "clientMessageId": entry.client_message_id,
                             "delta": completion.text,
                             "assistantItemId": item_id,
                             "ts": now_ms(),
@@ -787,6 +793,7 @@ impl NativePromptRunner {
             self.add_error_history(&entry, &message)?;
             context.emit(json!({
                 "type": "error",
+                "clientMessageId": entry.client_message_id,
                 "message": message,
                 "errorInfo": {
                     "code": if status == NativeTranscriptTurnStatus::Cancelled {
@@ -849,7 +856,7 @@ impl NativePromptRunner {
             &entry.history_key,
             &entry.client_message_id,
             &PromptExecutionMetadata {
-                effective_agent_id: Some("codex".to_string()),
+                effective_agent_id: Some(self.options.agent_id.clone()),
                 effective_model: Some(model.model.clone()),
                 effective_model_reasoning_effort: effective_effort.map(str::to_string),
                 ..PromptExecutionMetadata::default()
@@ -867,6 +874,7 @@ impl NativePromptRunner {
         )?;
         context.emit(json!({
             "type": "assistant_item",
+            "clientMessageId": entry.client_message_id,
             "assistantItemId": item_id,
             "assistantItemText": output,
             "ts": now_ms(),
@@ -877,8 +885,10 @@ impl NativePromptRunner {
             "ts": now_ms(),
         }));
         context.emit(result_event(
+            &entry.client_message_id,
             &output,
             &item_id,
+            &self.options.agent_id,
             &model.model,
             effective_effort,
         ));
@@ -902,6 +912,7 @@ impl NativePromptRunner {
         self.add_error_history(entry, &message)?;
         context.emit(json!({
             "type": "error",
+            "clientMessageId": entry.client_message_id,
             "message": message,
             "errorInfo": {
                 "code": "native_runtime_capability_error",
@@ -1630,16 +1641,24 @@ fn build_transcript_id(entry: &LaneTurn) -> String {
     format!("{:x}", Sha256::digest(value.to_string().as_bytes()))
 }
 
-fn result_event(output: &str, item_id: &str, effective_model: &str, effort: Option<&str>) -> Value {
+fn result_event(
+    client_message_id: &str,
+    output: &str,
+    item_id: &str,
+    active_agent_id: &str,
+    effective_model: &str,
+    effort: Option<&str>,
+) -> Value {
     json!({
         "type": "result",
         "ok": true,
+        "clientMessageId": client_message_id,
         "output": output,
         "assistantItems": [{ "id": item_id, "text": output }],
         "threadId": null,
         "effectiveModel": effective_model,
         "effectiveModelReasoningEffort": effort,
-        "activeAgentId": "codex",
+        "activeAgentId": active_agent_id,
         "contextMode": "fresh",
     })
 }

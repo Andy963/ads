@@ -31,8 +31,7 @@ use crate::{
     provider_injection::resolve_codex_model_selection,
 };
 
-pub type CodexActionToolsFactory =
-    Arc<dyn Fn(&LaneTurn) -> Option<AgentActionTools> + Send + Sync>;
+pub type CodexActionToolsFactory = Arc<dyn Fn(&LaneTurn) -> Option<AgentActionTools> + Send + Sync>;
 
 pub struct CodexAppServerPromptRunnerOptions {
     pub db: StateDb,
@@ -255,7 +254,9 @@ impl PromptQueueRunner for CodexAppServerPromptRunner {
                 .filter(|value| !value.is_empty());
             let (agent, agent_key) = self.agent_for(&entry, model, effort).await?;
             let event_context = context.clone();
-            let streamed_assistant_text = Arc::new(StdMutex::new(HashMap::<String, String>::new()));
+            let streamed_assistant = Arc::new(StdMutex::new(StreamedAssistantTracker::default()));
+            let streamed_assistant_for_events = Arc::clone(&streamed_assistant);
+            let event_client_message_id = entry.client_message_id.clone();
             let activity = Arc::new(Notify::new());
             let side_effect_observed = Arc::new(AtomicBool::new(false));
             let activity_for_events = Arc::clone(&activity);
@@ -265,7 +266,12 @@ impl PromptQueueRunner for CodexAppServerPromptRunner {
                     side_effect_for_events.store(true, Ordering::SeqCst);
                 }
                 activity_for_events.notify_one();
-                emit_agent_event(&event_context, &streamed_assistant_text, &event);
+                emit_agent_event(
+                    &event_context,
+                    &event_client_message_id,
+                    &streamed_assistant_for_events,
+                    &event,
+                );
             });
             let (abort_tx, abort_rx) = watch::channel(false);
             self.active
@@ -349,11 +355,20 @@ impl PromptQueueRunner for CodexAppServerPromptRunner {
                     if let Some(thread_id) = agent.thread_id().await {
                         save_thread_id(&self.options.db, &agent_key, &thread_id)?;
                     }
+                    let final_item_id = {
+                        let tracker = streamed_assistant.lock().expect("assistant stream lock");
+                        resolve_final_assistant_item_id(
+                            &tracker,
+                            &entry.client_message_id,
+                            &raw_response,
+                        )
+                    };
                     context.emit(json!({
                         "type": "result",
                         "ok": true,
+                        "clientMessageId": entry.client_message_id,
                         "output": output.clone(),
-                        "assistantItems": [{"id": format!("{}-assistant", entry.client_message_id), "text": output}],
+                        "assistantItems": [{"id": final_item_id, "text": output}],
                         "threadId": agent.thread_id().await,
                         "effectiveModel": model,
                         "effectiveModelReasoningEffort": effort,
@@ -384,6 +399,7 @@ impl PromptQueueRunner for CodexAppServerPromptRunner {
                     );
                     context.emit(json!({
                         "type": "error",
+                        "clientMessageId": entry.client_message_id,
                         "message": message,
                         "errorInfo": {
                             "code": "codex_app_server_error",
@@ -739,9 +755,36 @@ fn has_persisted_prompt(entries: &[HistoryEntry], client_message_id: &str) -> bo
     })
 }
 
+#[derive(Default)]
+struct StreamedAssistantTracker {
+    texts: HashMap<String, String>,
+    current_phase_item_id: Option<String>,
+    last_item_id: Option<String>,
+}
+
+fn resolve_final_assistant_item_id(
+    tracker: &StreamedAssistantTracker,
+    client_message_id: &str,
+    raw_response: &str,
+) -> String {
+    if let Some(id) = tracker.current_phase_item_id.as_ref() {
+        return id.clone();
+    }
+    if let Some(id) = tracker.last_item_id.as_ref()
+        && tracker
+            .texts
+            .get(id)
+            .is_some_and(|text| text.trim() == raw_response.trim())
+    {
+        return id.clone();
+    }
+    format!("{client_message_id}-assistant")
+}
+
 fn emit_agent_event(
     context: &PromptRunContext,
-    streamed_assistant_text: &StdMutex<HashMap<String, String>>,
+    client_message_id: &str,
+    streamed_assistant: &StdMutex<StreamedAssistantTracker>,
     event: &AgentEvent,
 ) {
     match event.phase.as_str() {
@@ -752,15 +795,15 @@ fn emit_agent_event(
                 .and_then(Value::as_str)
                 .unwrap_or("codex-message");
             let delta = {
-                let mut streamed = streamed_assistant_text
-                    .lock()
-                    .expect("assistant stream lock");
-                let previous = streamed.get(item_id).map(String::as_str).unwrap_or("");
+                let mut tracker = streamed_assistant.lock().expect("assistant stream lock");
+                let previous = tracker.texts.get(item_id).map(String::as_str).unwrap_or("");
                 if !previous.is_empty() && !next.starts_with(previous) {
                     return;
                 }
                 let delta = next.strip_prefix(previous).unwrap_or(next).to_string();
-                streamed.insert(item_id.to_string(), next.to_string());
+                tracker.texts.insert(item_id.to_string(), next.to_string());
+                tracker.current_phase_item_id = Some(item_id.to_string());
+                tracker.last_item_id = Some(item_id.to_string());
                 delta
             };
             if delta.is_empty() {
@@ -768,12 +811,17 @@ fn emit_agent_event(
             }
             context.emit(json!({
                 "type": "delta",
+                "clientMessageId": client_message_id,
                 "delta": delta,
                 "assistantItemId": item_id,
                 "ts": event.timestamp
             }));
         }
         "command" => {
+            streamed_assistant
+                .lock()
+                .expect("assistant stream lock")
+                .current_phase_item_id = None;
             if let Some(command) = event.raw.get("item") {
                 context.emit(json!({
                     "type": "command",
@@ -794,5 +842,85 @@ mod tests {
     fn codex_app_server_turn_timeout_is_three_hours() {
         assert_eq!(CODEX_APP_SERVER_TURN_TIMEOUT, Duration::from_secs(10_800));
         assert_eq!(CODEX_APP_SERVER_TURN_TIMEOUT.as_secs(), 3 * 60 * 60);
+    }
+
+    #[test]
+    fn emit_agent_event_attaches_client_message_id_and_tracks_final_phase_item_id() {
+        let events = Arc::new(StdMutex::new(Vec::<Value>::new()));
+        let events_handle = Arc::clone(&events);
+        let context = PromptRunContext::new(Arc::new(move |event| {
+            events_handle.lock().expect("events lock").push(event);
+        }));
+        let tracker = StdMutex::new(StreamedAssistantTracker::default());
+
+        emit_agent_event(
+            &context,
+            "turn-42",
+            &tracker,
+            &AgentEvent {
+                phase: "responding".to_string(),
+                title: "生成回复".to_string(),
+                detail: None,
+                delta: Some("Phase 1 commentary".to_string()),
+                timestamp: 100,
+                raw: json!({ "itemId": "msg-1" }),
+                session_fallback: None,
+            },
+        );
+        emit_agent_event(
+            &context,
+            "turn-42",
+            &tracker,
+            &AgentEvent {
+                phase: "command".to_string(),
+                title: "执行命令".to_string(),
+                detail: None,
+                delta: None,
+                timestamp: 101,
+                raw: json!({ "item": { "id": "cmd-1", "command": "cargo test" } }),
+                session_fallback: None,
+            },
+        );
+        {
+            let guard = tracker.lock().expect("tracker lock");
+            assert_eq!(
+                resolve_final_assistant_item_id(&guard, "turn-42", "Phase 1 commentary"),
+                "msg-1"
+            );
+            assert_eq!(
+                resolve_final_assistant_item_id(&guard, "turn-42", "Unstreamed final answer"),
+                "turn-42-assistant"
+            );
+        }
+        emit_agent_event(
+            &context,
+            "turn-42",
+            &tracker,
+            &AgentEvent {
+                phase: "responding".to_string(),
+                title: "生成回复".to_string(),
+                detail: None,
+                delta: Some("Final answer".to_string()),
+                timestamp: 102,
+                raw: json!({ "itemId": "msg-2" }),
+                session_fallback: None,
+            },
+        );
+
+        let guard = tracker.lock().expect("tracker lock");
+        assert_eq!(
+            resolve_final_assistant_item_id(&guard, "turn-42", "Final answer"),
+            "msg-2"
+        );
+        let recorded = events.lock().expect("events lock");
+        let deltas: Vec<&Value> = recorded
+            .iter()
+            .filter(|event| event["type"] == "delta")
+            .collect();
+        assert_eq!(deltas.len(), 2);
+        assert_eq!(deltas[0]["clientMessageId"], "turn-42");
+        assert_eq!(deltas[0]["assistantItemId"], "msg-1");
+        assert_eq!(deltas[1]["clientMessageId"], "turn-42");
+        assert_eq!(deltas[1]["assistantItemId"], "msg-2");
     }
 }

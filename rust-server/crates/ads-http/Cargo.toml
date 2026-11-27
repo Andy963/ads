@@ -6,6 +6,7 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+ads-acp.workspace = true
 ads-actions.workspace = true
 ads-auth.workspace = true
 ads-contract.workspace = true
@@ -38,4 +39,5 @@ tower-http.workspace = true
 flate2.workspace = true
 http-body-util.workspace = true
 tempfile.workspace = true
+tokio-tungstenite.workspace = true
 tower.workspace = true

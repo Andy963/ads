@@ -77,4 +77,10 @@
 - 0066 - [ADR 0066: Route Actions Reviewer Through the Active Agent Runtime](0066-runtime-unified-actions-reviewer.md)
 - 0067 - [ADR 0067: Port Web Push API Routes and VAPID Delivery to Rust Server](0067-rust-server-web-push-notifications.md)
 - 0068 - [ADR 0068: Retire Legacy TypeScript Server to Archive Branch](0068-retire-ts-server-to-archive-branch.md)
+- 0069 - [ADR 0069: Make Lane Stream Replay Idempotent by Turn and Assistant Item Identity](0069-idempotent-lane-stream-replay.md)
+- 0070 - [ADR 0070: Refresh Model Controls for Explicit Failed-Turn Retries](0070-refresh-model-controls-for-failed-turn-retries.md)
+- 0071 - [ADR 0071: Authenticate WebSockets Before Upgrade and Bound Outbound Delivery](0071-authenticated-bounded-websocket-delivery.md)
+- 0072 - [ADR 0072: Generic ACP v1 Runtime Kernel](0072-generic-acp-v1-runtime-kernel.md)
+- 0073 - [ADR 0073: Implement AgyDriver and AcpPromptRunner for agy acp (Phase 2A)](0073-agy-driver-and-acp-prompt-runner.md)
+- 0074 - [ADR 0074: Dynamic Runtime Auto-Probing, Multi-Account Antigravity Support, and Client-Side Runtime Switching (Phase 2B)](0074-dynamic-runtime-autoprobing-and-multi-account-switcher.md)
 <!-- ADS:ADR_INDEX_END -->

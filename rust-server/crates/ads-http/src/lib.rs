@@ -12,6 +12,7 @@ pub mod static_files;
 mod ws;
 
 mod routes;
+pub mod runtimes;
 mod skills;
 mod state;
 mod task_notifications;
@@ -35,6 +36,11 @@ pub use routes::{
     RouterConfig, build_router,
     pull_requests::{DefaultGhRunner, GhRunner, PullRequestManager},
 };
+pub use runtimes::{
+    AGY_DEFAULT_AGENT_ID, AgyAccountView, AgyLoginStartView, CODEX_AGENT_ID, NATIVE_AGENT_ID,
+    RoutingPromptRunner, RuntimeAgentDescriptor, RuntimeRegistry, RuntimeRegistryConfig,
+    UpsertAgyAccountInput, resolve_initial_default_agent,
+};
 pub use skills::{
     SkillEntrypoint, SkillMetadata, SkillPaths, SkillRequiredEnv, SkillSource, SkillTriggers,
     render_compact_skills, render_skill_meta_instruction,
@@ -47,4 +53,7 @@ pub use web_push::{
     WebPushNotificationType, WebPushService, WebPushTransport, encrypt_web_push_payload,
     is_allowed_web_push_endpoint, validate_subscription_keys,
 };
-pub use ws::{ActionsLaneMessage, WebSocketConfig, WebSocketHub, publish_actions_lane_message};
+pub use ws::{
+    ActionsLaneMessage, OUTBOUND_QUEUE_OVERFLOW_CLOSE_CODE, WebSocketConfig, WebSocketHub,
+    WebSocketMetrics, WebSocketMetricsSnapshot, publish_actions_lane_message,
+};

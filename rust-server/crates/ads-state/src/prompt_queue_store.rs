@@ -246,6 +246,30 @@ fn canonicalize_payload(value: &Value) -> Value {
     }
 }
 
+fn retry_control_text(value: Option<&Value>) -> Option<String> {
+    value
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .filter(|value| !value.eq_ignore_ascii_case("auto"))
+        .map(str::to_owned)
+}
+
+fn merge_retry_controls(
+    payload: &mut Map<String, Value>,
+    model: Option<String>,
+    effort: Option<String>,
+) {
+    if let Some(model) = model {
+        payload.insert("model".to_string(), Value::String(model));
+    }
+    if let Some(effort) = effort {
+        payload.remove("modelReasoningEffort");
+        payload.remove("model_reasoning_effort");
+        payload.insert("modelReasoningEffort".to_string(), Value::String(effort));
+    }
+}
+
 fn required_text(value: &str, field: &str) -> StateResult<String> {
     let normalized = value.trim();
     if normalized.is_empty() {
@@ -402,6 +426,9 @@ impl<'a> PromptQueueStore<'a> {
             ));
         }
 
+        let refreshed_model = retry_control_text(input.payload.get("model"));
+        let refreshed_effort = retry_control_text(input.payload.get("modelReasoningEffort"))
+            .or_else(|| retry_control_text(input.payload.get("model_reasoning_effort")));
         let mut payload = input.payload;
         let mut payload_hash = hash_prompt_queue_payload(&payload);
         if self.is_cancelled(&client_message_id, input.user_id, &lane)? {
@@ -434,10 +461,14 @@ impl<'a> PromptQueueStore<'a> {
                     });
                 }
                 payload = existing.payload.clone();
+                merge_retry_controls(&mut payload, refreshed_model, refreshed_effort);
                 payload.insert("replay_incomplete".to_string(), Value::Bool(true));
                 payload_hash = hash_prompt_queue_payload(&payload);
             }
-            if !existing.payload_hash.is_empty() && existing.payload_hash != payload_hash {
+            if !input.retry_original
+                && !existing.payload_hash.is_empty()
+                && existing.payload_hash != payload_hash
+            {
                 return Err(StateError::InvalidInput(
                     "clientMessageId is already associated with a different prompt payload"
                         .to_string(),

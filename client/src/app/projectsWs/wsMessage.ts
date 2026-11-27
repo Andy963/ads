@@ -555,8 +555,10 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       const previousRevision = rt.streamSnapshotRevisions.get(streamId) ?? 0;
       const previousEnd = rt.streamEndOffsets.get(streamId) ?? 0;
       if (revision > 0 && revision < previousRevision) return;
-      if (revision > 0 && revision === previousRevision && endOffset !== null && endOffset <= previousEnd) return;
-      if (revision === 0 && endOffset !== null && endOffset <= previousEnd) return;
+      if (endOffset !== null && endOffset <= previousEnd) {
+        if (revision > 0) rt.streamSnapshotRevisions.set(streamId, Math.max(previousRevision, revision));
+        return;
+      }
       if (revision > 0) rt.streamSnapshotRevisions.set(streamId, Math.max(previousRevision, revision));
       if (endOffset !== null) rt.streamEndOffsets.set(streamId, Math.max(previousEnd, endOffset));
     }
