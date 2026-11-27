@@ -40,7 +40,7 @@ Under `ads_acp::drivers::agy`:
 Under `ads_acp::prompt_runner`:
 
 - Holds two `AcpSessionSupervisor` instances sharing the configured driver: `workspace_supervisor` (`AutoApprovePermissionHandler`, `SessionMode::AcceptEdits`) for normal workspace / Acopilot / scheduler lanes and `readonly_supervisor` (`AutoDenyPermissionHandler`, `SessionMode::Plan`) for `web-actions` reviewer lanes.
-- Persists `acp_session_id` per `(logical_history_key, workspace_root, driver_id, account_id, role)` in `StateDb` `kv_state` (`namespace = "web_acp_thread"`) for cross-restart `session/resume`, injects initial role instructions and prior `HistoryStore` context when no ACP session exists yet, applies an activity-based idle watchdog, executes and strips `ads_native` tool directives, and emits ADS-compatible WS events (`user`, `in_flight`, `delta`, `thought`, `command`, `plan`, `assistant_item`, `phase_complete`, `result`, `error`).
+- Persists `acp_session_id` per `(history_key, workspace_root, driver_id, account_id, role)` (where `history_key` carries `:generation:{N}` on reset/clear) in `StateDb` `kv_state` (`namespace = "web_acp_thread"`) for cross-restart `session/resume`, injects initial role instructions and prior `HistoryStore` context (`user` / `ai` / `assistant`) when no ACP session exists yet, applies an activity-based idle watchdog, executes and strips `ads_native` tool directives, and emits ADS-compatible WS events (`user`, `in_flight`, `delta`, `thought`, `command`, `plan`, `assistant_item`, `phase_complete`, `result`, `error`).
 
 ## Consequences
 

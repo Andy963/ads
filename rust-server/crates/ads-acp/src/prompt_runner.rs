@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
@@ -26,9 +26,9 @@ use rusqlite::{OptionalExtension, params};
 use serde_json::{Map, Value, json};
 use tokio::sync::watch;
 
-use crate::bridge::{AutoApprovePermissionHandler, AutoDenyPermissionHandler};
+use crate::bridge::{AcpStreamEvent, AutoApprovePermissionHandler, AutoDenyPermissionHandler};
 use crate::driver::AcpDriver;
-use crate::protocol::{ConfigOptionsState, ContentBlock, SessionMode};
+use crate::protocol::{ConfigOptionsState, ContentBlock, SessionMode, StopReason};
 use crate::session::{AcpPromptRequest, DesiredConfigAlignment};
 use crate::supervisor::{
     AcpSessionSupervisor, AcpSupervisorConfig, SessionAttachMode, SupervisedSessionRequest,
@@ -102,6 +102,19 @@ impl AcpPromptRunnerConfig {
     pub fn with_supervisor_config(mut self, config: AcpSupervisorConfig) -> Self {
         self.supervisor_config = config;
         self
+    }
+}
+
+struct ActiveTurnRegistration<'a> {
+    active_turns: &'a StdMutex<HashMap<LaneTurnKey, watch::Sender<bool>>>,
+    key: LaneTurnKey,
+}
+
+impl Drop for ActiveTurnRegistration<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut guard) = self.active_turns.lock() {
+            guard.remove(&self.key);
+        }
     }
 }
 
@@ -191,6 +204,25 @@ impl AcpPromptRunner {
         Ok(())
     }
 
+    fn fail_after_user_persisted(
+        &self,
+        entry: &LaneTurn,
+        context: &PromptRunContext,
+        message: String,
+        code: &str,
+        auth_required: bool,
+    ) -> StateResult<PromptQueueRunOutcome> {
+        self.add_error_history(entry, &message)?;
+        emit_error_event(
+            context,
+            &entry.client_message_id,
+            &message,
+            code,
+            auth_required,
+        );
+        Ok(PromptQueueRunOutcome::failure(message))
+    }
+
     async fn run_inner(
         &self,
         entry: LaneTurn,
@@ -200,27 +232,27 @@ impl AcpPromptRunner {
     ) -> StateResult<PromptQueueRunOutcome> {
         let payload = entry.payload.clone();
         let text = prompt_text(&payload);
-        let images = match decode_image_blocks(&payload) {
-            Ok(images) => images,
-            Err(message) => {
-                self.add_error_history(&entry, &message)?;
-                emit_error_event(
-                    &context,
-                    &entry.client_message_id,
-                    &message,
-                    "acp_invalid_input",
-                    false,
-                );
-                return Ok(PromptQueueRunOutcome::failure(message));
-            }
-        };
+        let state_dir = self.db.path().parent().unwrap_or_else(|| Path::new("."));
+        let images =
+            match decode_image_blocks(&payload, Path::new(&entry.workspace_root), state_dir) {
+                Ok(images) => images,
+                Err(message) => {
+                    emit_error_event(
+                        &context,
+                        &entry.client_message_id,
+                        &message,
+                        "acp_invalid_input",
+                        false,
+                    );
+                    return Ok(PromptQueueRunOutcome::failure(message));
+                }
+            };
 
         if text.is_none()
             && images.is_empty()
             && payload.get("retry_original") != Some(&Value::Bool(true))
         {
             let message = "payload 不能为空".to_string();
-            self.add_error_history(&entry, &message)?;
             emit_error_event(
                 &context,
                 &entry.client_message_id,
@@ -244,9 +276,16 @@ impl AcpPromptRunner {
             .get("model")
             .and_then(Value::as_str)
             .map(str::trim)
-            .filter(|value| !value.is_empty())
+            .filter(|value| !value.is_empty() && !value.eq_ignore_ascii_case("auto"))
             .map(str::to_string)
-            .or_else(|| self.config.default_model.clone());
+            .or_else(|| {
+                self.config
+                    .default_model
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty() && !value.eq_ignore_ascii_case("auto"))
+                    .map(str::to_string)
+            });
         let requested_thought = payload
             .get("modelReasoningEffort")
             .or_else(|| payload.get("model_reasoning_effort"))
@@ -359,6 +398,7 @@ impl AcpPromptRunner {
         let last_activity_ms = Arc::new(AtomicI64::new(now_unix_millis()));
         let timed_out = Arc::new(AtomicBool::new(false));
         let activity_context = wrap_context_with_activity(&context, Arc::clone(&last_activity_ms));
+        let turn_cancel_rx = cancel_rx.clone();
 
         let prompt_req =
             AcpPromptRequest::with_blocks(entry.client_message_id.clone(), content_blocks)
@@ -393,12 +433,35 @@ impl AcpPromptRunner {
             handle.abort();
         }
 
+        let is_timed_out = timed_out.load(Ordering::Acquire);
+        let is_signal_cancelled = !is_timed_out && *turn_cancel_rx.borrow();
+
         match turn_res {
             Ok(supervised) => {
-                save_acp_session_id(&self.db, &storage_key, &supervised.turn.session_id)?;
+                if !supervised.turn.session_id.trim().is_empty() {
+                    save_acp_session_id(&self.db, &storage_key, &supervised.turn.session_id)?;
+                }
+
+                if is_timed_out {
+                    return self.fail_after_user_persisted(
+                        &entry,
+                        &context,
+                        "ACP turn timed out waiting for agent response".to_string(),
+                        "acp_timeout",
+                        false,
+                    );
+                }
+                if is_signal_cancelled || supervised.turn.stop_reason == StopReason::Cancelled {
+                    return self.fail_after_user_persisted(
+                        &entry,
+                        &context,
+                        "已中断，输出可能不完整".to_string(),
+                        "turn_cancelled",
+                        false,
+                    );
+                }
 
                 let raw_output = supervised.turn.response_text.trim().to_string();
-                let state_dir = self.db.path().parent().unwrap_or_else(|| Path::new("."));
                 let directive_results = ads_native::execute_tool_directives_in(
                     state_dir,
                     &entry.workspace_root,
@@ -454,20 +517,31 @@ impl AcpPromptRunner {
                     }
                 }
 
-                let assistant_item_id = format!("{}-assistant-final", entry.client_message_id);
+                let assistant_phases = collect_assistant_phases(
+                    &supervised.turn.events,
+                    &entry.client_message_id,
+                    &output,
+                    !directive_results.is_empty(),
+                );
                 let ts = now_unix_millis();
-                context.emit(json!({
-                    "type": "assistant_item",
-                    "clientMessageId": entry.client_message_id,
-                    "assistantItemId": assistant_item_id,
-                    "assistantItemText": output,
-                    "ts": ts,
-                }));
+                for (item_id, item_text) in &assistant_phases {
+                    context.emit(json!({
+                        "type": "assistant_item",
+                        "clientMessageId": entry.client_message_id,
+                        "assistantItemId": item_id,
+                        "assistantItemText": item_text,
+                        "ts": ts,
+                    }));
+                }
                 context.emit(json!({
                     "type": "phase_complete",
                     "phase": "assistant",
                     "ts": ts,
                 }));
+                let assistant_items: Vec<Value> = assistant_phases
+                    .into_iter()
+                    .map(|(id, text)| json!({ "id": id, "text": text }))
+                    .collect();
                 let context_mode = match supervised.attach_mode {
                     SessionAttachMode::ReusedLive | SessionAttachMode::Resumed => "resumed",
                     SessionAttachMode::Loaded => "loaded",
@@ -479,7 +553,7 @@ impl AcpPromptRunner {
                     "ok": true,
                     "clientMessageId": entry.client_message_id,
                     "output": output,
-                    "assistantItems": [{ "id": assistant_item_id, "text": output }],
+                    "assistantItems": assistant_items,
                     "threadId": supervised.turn.session_id,
                     "effectiveModel": effective_model,
                     "effectiveModelReasoningEffort": effective_thought,
@@ -490,32 +564,32 @@ impl AcpPromptRunner {
                 Ok(PromptQueueRunOutcome::success())
             }
             Err(error) => {
-                let is_timed_out = timed_out.load(Ordering::Acquire);
+                let is_cancelled = !is_timed_out && (error.is_cancelled() || is_signal_cancelled);
                 let message = if is_timed_out {
                     "ACP turn timed out waiting for agent response".to_string()
-                } else if error.is_cancelled() {
+                } else if is_cancelled {
                     "已中断，输出可能不完整".to_string()
                 } else {
                     error.to_string()
                 };
-                let code = if error.is_auth_required() {
-                    "acp_auth_required"
-                } else if error.is_cancelled() && !is_timed_out {
+                let code = if is_timed_out {
+                    "acp_timeout"
+                } else if is_cancelled {
                     "turn_cancelled"
-                } else if is_timed_out || error.is_timeout() {
+                } else if error.is_auth_required() {
+                    "acp_auth_required"
+                } else if error.is_timeout() {
                     "acp_timeout"
                 } else {
                     "acp_runtime_error"
                 };
-                self.add_error_history(&entry, &message)?;
-                emit_error_event(
+                self.fail_after_user_persisted(
+                    &entry,
                     &context,
-                    &entry.client_message_id,
-                    &message,
+                    message,
                     code,
                     error.is_auth_required(),
-                );
-                Ok(PromptQueueRunOutcome::failure(message))
+                )
             }
         }
     }
@@ -579,8 +653,8 @@ impl AcpPromptRunner {
         let emit: PromptEventEmitter =
             Arc::new(
                 move |event: Value| match event.get("type").and_then(Value::as_str) {
-                    Some("assistant_item") => {
-                        if let Some(text) = event.get("assistantItemText").and_then(Value::as_str) {
+                    Some("result") => {
+                        if let Some(text) = event.get("output").and_then(Value::as_str) {
                             *output_handle.lock().expect("schedule output") = text.to_string();
                         }
                     }
@@ -648,12 +722,11 @@ impl PromptQueueRunner for AcpPromptRunner {
                     .expect("active acp turns")
                     .insert(key.clone(), cancel_tx.clone());
             }
-            let result = self.run_inner(entry, context, cancel_tx, cancel_rx).await;
-            self.active_turns
-                .lock()
-                .expect("active acp turns")
-                .remove(&key);
-            result
+            let _registration = ActiveTurnRegistration {
+                active_turns: &self.active_turns,
+                key,
+            };
+            self.run_inner(entry, context, cancel_tx, cancel_rx).await
         })
     }
 
@@ -681,6 +754,41 @@ impl ScheduleExecutor for AcpPromptRunner {
             .await
         })
     }
+}
+
+fn collect_assistant_phases(
+    events: &[AcpStreamEvent],
+    client_message_id: &str,
+    final_output: &str,
+    has_directive_rewrites: bool,
+) -> Vec<(String, String)> {
+    let mut phases: Vec<(String, String)> = Vec::new();
+    for event in events {
+        if let AcpStreamEvent::MessageDelta {
+            text,
+            assistant_item_id,
+            ..
+        } = event
+        {
+            if let Some(last) = phases.last_mut()
+                && last.0 == *assistant_item_id
+            {
+                last.1.push_str(text);
+            } else {
+                phases.push((assistant_item_id.clone(), text.clone()));
+            }
+        }
+    }
+    if phases.is_empty() {
+        return vec![(
+            format!("{client_message_id}-assistant-1"),
+            final_output.to_string(),
+        )];
+    }
+    if phases.len() == 1 && has_directive_rewrites {
+        phases[0].1 = final_output.to_string();
+    }
+    phases
 }
 
 fn wrap_context_with_activity(
@@ -761,7 +869,7 @@ fn session_storage_key(
 ) -> String {
     format!(
         "{}::{}::{}::{}::{}",
-        entry.logical_history_key,
+        entry.history_key,
         entry.workspace_root,
         driver_id,
         account_id.unwrap_or("default"),
@@ -797,8 +905,14 @@ fn save_acp_session_id(db: &StateDb, key: &str, session_id: &str) -> StateResult
 fn resolve_acp_idle_timeout() -> Option<Duration> {
     ["ADS_ACP_IDLE_TIMEOUT_MS", "ADS_AGENT_IDLE_TIMEOUT_MS"]
         .iter()
-        .find_map(|key| std::env::var(key).ok())
-        .and_then(|value| value.trim().parse::<u64>().ok())
+        .filter_map(|key| {
+            std::env::var(key)
+                .ok()
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+        })
+        .next()
+        .and_then(|value| value.parse::<u64>().ok())
         .map_or(Some(DEFAULT_IDLE_TIMEOUT), |milliseconds| {
             (milliseconds > 0).then(|| Duration::from_millis(milliseconds))
         })
@@ -837,34 +951,37 @@ fn format_prior_history(
     entries: &[HistoryEntry],
     current_client_message_id: &str,
 ) -> Option<String> {
-    let relevant: Vec<&HistoryEntry> = entries
-        .iter()
-        .filter(|entry| {
-            matches!(entry.role.as_str(), "user" | "ai")
-                && !entry.text.trim().is_empty()
-                && history_client_message_id(entry.kind.as_deref()) != current_client_message_id
-        })
-        .collect();
-    if relevant.is_empty() {
-        return None;
-    }
-    let start = relevant.len().saturating_sub(MAX_INJECTED_HISTORY_ENTRIES);
     let mut lines = Vec::new();
     let mut total_chars = 0usize;
-    for entry in &relevant[start..] {
+    for entry in entries.iter().rev() {
+        if !matches!(entry.role.as_str(), "user" | "ai" | "assistant") {
+            continue;
+        }
+        let text = entry.text.trim();
+        if text.is_empty()
+            || history_client_message_id(entry.kind.as_deref()) == current_client_message_id
+        {
+            continue;
+        }
         let speaker = if entry.role == "user" {
             "User"
         } else {
             "Assistant"
         };
-        let line = format!("{speaker}: {}", entry.text.trim());
-        if total_chars + line.len() > MAX_INJECTED_HISTORY_CHARS && !lines.is_empty() {
+        let line = format!("{speaker}: {text}");
+        if lines.len() >= MAX_INJECTED_HISTORY_ENTRIES
+            || (total_chars + line.len() > MAX_INJECTED_HISTORY_CHARS && !lines.is_empty())
+        {
             break;
         }
         total_chars += line.len();
         lines.push(line);
     }
-    (!lines.is_empty()).then(|| lines.join("\n"))
+    if lines.is_empty() {
+        return None;
+    }
+    lines.reverse();
+    Some(lines.join("\n"))
 }
 
 fn prompt_text(payload: &Map<String, Value>) -> Option<String> {
@@ -887,7 +1004,11 @@ fn build_history_text(text: &str, image_count: usize) -> String {
     lines.join("\n")
 }
 
-fn decode_image_blocks(payload: &Map<String, Value>) -> Result<Vec<ContentBlock>, String> {
+fn decode_image_blocks(
+    payload: &Map<String, Value>,
+    workspace_root: &Path,
+    state_dir: &Path,
+) -> Result<Vec<ContentBlock>, String> {
     let Some(images) = payload.get("images") else {
         return Ok(Vec::new());
     };
@@ -896,45 +1017,86 @@ fn decode_image_blocks(payload: &Map<String, Value>) -> Result<Vec<ContentBlock>
         Value::Array(items) => items,
         _ => return Err("images must be an array".to_string()),
     };
+
+    let mut allowed_roots: Vec<PathBuf> = Vec::new();
+    if let Ok(canon) = fs::canonicalize(workspace_root) {
+        allowed_roots.push(canon);
+    }
+    if let Ok(canon) = fs::canonicalize(state_dir) {
+        allowed_roots.push(canon);
+    }
+
     let mut blocks = Vec::with_capacity(images.len());
     let mut total_bytes = 0usize;
     for image in images {
         let record = image
             .as_object()
             .ok_or_else(|| "invalid image payload".to_string())?;
-        if let Some(path) = record
+        if let Some(raw_path) = record
             .get("path")
             .or_else(|| record.get("localPath"))
             .and_then(Value::as_str)
             .map(str::trim)
             .filter(|value| !value.is_empty())
         {
-            let file_path = Path::new(path);
-            let bytes =
-                fs::read(file_path).map_err(|error| format!("读取图片失败 ({path}): {error}"))?;
-            if bytes.is_empty() {
+            let resolved_candidate = {
+                let path = Path::new(raw_path);
+                if path.is_absolute() {
+                    path.to_path_buf()
+                } else {
+                    workspace_root.join(path)
+                }
+            };
+            let canonical_path = fs::canonicalize(&resolved_candidate)
+                .map_err(|error| format!("读取图片失败 ({raw_path}): {error}"))?;
+            if !allowed_roots
+                .iter()
+                .any(|root| canonical_path.starts_with(root))
+            {
+                return Err(format!("图片路径不在工作区范围内: {raw_path}"));
+            }
+            let meta = fs::metadata(&canonical_path)
+                .map_err(|error| format!("读取图片失败 ({raw_path}): {error}"))?;
+            if !meta.is_file() {
+                return Err(format!("图片路径不是普通文件: {raw_path}"));
+            }
+            let file_len = usize::try_from(meta.len()).unwrap_or(usize::MAX);
+            if file_len == 0 {
                 return Err("图片内容为空".to_string());
             }
+            if file_len > DEFAULT_MAX_IMAGE_BYTES {
+                return Err(format!(
+                    "图片超过 25MB 限制 ({}KB)",
+                    file_len.div_ceil(1024)
+                ));
+            }
+            let bytes = fs::read(&canonical_path)
+                .map_err(|error| format!("读取图片失败 ({raw_path}): {error}"))?;
             if bytes.len() > DEFAULT_MAX_IMAGE_BYTES {
                 return Err(format!(
                     "图片超过 25MB 限制 ({}KB)",
                     bytes.len().div_ceil(1024)
                 ));
             }
-            total_bytes += bytes.len();
+            total_bytes = total_bytes.saturating_add(bytes.len());
             if total_bytes > DEFAULT_MAX_REQUEST_IMAGE_BYTES {
                 return Err("单次请求图片总大小超过 50MB 限制".to_string());
             }
-            let mime_type = infer_image_mime(
-                record.get("mime").and_then(Value::as_str),
-                record.get("name").and_then(Value::as_str).or(Some(path)),
-            )?;
-            let uri = url::Url::from_file_path(file_path)
+            let detected_mime = detect_image_mime(&bytes).ok_or_else(|| {
+                "不支持或无效的图片格式（仅支持 PNG、JPEG、WebP、GIF、BMP）".to_string()
+            })?;
+            if let Some(explicit) = record.get("mime").and_then(Value::as_str) {
+                let normalized = normalize_image_mime(explicit)?;
+                if normalized != detected_mime {
+                    return Err(format!("图片格式声明与内容不匹配: {explicit}"));
+                }
+            }
+            let uri = url::Url::from_file_path(&canonical_path)
                 .ok()
                 .map(|url| url.to_string());
             blocks.push(ContentBlock::Image {
                 data: STANDARD.encode(&bytes),
-                mime_type,
+                mime_type: detected_mime.to_string(),
                 uri,
             });
             continue;
@@ -944,16 +1106,8 @@ fn decode_image_blocks(payload: &Map<String, Value>) -> Result<Vec<ContentBlock>
             .get("data")
             .and_then(Value::as_str)
             .ok_or_else(|| "图片缺少数据".to_string())?;
-        let mime_type = infer_image_mime(
-            record.get("mime").and_then(Value::as_str),
-            record.get("name").and_then(Value::as_str),
-        )?;
-        let encoded = data
-            .rsplit_once(',')
-            .map(|(_, value)| value)
-            .unwrap_or(data)
-            .split_ascii_whitespace()
-            .collect::<String>();
+        let (header_mime, raw_encoded) = parse_data_uri(data);
+        let encoded: String = raw_encoded.split_ascii_whitespace().collect();
         let bytes = STANDARD
             .decode(&encoded)
             .map_err(|_| "图片数据无效".to_string())?;
@@ -966,54 +1120,76 @@ fn decode_image_blocks(payload: &Map<String, Value>) -> Result<Vec<ContentBlock>
                 bytes.len().div_ceil(1024)
             ));
         }
-        total_bytes += bytes.len();
+        total_bytes = total_bytes.saturating_add(bytes.len());
         if total_bytes > DEFAULT_MAX_REQUEST_IMAGE_BYTES {
             return Err("单次请求图片总大小超过 50MB 限制".to_string());
         }
+        let detected_mime = detect_image_mime(&bytes).ok_or_else(|| {
+            "不支持或无效的图片格式（仅支持 PNG、JPEG、WebP、GIF、BMP）".to_string()
+        })?;
+        if let Some(explicit) = record
+            .get("mime")
+            .and_then(Value::as_str)
+            .filter(|v| !v.trim().is_empty())
+            .or(header_mime)
+        {
+            let normalized = normalize_image_mime(explicit)?;
+            if normalized != detected_mime {
+                return Err(format!("图片格式声明与内容不匹配: {explicit}"));
+            }
+        }
         blocks.push(ContentBlock::Image {
             data: encoded,
-            mime_type,
+            mime_type: detected_mime.to_string(),
             uri: None,
         });
     }
     Ok(blocks)
 }
 
-fn infer_image_mime(
-    explicit_mime: Option<&str>,
-    name_or_path: Option<&str>,
-) -> Result<String, String> {
-    if let Some(mime) = explicit_mime
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
+fn parse_data_uri(data: &str) -> (Option<&str>, &str) {
+    let trimmed = data.trim();
+    if let Some(rest) = trimmed.strip_prefix("data:")
+        && let Some((header, body)) = rest.split_once(',')
     {
-        let normalized = mime.to_ascii_lowercase();
-        if is_allowed_image_mime(&normalized) {
-            return Ok(normalized);
-        }
-        return Err(format!("不支持的图片类型: {mime}"));
+        let mime = header
+            .split(';')
+            .next()
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        return (mime, body);
     }
-    let ext = name_or_path
-        .and_then(|value| Path::new(value).extension())
-        .and_then(|value| value.to_str())
-        .map(str::to_ascii_lowercase)
-        .unwrap_or_default();
-    let inferred = match ext.as_str() {
-        "jpg" | "jpeg" => "image/jpeg",
-        "webp" => "image/webp",
-        "gif" => "image/gif",
-        "bmp" => "image/bmp",
-        "png" | "" => "image/png",
-        other => return Err(format!("不支持的图片扩展名: .{other}")),
-    };
-    Ok(inferred.to_string())
+    (None, trimmed)
 }
 
-fn is_allowed_image_mime(mime: &str) -> bool {
-    matches!(
-        mime,
-        "image/png" | "image/jpeg" | "image/jpg" | "image/webp" | "image/gif" | "image/bmp"
-    )
+fn normalize_image_mime(raw: &str) -> Result<&'static str, String> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "image/png" => Ok("image/png"),
+        "image/jpeg" | "image/jpg" => Ok("image/jpeg"),
+        "image/webp" => Ok("image/webp"),
+        "image/gif" => Ok("image/gif"),
+        "image/bmp" => Ok("image/bmp"),
+        other => Err(format!("不支持的图片类型: {other}")),
+    }
+}
+
+fn detect_image_mime(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        return Some("image/png");
+    }
+    if bytes.starts_with(b"\xff\xd8\xff") {
+        return Some("image/jpeg");
+    }
+    if bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        return Some("image/webp");
+    }
+    if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        return Some("image/gif");
+    }
+    if bytes.starts_with(b"BM") {
+        return Some("image/bmp");
+    }
+    None
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

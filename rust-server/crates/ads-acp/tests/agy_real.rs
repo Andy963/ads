@@ -10,16 +10,20 @@ use ads_acp::{
     AgyAuthUrlKind, AgyDriver, AgyDriverConfig, AgyIsolatedProfile, AgyProbeCache, AgyProbeStatus,
     AutoApprovePermissionHandler, ClientCapabilities, ConfigOption, ConfigOptionChoice,
     ConfigOptionValue, ConfigOptionsState, DesiredConfigAlignment, FileSystemCapabilities,
-    InitializeResponse, PlanEntry, SessionMode, SessionModeInfo, SessionModeState, SessionUpdate,
-    StopReason, ToolCallInfo, build_agy_launch_spec, logout_agy_profile,
-    parse_agy_authorization_url, prepare_agy_isolated_profile, probe_agy_runtime,
-    resolve_agy_profile_dir, start_agy_login, validate_agy_login_response,
+    GenericAcpDriver, InitializeResponse, PlanEntry, SessionMode, SessionModeInfo,
+    SessionModeState, SessionUpdate, StopReason, ToolCallInfo, build_agy_launch_spec,
+    logout_agy_profile, parse_agy_authorization_url, prepare_agy_isolated_profile,
+    probe_agy_runtime, resolve_agy_binary, resolve_agy_profile_dir, start_agy_login,
+    validate_agy_login_response,
 };
+use ads_runtime::scheduler::{ScheduleExecutor, SchedulerExecutionInput, SchedulerJobPayload};
 use ads_runtime::{LaneTurn, LaneTurnKey, LaneTurnKind, PromptQueueRunner, PromptRunContext};
 use ads_state::{
-    HistoryStore, SaveRoleProfile, StateDb, WEB_ACOPILOT_NAMESPACE, WEB_ACTIONS_NAMESPACE,
-    get_default_role_profile, save_role_profile,
+    HistoryStore, SaveRoleProfile, StateDb, StoredSchedule, WEB_ACOPILOT_NAMESPACE,
+    WEB_ACTIONS_NAMESPACE, get_default_role_profile, save_role_profile,
 };
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD;
 use rusqlite::{OptionalExtension, params};
 use serde_json::{Map, Value, json};
 use tempfile::TempDir;
@@ -29,6 +33,38 @@ fn real_agy_enabled() -> bool {
     std::env::var("ADS_TEST_REAL_AGY")
         .map(|value| matches!(value.trim(), "1" | "true" | "TRUE"))
         .unwrap_or(false)
+}
+
+fn mock_server_bin() -> &'static str {
+    env!("CARGO_BIN_EXE_ads-acp-mock-server")
+}
+
+fn build_lane_turn(
+    id: i64,
+    client_message_id: &str,
+    history_key: &str,
+    logical_history_key: &str,
+    namespace: &str,
+    workspace_root: &str,
+    payload: Map<String, Value>,
+) -> LaneTurn {
+    LaneTurn {
+        key: LaneTurnKey::PromptQueue(id),
+        kind: LaneTurnKind::UserPrompt,
+        client_message_id: client_message_id.to_string(),
+        auth_user_id: "user-1".to_string(),
+        user_id: 1,
+        session_id: "proj-1".to_string(),
+        chat_session_id: "acopilot".to_string(),
+        history_key: history_key.to_string(),
+        logical_history_key: logical_history_key.to_string(),
+        lane_namespace: namespace.to_string(),
+        lane_generation: 1,
+        workspace_root: workspace_root.to_string(),
+        payload,
+        history_display_text: None,
+        created_at: 1000 + id,
+    }
 }
 
 #[test]
@@ -71,6 +107,10 @@ fn agy_isolated_profiles_stay_separate_and_sanitize_env() {
     launch_env.insert(
         "GOOGLE_API_KEY".to_string(),
         "ambient-google-leak".to_string(),
+    );
+    launch_env.insert(
+        "GOOGLE_OAUTH_ACCESS_TOKEN".to_string(),
+        "ambient-oauth-token".to_string(),
     );
     launch_env.insert(
         "CHROME_CRASHPAD_PIPE_NAME".to_string(),
@@ -123,13 +163,20 @@ fn agy_isolated_profiles_stay_separate_and_sanitize_env() {
     assert!(spec_a.env.contains_key("SSH_CONNECTION"));
     assert!(!spec_a.env.contains_key("GEMINI_API_KEY"));
     assert!(!spec_a.env.contains_key("GOOGLE_API_KEY"));
+    assert!(!spec_a.env.contains_key("GOOGLE_OAUTH_ACCESS_TOKEN"));
     assert!(!spec_a.env.contains_key("CHROME_CRASHPAD_PIPE_NAME"));
 
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let mode = fs::metadata(&profile_a).expect("meta").permissions().mode() & 0o777;
-        assert_eq!(mode, 0o700);
+        let dir_mode = fs::metadata(&profile_a).expect("meta").permissions().mode() & 0o777;
+        assert_eq!(dir_mode, 0o700);
+        let settings_mode = fs::metadata(profile_a.join("antigravity-acp/settings.json"))
+            .expect("settings meta")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(settings_mode, 0o600);
         assert!(profile_a.join("AGENTS.md").exists());
         assert!(profile_a.join("config/skills/demo-skill").exists());
     }
@@ -193,6 +240,17 @@ fn agy_auth_config_validation_enforces_required_fields() {
             ..Default::default()
         });
     assert!(prepare_agy_isolated_profile(&valid_platform, &HashMap::new()).is_ok());
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let non_exec = temp.path().join("non-executable-agy");
+        fs::write(&non_exec, "#!/bin/sh\necho hi\n").expect("write non-exec");
+        fs::set_permissions(&non_exec, fs::Permissions::from_mode(0o644)).expect("chmod 644");
+        assert!(resolve_agy_binary(non_exec.to_str()).is_none());
+        fs::set_permissions(&non_exec, fs::Permissions::from_mode(0o755)).expect("chmod 755");
+        assert!(resolve_agy_binary(non_exec.to_str()).is_some());
+    }
 }
 
 #[test]
@@ -215,17 +273,58 @@ fn agy_oauth_url_and_callback_validation_match_contract() {
         validate_agy_login_response(&parsed_code, &good_callback),
         Some(good_callback)
     );
-    let bad_state_callback = format!("{AGY_CODE_REDIRECT_URI}?state=wrong-state&code=4/0AeaCode");
     assert_eq!(
-        validate_agy_login_response(&parsed_code, &bad_state_callback),
+        validate_agy_login_response(
+            &parsed_code,
+            &format!("{AGY_CODE_REDIRECT_URI}?state=wrong-state&code=4/0AeaCode"),
+        ),
         None
+    );
+    assert_eq!(
+        validate_agy_login_response(
+            &parsed_code,
+            "https://antigravity.google:8443/oauth-callback?state=state-xyz-123&code=4/0AeaCode",
+        ),
+        None,
+        "code callback must reject unexpected non-default port"
+    );
+    assert_eq!(
+        validate_agy_login_response(
+            &parsed_code,
+            &format!("{AGY_CODE_REDIRECT_URI}?state=state-xyz-123&code=4/0AeaCode#frag"),
+        ),
+        None,
+        "code callback must reject fragments"
     );
 
     let loopback_url = "https://accounts.google.com/o/oauth2/v2/auth?redirect_uri=http%3A%2F%2F127.0.0.1%3A45678%2F&response_type=code&state=s1";
-    assert!(parse_agy_authorization_url(loopback_url, AgyAuthUrlKind::Loopback).is_ok());
+    let parsed_loopback =
+        parse_agy_authorization_url(loopback_url, AgyAuthUrlKind::Loopback).expect("loopback URL");
+    let good_loopback = "http://127.0.0.1:45678/?state=s1&code=abc".to_string();
+    assert_eq!(
+        validate_agy_login_response(&parsed_loopback, &good_loopback),
+        Some(good_loopback),
+        "loopback callback must match port strictly"
+    );
+    assert_eq!(
+        validate_agy_login_response(&parsed_loopback, "http://127.0.0.1:9999/?state=s1&code=abc"),
+        None
+    );
 
-    let bad_port_url = "https://accounts.google.com/o/oauth2/v2/auth?redirect_uri=http%3A%2F%2F127.0.0.1%3A80%2F&response_type=code&state=s1";
-    assert!(parse_agy_authorization_url(bad_port_url, AgyAuthUrlKind::Loopback).is_err());
+    assert!(
+        parse_agy_authorization_url(
+            "https://accounts.google.com/o/oauth2/v2/auth?redirect_uri=http%3A%2F%2F127.0.0.1%3A80%2F&response_type=code&state=s1",
+            AgyAuthUrlKind::Loopback,
+        )
+        .is_err()
+    );
+    assert!(
+        parse_agy_authorization_url(
+            "https://accounts.google.com/o/oauth2/v2/auth?redirect_uri=http%3A%2F%2F127.0.0.1%3A45678%2F%3Fextra%3D1&response_type=code&state=s1",
+            AgyAuthUrlKind::Loopback,
+        )
+        .is_err()
+    );
 }
 
 #[test]
@@ -262,24 +361,32 @@ fn agy_driver_hooks_handle_meta_auth_errors_alignment_and_update_normalization()
         extra["_meta"]["antigravity"]["systemPrompt"]["append"],
         json!("Keep patches concise.")
     );
-    let empty_extra = driver.extra_session_new_params(&AcpSessionContext::default(), None);
-    assert!(empty_extra.is_empty());
+    assert!(
+        driver
+            .extra_session_new_params(&AcpSessionContext::default(), None)
+            .is_empty()
+    );
 
     let banner = format!(
-        "{AGY_AUTH_STDOUT_PREFIX}https://accounts.google.com/o/oauth2/v2/auth?redirect_uri=http%3A%2F%2F127.0.0.1%3A45678%2F&response_type=code&state=s1"
+        "  {AGY_AUTH_STDOUT_PREFIX}https://accounts.google.com/o/oauth2/v2/auth?redirect_uri=http%3A%2F%2F127.0.0.1%3A45678%2F&response_type=code&state=s1  "
     );
-    let intercepted = driver
-        .intercept_non_json_stdout_line(&banner)
-        .expect("should intercept auth stdout banner");
-    assert!(intercepted.is_auth_required());
+    assert!(
+        driver
+            .intercept_non_json_stdout_line(&banner)
+            .expect("should intercept auth stdout banner")
+            .is_auth_required()
+    );
 
-    let rpc_auth = driver.map_rpc_error(
-        "authenticate",
-        -32603,
-        "No browser is available here to open the login URL.",
-        None,
+    assert!(
+        driver
+            .map_rpc_error(
+                "authenticate",
+                -32603,
+                "No browser is available here to open the login URL.",
+                None,
+            )
+            .is_auth_required()
     );
-    assert!(rpc_auth.is_auth_required());
 
     let config_state = ConfigOptionsState::from_vec(vec![
         ConfigOption {
@@ -293,6 +400,11 @@ fn agy_driver_hooks_handle_meta_auth_errors_alignment_and_update_normalization()
                 ConfigOptionChoice::Value(ConfigOptionValue {
                     value: "gemini-4-hydrogen".to_string(),
                     name: "Gemini 4 Hydrogen".to_string(),
+                    description: None,
+                }),
+                ConfigOptionChoice::Value(ConfigOptionValue {
+                    value: "model-beta".to_string(),
+                    name: "Model Beta".to_string(),
                     description: None,
                 }),
                 ConfigOptionChoice::Value(ConfigOptionValue {
@@ -310,15 +422,21 @@ fn agy_driver_hooks_handle_meta_auth_errors_alignment_and_update_normalization()
             category: Some("thought_level".to_string()),
             option_type: "select".to_string(),
             current_value: "high".to_string(),
+            // Deliberately omit `xhigh` pre-switch to verify cross-model splitting still works.
             options: vec![
+                ConfigOptionChoice::Value(ConfigOptionValue {
+                    value: "low".to_string(),
+                    name: "Low".to_string(),
+                    description: None,
+                }),
                 ConfigOptionChoice::Value(ConfigOptionValue {
                     value: "medium".to_string(),
                     name: "Medium".to_string(),
                     description: None,
                 }),
                 ConfigOptionChoice::Value(ConfigOptionValue {
-                    value: "xhigh".to_string(),
-                    name: "Extra High".to_string(),
+                    value: "high".to_string(),
+                    name: "High".to_string(),
                     description: None,
                 }),
             ],
@@ -351,12 +469,12 @@ fn agy_driver_hooks_handle_meta_auth_errors_alignment_and_update_normalization()
         Some(&modes),
         DesiredConfigAlignment {
             mode: Some(SessionMode::Custom("yolo".to_string())),
-            model: Some("gemini-4-hydrogen-xhigh".to_string()),
-            thought_level: None,
+            model: Some("model-beta-xhigh".to_string()),
+            thought_level: Some("   ".to_string()),
             extra_options: Vec::new(),
         },
     );
-    assert_eq!(split_alignment.model.as_deref(), Some("gemini-4-hydrogen"));
+    assert_eq!(split_alignment.model.as_deref(), Some("model-beta"));
     assert_eq!(split_alignment.thought_level.as_deref(), Some("xhigh"));
     assert_eq!(split_alignment.mode, Some(SessionMode::Default));
 
@@ -416,21 +534,24 @@ fn agy_driver_hooks_handle_meta_auth_errors_alignment_and_update_normalization()
         })
     );
 
-    let suppressed_followup = driver.normalize_session_update(
-        "sess-1",
-        SessionUpdate::ToolCallUpdate(ToolCallInfo {
-            tool_call_id: "call-steps-1".to_string(),
-            title: None,
-            kind: None,
-            status: Some("completed".to_string()),
-            content: Vec::new(),
-            locations: Vec::new(),
-            raw_input: None,
-            raw_output: Some(json!({ "ok": true })),
-            extra: Map::new(),
-        }),
+    assert!(
+        driver
+            .normalize_session_update(
+                "sess-1",
+                SessionUpdate::ToolCallUpdate(ToolCallInfo {
+                    tool_call_id: "call-steps-1".to_string(),
+                    title: None,
+                    kind: None,
+                    status: Some("cancelled".to_string()),
+                    content: Vec::new(),
+                    locations: Vec::new(),
+                    raw_input: None,
+                    raw_output: None,
+                    extra: Map::new(),
+                }),
+            )
+            .is_none()
     );
-    assert!(suppressed_followup.is_none());
 
     let cmd_update = driver
         .normalize_session_update(
@@ -458,12 +579,13 @@ fn agy_driver_hooks_handle_meta_auth_errors_alignment_and_update_normalization()
         panic!("expected ToolCall");
     };
     assert_eq!(info.kind.as_deref(), Some("execute"));
+    assert_eq!(info.title.as_deref(), Some("cargo test -p ads-acp"));
+    assert_eq!(info.extra["exit_code"], json!(0));
     assert_eq!(
         info.extra["normalized"]["command"],
         json!("cargo test -p ads-acp")
     );
     assert_eq!(info.extra["normalized"]["cwd"], json!("/tmp/ws"));
-    assert_eq!(info.extra["normalized"]["exitCode"], json!(0));
 }
 
 #[tokio::test]
@@ -476,44 +598,512 @@ async fn probe_agy_runtime_reports_binary_not_found_immediately() {
     assert!(result.probed_at_ms > 0);
 }
 
+#[cfg(unix)]
 #[tokio::test]
-async fn acp_prompt_runner_rejects_empty_payload_without_spawning() {
+async fn agy_transport_intercepts_stdout_auth_banner_from_subprocess() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp = TempDir::new().expect("temp dir");
+    let script = temp.path().join("fake-agy-banner.sh");
+    fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\necho '{}https://accounts.google.com/o/oauth2/v2/auth?redirect_uri=http%3A%2F%2F127.0.0.1%3A45678%2F&response_type=code&state=s1'\nsleep 2\n",
+            AGY_AUTH_STDOUT_PREFIX
+        ),
+    )
+    .expect("write banner script");
+    fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).expect("chmod");
+
+    let cfg = AgyDriverConfig::default().with_binary(script.to_str().unwrap());
+    let driver: Arc<dyn AcpDriver> = Arc::new(AgyDriver::new(cfg));
+    let session = AcpSession::spawn(
+        driver,
+        &AcpLaunchContext {
+            session_key: "banner-test".to_string(),
+            workspace_root: temp.path().to_path_buf(),
+            ..Default::default()
+        },
+        Arc::new(AutoApprovePermissionHandler),
+        AcpSessionConfig::default(),
+    )
+    .await
+    .expect("spawn fake banner");
+
+    let err = session
+        .initialize()
+        .await
+        .expect_err("initialize must return AuthenticationRequired instead of MalformedFrame");
+    assert!(
+        err.is_auth_required(),
+        "expected AuthenticationRequired, got {err:?}"
+    );
+    session.shutdown().await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn agy_login_handle_drains_pipes_avoids_stderr_eof_spin_and_cancels() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp = TempDir::new().expect("temp dir");
+    let script = temp.path().join("fake-agy-login.sh");
+    fs::write(
+        &script,
+        concat!(
+            "#!/bin/sh\n",
+            // Close stderr immediately to verify select! does not busy-spin on stderr EOF.
+            "exec 2>&-\n",
+            "echo 'Open the following link to authenticate the ACP server: https://accounts.google.com/o/oauth2/auth?redirect_uri=https%3A%2F%2Fantigravity.google%2Foauth-callback&response_type=code&state=test-state-1'\n",
+            "IFS= read -r code\n",
+            // Print a line after receiving the code to verify parent stdout drainer avoids SIGPIPE.
+            "echo \"received:$code\"\n",
+            "exit 0\n",
+        ),
+    )
+    .expect("write login script");
+    fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).expect("chmod");
+
+    let cfg = AgyDriverConfig::default().with_binary(script.to_str().unwrap());
+    let mut handle = start_agy_login(&cfg, &HashMap::new())
+        .await
+        .expect("start_agy_login");
+    assert_eq!(handle.authorization().state, "test-state-1");
+    handle
+        .submit_response("4/0AeaValidCode-123")
+        .await
+        .expect("submit_response must succeed cleanly without SIGPIPE");
+
+    // Second start verifying clean cancel kills child without hanging.
+    let script_wait = temp.path().join("fake-agy-login-wait.sh");
+    fs::write(
+        &script_wait,
+        concat!(
+            "#!/bin/sh\n",
+            "echo 'https://accounts.google.com/o/oauth2/auth?redirect_uri=https%3A%2F%2Fantigravity.google%2Foauth-callback&response_type=code&state=cancel-state'\n",
+            "sleep 30\n",
+        ),
+    )
+    .expect("write wait login script");
+    fs::set_permissions(&script_wait, fs::Permissions::from_mode(0o755)).expect("chmod");
+    let cfg_wait = AgyDriverConfig::default().with_binary(script_wait.to_str().unwrap());
+    let cancel_handle = start_agy_login(&cfg_wait, &HashMap::new())
+        .await
+        .expect("start cancel login");
+    cancel_handle.cancel().await;
+}
+
+#[tokio::test]
+async fn acp_prompt_runner_lifecycle_cancel_timeout_isolation_and_images() {
     let temp = TempDir::new().expect("temp dir");
     let db = StateDb::open(temp.path().join("state.sqlite")).expect("open StateDb");
-    let driver = Arc::new(AgyDriver::new(
-        AgyDriverConfig::default().with_binary("/nonexistent/should-not-spawn"),
-    ));
-    let runner = AcpPromptRunner::new(db.clone(), AcpPromptRunnerConfig::new(driver));
-    let events = Arc::new(Mutex::new(Vec::<Value>::new()));
-    let events_handle = Arc::clone(&events);
-    let context = PromptRunContext::new(Arc::new(move |value| {
-        events_handle.lock().expect("events lock").push(value);
-    }));
-    let entry = LaneTurn {
-        key: LaneTurnKey::PromptQueue(7),
-        kind: LaneTurnKind::UserPrompt,
-        client_message_id: "cm-empty".to_string(),
-        auth_user_id: "user-1".to_string(),
-        user_id: 1,
-        session_id: "proj-1".to_string(),
-        chat_session_id: "main".to_string(),
-        history_key: "user-1::proj-1::main".to_string(),
-        logical_history_key: "user-1::proj-1::main".to_string(),
-        lane_namespace: "web".to_string(),
-        lane_generation: 1,
-        workspace_root: temp.path().to_string_lossy().to_string(),
-        payload: Map::new(),
-        history_display_text: None,
-        created_at: 1000,
-    };
-    let outcome = runner
-        .run_lane_turn(entry.clone(), context)
+
+    let driver = Arc::new(
+        GenericAcpDriver::new("mock-acp", mock_server_bin())
+            .with_env(
+                "ADS_MOCK_STATE_DIR",
+                temp.path().to_string_lossy().to_string(),
+            )
+            .with_model_alias("auto", "model-alpha")
+            .with_extra_session_new_param("driverTag", json!("runner-test")),
+    );
+    let runner = AcpPromptRunner::new(
+        db.clone(),
+        AcpPromptRunnerConfig::new(Arc::clone(&driver) as Arc<dyn AcpDriver>)
+            .with_agent_id("mock-acp")
+            .with_idle_timeout(Some(Duration::from_secs(15))),
+    );
+
+    let workspace_str = temp.path().to_string_lossy().to_string();
+
+    // 1. Multi-phase `full_stream`: delta assistantItemId must match assistant_item & assistantItems (no duplicates),
+    //    and model="auto" must be stripped rather than sent verbatim to align_config.
+    let events_1 = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let events_1_h = Arc::clone(&events_1);
+    let mut payload_1 = Map::new();
+    payload_1.insert("text".to_string(), json!("full_stream"));
+    payload_1.insert("model".to_string(), json!("auto"));
+    let turn_1 = build_lane_turn(
+        1,
+        "cm-full-1",
+        "user-1::proj-1::acopilot",
+        "user-1::proj-1::acopilot",
+        WEB_ACOPILOT_NAMESPACE,
+        &workspace_str,
+        payload_1,
+    );
+    let out_1 = runner
+        .run_lane_turn(
+            turn_1.clone(),
+            PromptRunContext::new(Arc::new(move |ev| {
+                events_1_h.lock().expect("events").push(ev);
+            })),
+        )
         .await
-        .expect("run_lane_turn");
-    assert!(!outcome.ok);
-    let captured = events.lock().expect("events").clone();
-    assert!(captured.iter().any(|e| e["type"] == "error"));
+        .expect("turn 1");
+    assert!(out_1.ok, "unexpected failure: {:?}", out_1.error);
+
+    let evs_1 = events_1.lock().expect("events").clone();
+    let delta_ids: Vec<String> = evs_1
+        .iter()
+        .filter(|e| e["type"] == "delta")
+        .filter_map(|e| e["assistantItemId"].as_str().map(str::to_string))
+        .collect();
+    let item_ids: Vec<String> = evs_1
+        .iter()
+        .filter(|e| e["type"] == "assistant_item")
+        .filter_map(|e| e["assistantItemId"].as_str().map(str::to_string))
+        .collect();
+    assert_eq!(
+        delta_ids,
+        vec!["cm-full-1-assistant-1", "cm-full-1-assistant-2"]
+    );
+    assert_eq!(
+        item_ids, delta_ids,
+        "assistant_item IDs must match streamed deltas"
+    );
+    let res_1 = evs_1
+        .iter()
+        .find(|e| e["type"] == "result")
+        .expect("result event");
+    assert_eq!(res_1["ok"], json!(true));
+    let thread_gen_1 = res_1["threadId"].as_str().expect("threadId").to_string();
+    assert!(
+        runner
+            .reconcile_lane_turn(&turn_1)
+            .await
+            .expect("reconcile")
+            .is_some_and(|r| r.ok)
+    );
+
+    // 2. Generation reset (`clear_history`) must allocate a distinct session (different threadId), not reuse gen 1.
+    let events_2 = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let events_2_h = Arc::clone(&events_2);
+    let mut payload_2 = Map::new();
+    payload_2.insert("text".to_string(), json!("full_stream"));
+    let turn_2 = build_lane_turn(
+        2,
+        "cm-full-2",
+        "user-1::proj-1::acopilot:generation:2",
+        "user-1::proj-1::acopilot",
+        WEB_ACOPILOT_NAMESPACE,
+        &workspace_str,
+        payload_2,
+    );
+    let out_2 = runner
+        .run_lane_turn(
+            turn_2,
+            PromptRunContext::new(Arc::new(move |ev| {
+                events_2_h.lock().expect("events").push(ev);
+            })),
+        )
+        .await
+        .expect("gen 2 turn");
+    assert!(out_2.ok);
+    let thread_gen_2 = events_2
+        .lock()
+        .expect("events")
+        .iter()
+        .find(|e| e["type"] == "result")
+        .and_then(|e| e["threadId"].as_str().map(str::to_string))
+        .expect("gen 2 threadId");
+    assert_ne!(
+        thread_gen_2, thread_gen_1,
+        "generation reset must start a new ACP session"
+    );
+
+    // 3. Permission isolation: acopilot auto-approves, web-actions (reviewer) auto-denies.
+    let mut perm_acopilot_payload = Map::new();
+    perm_acopilot_payload.insert("text".to_string(), json!("need_permission"));
+    let evs_perm_a = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let evs_perm_a_h = Arc::clone(&evs_perm_a);
+    let perm_a_turn = build_lane_turn(
+        3,
+        "cm-perm-allow",
+        "user-1::proj-1::acopilot",
+        "user-1::proj-1::acopilot",
+        WEB_ACOPILOT_NAMESPACE,
+        &workspace_str,
+        perm_acopilot_payload,
+    );
+    assert!(
+        runner
+            .run_lane_turn(
+                perm_a_turn,
+                PromptRunContext::new(Arc::new(move |ev| {
+                    evs_perm_a_h.lock().expect("evs").push(ev);
+                })),
+            )
+            .await
+            .expect("perm allow")
+            .ok
+    );
+    assert_eq!(
+        evs_perm_a
+            .lock()
+            .expect("evs")
+            .iter()
+            .find(|e| e["type"] == "result")
+            .and_then(|e| e["output"].as_str()),
+        Some("ALLOWED:opt-allow-once")
+    );
+
+    let mut perm_actions_payload = Map::new();
+    perm_actions_payload.insert("text".to_string(), json!("need_permission"));
+    let evs_perm_r = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let evs_perm_r_h = Arc::clone(&evs_perm_r);
+    let perm_r_turn = build_lane_turn(
+        4,
+        "cm-perm-deny",
+        "user-1::proj-1::main",
+        "user-1::proj-1::main",
+        WEB_ACTIONS_NAMESPACE,
+        &workspace_str,
+        perm_actions_payload,
+    );
+    assert!(
+        runner
+            .run_lane_turn(
+                perm_r_turn,
+                PromptRunContext::new(Arc::new(move |ev| {
+                    evs_perm_r_h.lock().expect("evs").push(ev);
+                })),
+            )
+            .await
+            .expect("perm deny")
+            .ok
+    );
+    assert_eq!(
+        evs_perm_r
+            .lock()
+            .expect("evs")
+            .iter()
+            .find(|e| e["type"] == "result")
+            .and_then(|e| e["output"].as_str()),
+        Some("DENIED:opt-reject-once")
+    );
+
+    // 4. `abort_lane_turn` when server returns StopReason::Cancelled must fail, skip `result`, and record error status.
+    let mut cancel_payload = Map::new();
+    cancel_payload.insert("text".to_string(), json!("cancel_with_trailing"));
+    let cancel_turn = build_lane_turn(
+        5,
+        "cm-cancel",
+        "user-1::proj-1::cancel-lane",
+        "user-1::proj-1::cancel-lane",
+        WEB_ACOPILOT_NAMESPACE,
+        &workspace_str,
+        cancel_payload,
+    );
+    let runner = Arc::new(runner);
+    let cancel_runner = Arc::clone(&runner);
+    let cancel_turn_handle = cancel_turn.clone();
+    let cancel_events = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let cancel_events_h = Arc::clone(&cancel_events);
+    let out_cancel = runner
+        .run_lane_turn(
+            cancel_turn.clone(),
+            PromptRunContext::new(Arc::new(move |ev| {
+                if ev["type"] == "delta" {
+                    cancel_runner.abort_lane_turn(&cancel_turn_handle);
+                }
+                cancel_events_h.lock().expect("evs").push(ev);
+            })),
+        )
+        .await
+        .expect("abort turn");
+    assert!(
+        !out_cancel.ok,
+        "cancelled turn must return PromptQueueRunOutcome::failure"
+    );
+    let cancel_evs = cancel_events.lock().expect("evs").clone();
+    assert!(!cancel_evs.iter().any(|e| e["type"] == "result"));
+    let err_ev = cancel_evs
+        .iter()
+        .find(|e| e["type"] == "error")
+        .expect("cancelled turn emits error event");
+    assert_eq!(err_ev["errorInfo"]["code"], json!("turn_cancelled"));
+    let cancel_reconcile = runner
+        .reconcile_lane_turn(&cancel_turn)
+        .await
+        .expect("reconcile cancelled")
+        .expect("cancelled has terminal history entry");
+    assert!(!cancel_reconcile.ok);
+
+    // 5. Image security validation + valid base64 data URI before spawning + ScheduleExecutor.
+    let mut outside_img_payload = Map::new();
+    outside_img_payload.insert("text".to_string(), json!("check image"));
+    outside_img_payload.insert("images".to_string(), json!([{ "path": "/etc/passwd" }]));
+    let outside_turn = build_lane_turn(
+        6,
+        "cm-bad-path",
+        "user-1::proj-1::img-bad",
+        "user-1::proj-1::img-bad",
+        WEB_ACOPILOT_NAMESPACE,
+        &workspace_str,
+        outside_img_payload,
+    );
+    let out_bad_path = runner
+        .run_lane_turn(outside_turn, PromptRunContext::new(Arc::new(|_| {})))
+        .await
+        .expect("bad image path");
+    assert!(!out_bad_path.ok);
+    assert!(
+        out_bad_path
+            .error
+            .as_deref()
+            .is_some_and(|e| e.contains("工作区范围"))
+    );
+
+    let ws_fake_png = temp.path().join("fake.png");
+    fs::write(&ws_fake_png, b"not actually a png").expect("write fake png");
+    let mut bad_magic_payload = Map::new();
+    bad_magic_payload.insert("images".to_string(), json!([{ "path": "fake.png" }]));
+    let bad_magic_turn = build_lane_turn(
+        7,
+        "cm-bad-magic",
+        "user-1::proj-1::img-bad",
+        "user-1::proj-1::img-bad",
+        WEB_ACOPILOT_NAMESPACE,
+        &workspace_str,
+        bad_magic_payload,
+    );
+    assert!(
+        !runner
+            .run_lane_turn(bad_magic_turn, PromptRunContext::new(Arc::new(|_| {})))
+            .await
+            .expect("bad magic")
+            .ok
+    );
+
+    // Valid PNG magic header in data URI (omitting explicit `mime` field to test header parsing).
+    let png_bytes = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR";
+    let mut ok_img_payload = Map::new();
+    ok_img_payload.insert("text".to_string(), json!("full_stream"));
+    ok_img_payload.insert(
+        "images".to_string(),
+        json!([{ "data": format!("data:image/png;base64,{}", STANDARD.encode(png_bytes)) }]),
+    );
+    let ok_img_turn = build_lane_turn(
+        8,
+        "cm-ok-img",
+        "user-1::proj-1::acopilot",
+        "user-1::proj-1::acopilot",
+        WEB_ACOPILOT_NAMESPACE,
+        &workspace_str,
+        ok_img_payload,
+    );
+    assert!(
+        runner
+            .run_lane_turn(ok_img_turn, PromptRunContext::new(Arc::new(|_| {})))
+            .await
+            .expect("valid png data uri")
+            .ok
+    );
+
+    // 6. ScheduleExecutor uses "result" output cleanly.
+    let sched_spec = serde_json::from_value(json!({
+        "version": 1,
+        "name": "sched-1",
+        "enabled": true,
+        "schedule": { "type": "cron", "cron": "* * * * *", "timezone": "UTC" },
+        "instruction": "full_stream",
+        "delivery": {
+            "channels": ["web"],
+            "web": { "audience": "owner" },
+            "telegram": { "chatId": null }
+        },
+        "policy": {
+            "workspaceWrite": true,
+            "network": "allow",
+            "maxDurationMs": 60000,
+            "maxRetries": 0,
+            "concurrencyKey": "sched-1",
+            "idempotencyKeyTemplate": "sched-1:{{runAt}}"
+        },
+        "compiledTask": {
+            "title": "Scheduled mock",
+            "prompt": "full_stream",
+            "expectedResultSchema": {},
+            "verification": { "commands": [] }
+        },
+        "questions": []
+    }))
+    .expect("deserialize ScheduleSpec");
+    let sched_output = runner
+        .execute(SchedulerExecutionInput {
+            workspace_root: workspace_str.clone(),
+            owner: "user-1".to_string(),
+            schedule: StoredSchedule {
+                id: "sched-1".to_string(),
+                instruction: "full_stream".to_string(),
+                spec: sched_spec,
+                enabled: true,
+                next_run_at: Some(200),
+                lease_owner: None,
+                lease_until: None,
+                created_at: 100,
+                updated_at: 100,
+            },
+            payload: SchedulerJobPayload {
+                workspace_root: workspace_str.clone(),
+                schedule_id: "sched-1".to_string(),
+                external_id: "sched-ext-1".to_string(),
+                run_at: 200,
+                prompt: Some("full_stream".to_string()),
+            },
+            prompt: "full_stream".to_string(),
+            task_id: "task-sched-1".to_string(),
+            task_title: "Scheduled mock".to_string(),
+        })
+        .await
+        .expect("schedule execute");
+    assert!(
+        sched_output.contains("Done("),
+        "expected combined output, got {sched_output:?}"
+    );
+
     runner.shutdown().await;
+
+    // 7. Short idle_timeout watchdog fires cleanly on hung turn.
+    let timeout_runner = AcpPromptRunner::new(
+        db,
+        AcpPromptRunnerConfig::new(driver)
+            .with_agent_id("mock-timeout")
+            .with_idle_timeout(Some(Duration::from_millis(120))),
+    );
+    let mut hang_payload = Map::new();
+    hang_payload.insert("text".to_string(), json!("hang_timeout"));
+    let hang_turn = build_lane_turn(
+        9,
+        "cm-hang",
+        "user-1::proj-1::timeout",
+        "user-1::proj-1::timeout",
+        WEB_ACOPILOT_NAMESPACE,
+        &workspace_str,
+        hang_payload,
+    );
+    let timeout_evs = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let timeout_evs_h = Arc::clone(&timeout_evs);
+    let hang_out = timeout_runner
+        .run_lane_turn(
+            hang_turn,
+            PromptRunContext::new(Arc::new(move |ev| {
+                timeout_evs_h.lock().expect("evs").push(ev);
+            })),
+        )
+        .await
+        .expect("idle timeout");
+    assert!(!hang_out.ok);
+    let hang_err = timeout_evs
+        .lock()
+        .expect("evs")
+        .iter()
+        .find(|e| e["type"] == "error")
+        .cloned()
+        .expect("error event on timeout");
+    assert_eq!(hang_err["errorInfo"]["code"], json!("acp_timeout"));
+    timeout_runner.shutdown().await;
 }
 
 #[tokio::test]
@@ -655,7 +1245,6 @@ async fn real_agy_session_prompt_cancel_and_resume() {
             .any(|event| matches!(event, AcpStreamEvent::MessageDelta { .. }))
     );
 
-    // Verify cancellation wakes `session/cancel` cleanly (cancelled on first streamed chunk or shortly after).
     let (cancel_tx, cancel_rx) = watch::channel(false);
     let cancel_on_delta = cancel_tx.clone();
     let cancel_ctx = PromptRunContext::new(Arc::new(move |event| {
@@ -692,7 +1281,6 @@ async fn real_agy_session_prompt_cancel_and_resume() {
 
     session.shutdown().await;
 
-    // Re-attach fresh subprocess via `session/resume`.
     let resumed = AcpSession::spawn(
         driver,
         &launch_ctx,
@@ -770,23 +1358,15 @@ async fn real_agy_acp_prompt_runner_executes_and_persists_state() {
         Value::String("Reply cleanly with RUNNER_OK.".to_string()),
     );
     let workspace_str = temp.path().to_string_lossy().to_string();
-    let entry = LaneTurn {
-        key: LaneTurnKey::PromptQueue(1),
-        kind: LaneTurnKind::UserPrompt,
-        client_message_id: "cm-agy-1".to_string(),
-        auth_user_id: "user-1".to_string(),
-        user_id: 1,
-        session_id: "proj-1".to_string(),
-        chat_session_id: "acopilot".to_string(),
-        history_key: "user-1::proj-1::acopilot".to_string(),
-        logical_history_key: "user-1::proj-1::acopilot".to_string(),
-        lane_namespace: WEB_ACOPILOT_NAMESPACE.to_string(),
-        lane_generation: 1,
-        workspace_root: workspace_str.clone(),
+    let entry = build_lane_turn(
+        1,
+        "cm-agy-1",
+        "user-1::proj-1::acopilot",
+        "user-1::proj-1::acopilot",
+        WEB_ACOPILOT_NAMESPACE,
+        &workspace_str,
         payload,
-        history_display_text: None,
-        created_at: 1000,
-    };
+    );
 
     let outcome = runner
         .run_lane_turn(entry.clone(), context)
@@ -817,7 +1397,7 @@ async fn real_agy_acp_prompt_runner_executes_and_persists_state() {
 
     let expected_kv_key = format!(
         "{}::{}::agy::default::acopilot",
-        entry.logical_history_key, workspace_str
+        entry.history_key, workspace_str
     );
     let stored_session: Option<String> = conn
         .query_row(
@@ -831,14 +1411,6 @@ async fn real_agy_acp_prompt_runner_executes_and_persists_state() {
 
     let reconciled = runner.reconcile_lane_turn(&entry).await.expect("reconcile");
     assert!(reconciled.is_some_and(|r| r.ok));
-
-    // Also verify read-only reviewer lane resolves distinct storage key cleanly without running.
-    let readonly_key = format!(
-        "{}::{}::agy::default::reviewer",
-        entry.logical_history_key, workspace_str
-    );
-    assert_ne!(readonly_key, expected_kv_key);
-    let _ = WEB_ACTIONS_NAMESPACE;
 
     runner.shutdown().await;
 }

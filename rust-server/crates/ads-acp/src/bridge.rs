@@ -645,6 +645,21 @@ impl AcpEventBridge {
         if let Some(raw_output) = tool_call.raw_output.as_ref() {
             command.insert("rawOutput".to_string(), raw_output.clone());
         }
+        if let Some(exit_code) = tool_call
+            .extra
+            .get("exit_code")
+            .and_then(Value::as_i64)
+            .or_else(|| {
+                tool_call.raw_output.as_ref().and_then(|output| {
+                    output
+                        .get("exit_code")
+                        .or_else(|| output.get("exitCode"))
+                        .and_then(Value::as_i64)
+                })
+            })
+        {
+            command.insert("exit_code".to_string(), json!(exit_code));
+        }
         if !tool_call.content.is_empty() {
             command.insert("content".to_string(), json!(tool_call.content));
         }

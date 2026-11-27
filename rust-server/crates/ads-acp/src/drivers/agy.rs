@@ -1,6 +1,7 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::env;
-use std::fs;
+use std::fs::{self, OpenOptions};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{Arc, Mutex as StdMutex};
@@ -13,6 +14,7 @@ use sha2::{Digest, Sha256};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::Mutex;
+use tokio::task::JoinHandle;
 use url::Url;
 
 use crate::bridge::AutoDenyPermissionHandler;
@@ -38,6 +40,7 @@ const DEFAULT_PROBE_TIMEOUT: Duration = Duration::from_secs(20);
 const DEFAULT_LOGIN_STARTUP_TIMEOUT: Duration = Duration::from_secs(60);
 const MAX_AUTHORIZATION_URL_LEN: usize = 16_384;
 const MAX_UPDATE_STEPS_TRACKED: usize = 256;
+const MAX_LOGIN_STDERR_TAIL: usize = 32;
 const TOOL_TEXT_LIMIT: usize = 8_000;
 const TOOL_TEXT_TRUNCATED: &str = "[Earlier output truncated]\n\n";
 const COMMAND_LINE_TRUNCATED: &str = "\n\n[Command truncated]";
@@ -45,14 +48,9 @@ const KNOWN_THOUGHT_LEVELS: [&str; 5] = ["minimal", "low", "medium", "high", "xh
 
 /// Environment variables stripped before launching an isolated `agy` profile so ambient
 /// credentials, project configuration, or inherited Electron Crashpad pipes cannot interfere.
+/// Note: any `GOOGLE_*` variable is also stripped before selectively injecting `GOOGLE_API_KEY`.
 const REMOVED_ISOLATED_ENV_KEYS: &[&str] = &[
     "GEMINI_API_KEY",
-    "GOOGLE_API_KEY",
-    "GOOGLE_APPLICATION_CREDENTIALS",
-    "GOOGLE_CLOUD_PROJECT",
-    "GOOGLE_CLOUD_LOCATION",
-    "GOOGLE_CLOUD_QUOTA_PROJECT",
-    "GOOGLE_GENAI_USE_VERTEXAI",
     "GCLOUD_PROJECT",
     "CLOUDSDK_CORE_PROJECT",
     "AGY_ACP_CCPA_PROJECT",
@@ -402,16 +400,40 @@ pub fn build_agy_launch_spec(
     config: &AgyDriverConfig,
     context: &AcpLaunchContext,
 ) -> AcpResult<AcpLaunchSpec> {
+    let (mut args, launch_env) = prepare_agy_command_parts(config, &context.env, true)?;
+    args.extend(config.extra_args.clone());
+
+    let cwd = context.working_directory.clone().or_else(|| {
+        (!context.workspace_root.as_os_str().is_empty()).then(|| context.workspace_root.clone())
+    });
+
+    Ok(AcpLaunchSpec {
+        binary: config.binary.clone(),
+        args,
+        cwd,
+        env: launch_env,
+        clear_env: true,
+    })
+}
+
+fn prepare_agy_command_parts(
+    config: &AgyDriverConfig,
+    extra_env: &HashMap<String, String>,
+    include_stdio_flags: bool,
+) -> AcpResult<(Vec<String>, HashMap<String, String>)> {
     let mut base_env: HashMap<String, String> = env::vars().collect();
     base_env.extend(config.extra_env.clone());
-    base_env.extend(context.env.clone());
+    base_env.extend(extra_env.clone());
 
-    let mut args = vec!["acp".to_string(), "--stdio".to_string()];
-    if config.disable_telemetry {
-        args.push("--disable-telemetry".to_string());
-    }
-    if config.process_per_session {
-        args.push("--process-per-session".to_string());
+    let mut args = vec!["acp".to_string()];
+    if include_stdio_flags {
+        args.push("--stdio".to_string());
+        if config.disable_telemetry {
+            args.push("--disable-telemetry".to_string());
+        }
+        if config.process_per_session {
+            args.push("--process-per-session".to_string());
+        }
     }
 
     let launch_env = match &config.profile {
@@ -426,19 +448,7 @@ pub fn build_agy_launch_spec(
         }
     };
 
-    args.extend(config.extra_args.clone());
-
-    let cwd = context.working_directory.clone().or_else(|| {
-        (!context.workspace_root.as_os_str().is_empty()).then(|| context.workspace_root.clone())
-    });
-
-    Ok(AcpLaunchSpec {
-        binary: config.binary.clone(),
-        args,
-        cwd,
-        env: launch_env,
-        clear_env: true,
-    })
+    Ok((args, launch_env))
 }
 
 fn build_host_default_env(base_env: &HashMap<String, String>) -> HashMap<String, String> {
@@ -478,7 +488,7 @@ fn build_isolated_env(
     let mut env = HashMap::new();
     for (key, value) in base_env {
         let upper = key.to_ascii_uppercase();
-        if REMOVED_ISOLATED_ENV_KEYS.contains(&upper.as_str()) {
+        if upper.starts_with("GOOGLE_") || REMOVED_ISOLATED_ENV_KEYS.contains(&upper.as_str()) {
             continue;
         }
         env.insert(key.clone(), value.clone());
@@ -663,17 +673,41 @@ fn write_private_file_atomically(path: &Path, bytes: &[u8]) -> AcpResult<()> {
         AcpError::Transport(format!("missing parent directory for {}", path.display()))
     })?;
     let temp_path = parent.join(format!(".tmp-{}", uuid::Uuid::new_v4().simple()));
-    fs::write(&temp_path, bytes).map_err(|error| {
-        AcpError::Transport(format!(
+
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+
+    let write_res = (|| -> std::io::Result<()> {
+        let mut file = options.open(&temp_path)?;
+        file.write_all(bytes)?;
+        file.flush()?;
+        Ok(())
+    })();
+    if let Err(error) = write_res {
+        let _ = fs::remove_file(&temp_path);
+        return Err(AcpError::Transport(format!(
             "failed to write temp agy settings {}: {error}",
             temp_path.display()
-        ))
-    })?;
+        )));
+    }
+
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let _ = fs::set_permissions(&temp_path, fs::Permissions::from_mode(0o600));
+        if let Err(error) = fs::set_permissions(&temp_path, fs::Permissions::from_mode(0o600)) {
+            let _ = fs::remove_file(&temp_path);
+            return Err(AcpError::Transport(format!(
+                "failed to set permissions on {}: {error}",
+                temp_path.display()
+            )));
+        }
     }
+
     fs::rename(&temp_path, path).map_err(|error| {
         let _ = fs::remove_file(&temp_path);
         AcpError::Transport(format!(
@@ -880,6 +914,10 @@ pub fn parse_agy_authorization_url(
             if redirect.scheme() != "http"
                 || redirect.host_str() != Some("127.0.0.1")
                 || redirect.path() != "/"
+                || !redirect.username().is_empty()
+                || redirect.password().is_some()
+                || redirect.query().is_some()
+                || redirect.fragment().is_some()
                 || !valid_port
             {
                 return Err(AcpError::InvalidResponse {
@@ -915,13 +953,14 @@ pub fn validate_agy_login_response(
         return None;
     }
     let parsed = Url::parse(value).ok()?;
-    let base = format!(
-        "{}://{}{}",
-        parsed.scheme(),
-        parsed.host_str()?,
-        parsed.path()
-    );
-    if base != pending.redirect_uri || !parsed.username().is_empty() || parsed.password().is_some()
+    let pending_redirect = Url::parse(&pending.redirect_uri).ok()?;
+    if parsed.scheme() != pending_redirect.scheme()
+        || parsed.host_str() != pending_redirect.host_str()
+        || parsed.port_or_known_default() != pending_redirect.port_or_known_default()
+        || parsed.path() != pending_redirect.path()
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.fragment().is_some()
     {
         return None;
     }
@@ -945,11 +984,45 @@ fn is_code_token_byte(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.' | b'/' | b'~' | b'-')
 }
 
+struct ProcessGroupGuard {
+    pid: Option<u32>,
+}
+
+impl ProcessGroupGuard {
+    fn disarm(&mut self) -> Option<u32> {
+        self.pid.take()
+    }
+}
+
+impl Drop for ProcessGroupGuard {
+    fn drop(&mut self) {
+        if let Some(pid) = self.pid.take() {
+            terminate_process_group_pid(pid);
+        }
+    }
+}
+
+fn terminate_process_group_pid(pid: u32) {
+    #[cfg(unix)]
+    if let Ok(raw_pid) = i32::try_from(pid) {
+        unsafe {
+            libc::kill(-raw_pid, libc::SIGKILL);
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = pid;
+    }
+}
+
 /// Live handle for a headless `agy acp --login` authorization session.
 pub struct AgyLoginHandle {
     child: Child,
     pid: Option<u32>,
     stdin: Option<ChildStdin>,
+    stdout_drainer: Option<JoinHandle<()>>,
+    stderr_drainer: Option<JoinHandle<()>>,
+    stderr_tail: Arc<StdMutex<VecDeque<String>>>,
     authorization: AgyAuthorizationUrl,
 }
 
@@ -989,29 +1062,42 @@ impl AgyLoginHandle {
                 AcpError::Transport(format!("failed awaiting agy --login: {error}"))
             })?;
         self.pid = None;
+        if let Some(handle) = self.stdout_drainer.take() {
+            let _ = handle.await;
+        }
+        if let Some(handle) = self.stderr_drainer.take() {
+            let _ = handle.await;
+        }
         if status.success() {
             Ok(())
         } else {
+            let stderr_tail = {
+                let guard = self.stderr_tail.lock().expect("login stderr lock");
+                (!guard.is_empty()).then(|| guard.iter().cloned().collect::<Vec<_>>().join("\n"))
+            };
             Err(AcpError::Closed {
                 exit_code: status.code(),
                 graceful: false,
-                stderr_tail: None,
+                stderr_tail,
             })
         }
     }
 
     pub async fn cancel(mut self) {
         let _ = self.stdin.take();
+        if let Some(handle) = self.stdout_drainer.take() {
+            handle.abort();
+        }
+        if let Some(handle) = self.stderr_drainer.take() {
+            handle.abort();
+        }
         self.terminate_group();
         let _ = self.child.wait().await;
     }
 
     fn terminate_group(&mut self) {
-        #[cfg(unix)]
-        if let Some(pid) = self.pid.take().and_then(|pid| i32::try_from(pid).ok()) {
-            unsafe {
-                libc::kill(-pid, libc::SIGKILL);
-            }
+        if let Some(pid) = self.pid.take() {
+            terminate_process_group_pid(pid);
         }
         let _ = self.child.start_kill();
     }
@@ -1020,6 +1106,12 @@ impl AgyLoginHandle {
 impl Drop for AgyLoginHandle {
     fn drop(&mut self) {
         let _ = self.stdin.take();
+        if let Some(handle) = self.stdout_drainer.take() {
+            handle.abort();
+        }
+        if let Some(handle) = self.stderr_drainer.take() {
+            handle.abort();
+        }
         self.terminate_group();
     }
 }
@@ -1030,22 +1122,7 @@ pub async fn start_agy_login(
     config: &AgyDriverConfig,
     extra_env: &HashMap<String, String>,
 ) -> AcpResult<AgyLoginHandle> {
-    let mut base_env: HashMap<String, String> = env::vars().collect();
-    base_env.extend(config.extra_env.clone());
-    base_env.extend(extra_env.clone());
-
-    let mut args = vec!["acp".to_string()];
-    let mut env_map = match &config.profile {
-        AgyProfileMode::HostDefault => build_host_default_env(&base_env),
-        AgyProfileMode::Isolated(isolated) => {
-            let prepared = prepare_agy_isolated_profile(isolated, &base_env)?;
-            args.push("--gemini-dir".to_string());
-            args.push(prepared.gemini_home.to_string_lossy().to_string());
-            args.push("--app-data-dir".to_string());
-            args.push(AGY_APP_DATA_DIR_NAME.to_string());
-            build_isolated_env(&base_env, &prepared, &isolated.auth)
-        }
-    };
+    let (mut args, mut env_map) = prepare_agy_command_parts(config, extra_env, false)?;
     args.push("--login".to_string());
     env_map.remove("DISPLAY");
     env_map.remove("WAYLAND_DISPLAY");
@@ -1064,7 +1141,7 @@ pub async fn start_agy_login(
     let mut child = command
         .spawn()
         .map_err(|error| AcpError::Spawn(format!("{}: {error}", config.binary)))?;
-    let pid = child.id();
+    let mut group_guard = ProcessGroupGuard { pid: child.id() };
     let stdin = child
         .stdin
         .take()
@@ -1077,6 +1154,7 @@ pub async fn start_agy_login(
 
     let mut stdout_lines = BufReader::new(stdout).lines();
     let mut stderr_lines = stderr.map(|stream| BufReader::new(stream).lines());
+    let stderr_tail = Arc::new(StdMutex::new(VecDeque::new()));
 
     let authorization = tokio::time::timeout(DEFAULT_LOGIN_STARTUP_TIMEOUT, async {
         loop {
@@ -1104,10 +1182,16 @@ pub async fn start_agy_login(
                         None => std::future::pending().await,
                     }
                 } => {
-                    if let Ok(Some(text)) = line
-                        && let Some(auth_url) = extract_authorization_url_from_line(&text)
-                    {
-                        return Ok(auth_url);
+                    match line {
+                        Ok(Some(text)) => {
+                            push_stderr_line(&stderr_tail, text.clone());
+                            if let Some(auth_url) = extract_authorization_url_from_line(&text) {
+                                return Ok(auth_url);
+                            }
+                        }
+                        Ok(None) | Err(_) => {
+                            stderr_lines = None;
+                        }
                     }
                 }
             }
@@ -1119,12 +1203,40 @@ pub async fn start_agy_login(
         timeout: DEFAULT_LOGIN_STARTUP_TIMEOUT,
     })??;
 
+    // Keep stdout/stderr pipes open and drained for the lifetime of `--login` to avoid SIGPIPE.
+    let stdout_drainer =
+        tokio::spawn(async move { while matches!(stdout_lines.next_line().await, Ok(Some(_))) {} });
+    let stderr_tail_handle = Arc::clone(&stderr_tail);
+    let stderr_drainer = stderr_lines.map(|mut lines| {
+        tokio::spawn(async move {
+            while let Ok(Some(text)) = lines.next_line().await {
+                push_stderr_line(&stderr_tail_handle, text);
+            }
+        })
+    });
+
+    let pid = group_guard.disarm();
     Ok(AgyLoginHandle {
         child,
         pid,
         stdin: Some(stdin),
+        stdout_drainer: Some(stdout_drainer),
+        stderr_drainer,
+        stderr_tail,
         authorization,
     })
+}
+
+fn push_stderr_line(tail: &StdMutex<VecDeque<String>>, line: String) {
+    let trimmed = line.trim().to_string();
+    if trimmed.is_empty() {
+        return;
+    }
+    let mut guard = tail.lock().expect("login stderr lock");
+    while guard.len() >= MAX_LOGIN_STDERR_TAIL {
+        guard.pop_front();
+    }
+    guard.push_back(trimmed);
 }
 
 fn extract_authorization_url_from_line(line: &str) -> Option<AgyAuthorizationUrl> {
@@ -1143,16 +1255,47 @@ fn extract_authorization_url_from_line(line: &str) -> Option<AgyAuthorizationUrl
     None
 }
 
+#[derive(Default)]
+struct UpdateStepsTracker {
+    order: VecDeque<String>,
+    active: HashSet<String>,
+}
+
+impl UpdateStepsTracker {
+    fn track(&mut self, key: &str, status: Option<&str>, is_update_steps_title: bool) -> bool {
+        if is_update_steps_title && self.active.insert(key.to_string()) {
+            self.order.push_back(key.to_string());
+            while self.active.len() > MAX_UPDATE_STEPS_TRACKED {
+                if let Some(oldest) = self.order.pop_front() {
+                    self.active.remove(&oldest);
+                } else {
+                    break;
+                }
+            }
+        }
+        if !self.active.contains(key) {
+            return false;
+        }
+        if matches!(
+            status,
+            Some("completed" | "failed" | "cancelled" | "declined")
+        ) {
+            self.active.remove(key);
+        }
+        true
+    }
+}
+
 pub struct AgyDriver {
     config: AgyDriverConfig,
-    update_steps_calls: StdMutex<HashSet<String>>,
+    update_steps_calls: StdMutex<UpdateStepsTracker>,
 }
 
 impl AgyDriver {
     pub fn new(config: AgyDriverConfig) -> Self {
         Self {
             config,
-            update_steps_calls: StdMutex::new(HashSet::new()),
+            update_steps_calls: StdMutex::new(UpdateStepsTracker::default()),
         }
     }
 
@@ -1170,20 +1313,10 @@ impl AgyDriver {
         status: Option<&str>,
         is_update_steps_title: bool,
     ) -> bool {
-        let mut guard = self.update_steps_calls.lock().expect("update_steps lock");
-        if is_update_steps_title {
-            if guard.len() >= MAX_UPDATE_STEPS_TRACKED {
-                guard.clear();
-            }
-            guard.insert(key.to_string());
-        }
-        if !guard.contains(key) {
-            return false;
-        }
-        if matches!(status, Some("completed" | "failed")) {
-            guard.remove(key);
-        }
-        true
+        self.update_steps_calls
+            .lock()
+            .expect("update_steps lock")
+            .track(key, status, is_update_steps_title)
     }
 }
 
@@ -1237,7 +1370,7 @@ impl AcpDriver for AgyDriver {
     }
 
     fn intercept_non_json_stdout_line(&self, line: &str) -> Option<AcpError> {
-        let trimmed = line.trim_end_matches(&['\r', '\n'][..]);
+        let trimmed = line.trim();
         let url_part = trimmed.strip_prefix(AGY_AUTH_STDOUT_PREFIX)?;
         let parsed = parse_agy_authorization_url(url_part, AgyAuthUrlKind::Loopback)
             .or_else(|_| parse_agy_authorization_url(url_part, AgyAuthUrlKind::Code))
@@ -1295,13 +1428,17 @@ impl AcpDriver for AgyDriver {
                 candidates.sort_by_key(|family| std::cmp::Reverse(family.len()));
                 if let Some(family) = candidates.into_iter().next() {
                     let suffix = &raw_model[family.len() + 1..];
-                    let suffix_supported = config_options
-                        .resolve_thought_level()
-                        .map(|opt| opt.supports_value(suffix))
-                        .unwrap_or_else(|| KNOWN_THOUGHT_LEVELS.contains(&suffix));
+                    let suffix_supported = KNOWN_THOUGHT_LEVELS.contains(&suffix)
+                        || config_options
+                            .resolve_thought_level()
+                            .is_some_and(|opt| opt.supports_value(suffix));
                     if suffix_supported {
                         desired.model = Some(family.to_string());
-                        if desired.thought_level.is_none() {
+                        if desired
+                            .thought_level
+                            .as_deref()
+                            .is_none_or(|value| value.trim().is_empty())
+                        {
                             desired.thought_level = Some(suffix.to_string());
                         }
                     }
@@ -1413,7 +1550,6 @@ fn coerce_agy_mode(
             } else if mode_is_supported("auto_edit", config_options, modes) {
                 SessionMode::Custom("auto_edit".to_string())
             } else if modes.is_none() && config_options.resolve_mode().is_none() {
-                // Unknown capability table yet: preserve standard ACP AcceptEdits (`accept-edits`).
                 SessionMode::AcceptEdits
             } else {
                 SessionMode::Default
@@ -1439,6 +1575,13 @@ fn coerce_agy_mode(
 
 fn is_update_steps_title(title: &str) -> bool {
     matches!(title.trim(), "Run update_steps" | "Running update_steps")
+}
+
+fn is_generic_command_title(title: &str) -> bool {
+    matches!(
+        title.trim().to_ascii_lowercase().as_str(),
+        "running command" | "run command" | "executing command" | "execute command" | "command"
+    )
 }
 
 fn extract_plan_entries(raw_input: Option<&Value>) -> Option<Vec<PlanEntry>> {
@@ -1511,7 +1654,11 @@ fn normalize_tool_call_info(info: &mut ToolCallInfo) {
 
     let mut normalized_exec = Map::new();
     if let Some(command) = command {
-        if info.title.is_none() {
+        if info
+            .title
+            .as_deref()
+            .is_none_or(|title| title.trim().is_empty() || is_generic_command_title(title))
+        {
             info.title = Some(command.clone());
         }
         normalized_exec.insert("command".to_string(), Value::String(command));
@@ -1527,6 +1674,7 @@ fn normalize_tool_call_info(info: &mut ToolCallInfo) {
     }
     if let Some(exit_code) = exit_code {
         normalized_exec.insert("exitCode".to_string(), json!(exit_code));
+        info.extra.insert("exit_code".to_string(), json!(exit_code));
     }
     if !normalized_exec.is_empty() {
         info.extra
@@ -1634,6 +1782,24 @@ pub struct AgyProbeResult {
     pub probed_at_ms: i64,
 }
 
+fn is_executable_file(path: &Path) -> bool {
+    let Ok(meta) = fs::metadata(path) else {
+        return false;
+    };
+    if !meta.is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        (meta.permissions().mode() & 0o111) != 0
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
+}
+
 /// Resolves an `agy` executable path from `configured`, `ADS_AGY_BIN`, or `PATH`.
 pub fn resolve_agy_binary(configured: Option<&str>) -> Option<PathBuf> {
     let raw = configured
@@ -1650,20 +1816,20 @@ pub fn resolve_agy_binary(configured: Option<&str>) -> Option<PathBuf> {
 
     let candidate = Path::new(&raw);
     if candidate.is_absolute() || raw.contains(std::path::MAIN_SEPARATOR) || raw.contains('/') {
-        return candidate.is_file().then(|| candidate.to_path_buf());
+        return is_executable_file(candidate).then(|| candidate.to_path_buf());
     }
 
     let path_var = env::var_os("PATH")?;
     for dir in env::split_paths(&path_var) {
         let full = dir.join(&raw);
-        if full.is_file() {
+        if is_executable_file(&full) {
             return Some(full);
         }
         #[cfg(windows)]
         {
             for ext in ["exe", "cmd", "bat"] {
                 let with_ext = dir.join(format!("{raw}.{ext}"));
-                if with_ext.is_file() {
+                if is_executable_file(&with_ext) {
                     return Some(with_ext);
                 }
             }
