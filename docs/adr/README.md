@@ -80,4 +80,5 @@
 - 0069 - [ADR 0069: Make Lane Stream Replay Idempotent by Turn and Assistant Item Identity](0069-idempotent-lane-stream-replay.md)
 - 0070 - [ADR 0070: Refresh Model Controls for Explicit Failed-Turn Retries](0070-refresh-model-controls-for-failed-turn-retries.md)
 - 0071 - [ADR 0071: Authenticate WebSockets Before Upgrade and Bound Outbound Delivery](0071-authenticated-bounded-websocket-delivery.md)
+- 0072 - [ADR 0072: Generic ACP v1 Runtime Kernel](0072-generic-acp-v1-runtime-kernel.md)
 <!-- ADS:ADR_INDEX_END -->
