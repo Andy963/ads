@@ -325,11 +325,36 @@ pub(super) async fn list_conversation_models(
     })
     .await?;
     if let Some(registry) = state.runtime_registry.as_ref() {
+        // User-configured Settings -> Providers models belong to the Native runtime unless
+        // an explicit `allowedAgents` override is already present.
+        for model in &mut models {
+            scope_provider_model_to_native(model);
+        }
         let existing_ids: std::collections::HashSet<String> =
             models.iter().map(|model| model.id.clone()).collect();
-        models.extend(registry.discovered_agy_models(&existing_ids));
+        models.extend(registry.discovered_acp_models(&existing_ids));
     }
     Ok(Json(models))
+}
+
+fn scope_provider_model_to_native(model: &mut ModelConfig) {
+    let mut obj = match model.config_json.take() {
+        Some(Value::Object(map)) => map,
+        _ => serde_json::Map::new(),
+    };
+    let has_explicit_agents = obj
+        .get("allowedAgents")
+        .and_then(Value::as_array)
+        .is_some_and(|items| !items.is_empty());
+    if !has_explicit_agents {
+        obj.insert(
+            "allowedAgents".to_string(),
+            serde_json::json!([crate::NATIVE_AGENT_ID]),
+        );
+    }
+    obj.entry("runtime".to_string())
+        .or_insert_with(|| serde_json::json!(crate::NATIVE_AGENT_ID));
+    model.config_json = Some(Value::Object(obj));
 }
 
 fn validate_patch(patch: &ModelConfigPatch, create: bool) -> Result<(), ApiError> {

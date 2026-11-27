@@ -12,6 +12,7 @@ path = "src/bin/mock_acp_server.rs"
 [dependencies]
 ads-contract.workspace = true
 ads-native.workspace = true
+ads-reviewer.workspace = true
 ads-runtime.workspace = true
 ads-state.workspace = true
 async-trait.workspace = true

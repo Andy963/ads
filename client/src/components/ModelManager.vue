@@ -321,9 +321,9 @@ onBeforeUnmount(() => {
         <p v-if="error && !providerDialog && !modelDialog && !deleteTarget" class="settingsFeedback" role="alert">{{ error }}</p>
         <p v-if="notice" class="settingsFeedback" role="status">{{ notice }}</p>
         <div v-if="section === 'providers'" data-testid="settings-providers-panel">
-          <p class="settingsNote introduction">Your connections and model library. Tap a provider or model to edit.</p>
+          <p class="settingsNote introduction">Native runtime providers and synced model library. Codex and Antigravity discover models automatically via ACP under Runtimes.</p>
           <div v-if="!groups.length" class="emptyProviders">
-            <h2>Add your first provider</h2><p>Connect a service, then sync its models.</p>
+            <h2>Add your first provider</h2><p>Connect an OpenAI-compatible service for the Native runtime, then sync its models.</p>
             <button type="button" class="settingsPrimary" :disabled="busy" @click="editProvider()">Add provider</button>
           </div>
           <article v-for="group in groups" :key="group.id" class="settingsBlock" :data-testid="'provider-row-' + group.id">

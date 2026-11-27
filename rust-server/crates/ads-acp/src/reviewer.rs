@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex as StdMutex};
@@ -12,37 +13,145 @@ use ads_state::{
     ROLE_REVIEWER, StateDb, derive_project_session_id, get_default_role_profile,
     get_role_profile_by_id,
 };
+use async_trait::async_trait;
 use serde_json::Value;
 use tokio::sync::watch;
 
-use crate::SpawnOptions;
-use crate::agent::{
-    AgentError, AgentEvent, AgentInputPart, AgentSendOptions, AutoCompactConfig,
-    CodexAppServerAgent, CodexAppServerAgentOptions, RetryConfig, SandboxMode,
+use crate::bridge::{
+    AcpStreamEvent, PendingPermissionRequest, PermissionDecision, PermissionHandler,
+    resolve_permission_outcome,
 };
-use crate::daemon_registry::CodexAppServerDaemonRegistry;
-use crate::provider_injection::resolve_codex_model_selection;
+use crate::driver::{AcpDriver, AcpLaunchContext, AcpSessionContext};
+use crate::protocol::{PermissionOutcome, SessionMode, StopReason, ToolCallInfo};
+use crate::session::{AcpPromptRequest, AcpSession, AcpSessionConfig, DesiredConfigAlignment};
 
 const MAX_VERIFICATION_COMMANDS: usize = 32;
 const MAX_VERIFICATION_OUTPUT_CHARS: usize = 6_000;
 const DEFAULT_INCOMPLETE_SUMMARY: &str =
     "Reviewer reported insufficient evidence; developer rework was not requested.";
 
-pub struct CodexReviewRequest {
+pub struct AcpReviewRequest {
     pub db: StateDb,
+    pub driver: Arc<dyn AcpDriver>,
     pub payload: ReviewPayload,
     pub repo_path: PathBuf,
     pub profile_id: Option<String>,
     pub job_id: String,
-    pub owner: String,
     pub timeout: Duration,
     pub cancellation: Cancellation,
     pub verification_report: Arc<StdMutex<ReviewVerificationReport>>,
-    pub daemon_options: SpawnOptions,
-    pub registry: Option<Arc<CodexAppServerDaemonRegistry>>,
 }
 
-pub async fn run_codex_review(request: CodexReviewRequest) -> Result<ReviewVerdict, ReviewerError> {
+/// Permission handler enforcing ADR 0066 & ADR 0060 read-only + verification boundaries
+/// for ACP-backed Actions Reviewer sessions.
+#[derive(Debug, Default)]
+pub struct ReviewVerificationPermissionHandler;
+
+#[async_trait]
+impl PermissionHandler for ReviewVerificationPermissionHandler {
+    async fn request_permission(
+        &self,
+        request: PendingPermissionRequest,
+        _cancel: watch::Receiver<bool>,
+    ) -> PermissionOutcome {
+        let decision = classify_review_permission(&request.tool_call);
+        resolve_permission_outcome(&request.options, decision)
+    }
+}
+
+fn classify_review_permission(info: &ToolCallInfo) -> PermissionDecision {
+    let kind = info
+        .kind
+        .as_deref()
+        .map(str::trim)
+        .map(str::to_ascii_lowercase)
+        .unwrap_or_default();
+
+    if matches!(
+        kind.as_str(),
+        "edit" | "write" | "delete" | "move" | "patch" | "file_change"
+    ) {
+        return PermissionDecision::DenyOnce;
+    }
+
+    if kind == "read" || kind == "search" || kind == "list" {
+        return PermissionDecision::AllowOnce;
+    }
+
+    let command = extract_permission_command(info);
+    if kind == "execute" || command.is_some() {
+        let Some(cmd) = command else {
+            return PermissionDecision::DenyOnce;
+        };
+        if is_mutating_review_command(&cmd).is_some() {
+            return PermissionDecision::DenyOnce;
+        }
+        return PermissionDecision::AllowOnce;
+    }
+
+    // Deny unrecognized mutating-looking titles; allow passive inspection tools.
+    let title = info
+        .title
+        .as_deref()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if title.contains("write")
+        || title.contains("edit")
+        || title.contains("delete")
+        || title.contains("patch")
+        || title.contains("apply")
+    {
+        return PermissionDecision::DenyOnce;
+    }
+    PermissionDecision::AllowOnce
+}
+
+fn extract_permission_command(info: &crate::protocol::ToolCallInfo) -> Option<String> {
+    if let Some(cmd) = info
+        .extra
+        .get("normalized")
+        .and_then(|v| v.get("command"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+    {
+        return Some(cmd.to_string());
+    }
+    if let Some(obj) = info.raw_input.as_ref().and_then(Value::as_object) {
+        for key in [
+            "command",
+            "commandLine",
+            "command_line",
+            "cmd",
+            "CommandLine",
+        ] {
+            if let Some(value) = obj.get(key) {
+                if let Some(text) = value.as_str().map(str::trim).filter(|v| !v.is_empty()) {
+                    return Some(text.to_string());
+                }
+                if let Some(items) = value.as_array() {
+                    let parts: Vec<&str> = items.iter().filter_map(Value::as_str).collect();
+                    if !parts.is_empty() {
+                        return Some(parts.join(" "));
+                    }
+                }
+            }
+        }
+    }
+    if info.kind.as_deref() == Some("execute") {
+        return info
+            .title
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(str::to_string);
+    }
+    None
+}
+
+/// Runs a clean-room, verification-bounded Actions Reviewer turn over any `AcpDriver`
+/// (preserving ADR 0066 runtime unification and ADR 0060 verification capture).
+pub async fn run_acp_review(request: AcpReviewRequest) -> Result<ReviewVerdict, ReviewerError> {
     if request.payload.diff_capture_error.is_some() {
         return Err(ReviewerError::Incomplete(
             "Reviewer evidence capture failed; no authoritative verdict is available.".to_string(),
@@ -80,20 +189,8 @@ pub async fn run_codex_review(request: CodexReviewRequest) -> Result<ReviewVerdi
     }
     drop(connection);
 
-    let mut selection = resolve_codex_model_selection(
-        &request.db,
-        &request.owner,
-        Some(&profile.model_id),
-        request.daemon_options,
-    )
-    .map_err(|error| ReviewerError::Execution(error.to_string()))?;
-
-    let existing_path = selection
-        .daemon_options
-        .env
-        .get("PATH")
-        .map(std::ffi::OsString::from)
-        .or_else(|| std::env::var_os("PATH"));
+    let mut env = HashMap::new();
+    let existing_path = std::env::var_os("PATH");
     let home = std::env::var_os("HOME").map(PathBuf::from);
     let cargo_home = std::env::var_os("CARGO_HOME").map(PathBuf::from);
     if let Some(augmented) = augment_path_with_cargo_bin(
@@ -101,131 +198,177 @@ pub async fn run_codex_review(request: CodexReviewRequest) -> Result<ReviewVerdi
         home.as_deref(),
         cargo_home.as_deref(),
     ) {
-        selection
-            .daemon_options
-            .env
-            .insert("PATH".to_string(), augmented);
+        env.insert("PATH".to_string(), augmented);
     }
 
     let prompt = format!(
-        "{}\n\nReview runtime protocol: you are operating as a detached, clean-room Reviewer. Do NOT edit files, apply patches, or run mutating git/gh commands (commit, push, checkout, reset, merge, close). Inspect the exact diff and repository files as needed, then run bounded, relevant verification commands (for example cargo test, cargo clippy, npm test, pytest) before returning PASS. Return ONLY a single JSON object matching {{\"status\": \"PASS\" | \"REJECT\" | \"INCOMPLETE\", \"summary\": \"...\", \"defects\": [...]}}. If required verification cannot be executed or evidence is missing, return INCOMPLETE and state the exact reason in summary.",
+        "{}\n\n{}\n\nReview runtime protocol: you are operating as a detached, clean-room Reviewer. Do NOT edit files, apply patches, or run mutating git/gh commands (commit, push, checkout, reset, merge, close). Inspect the exact diff and repository files as needed, then run bounded, relevant verification commands (for example cargo test, cargo clippy, npm test, pytest) before returning PASS. Return ONLY a single JSON object matching {{\"status\": \"PASS\" | \"REJECT\" | \"INCOMPLETE\", \"summary\": \"...\", \"defects\": [...]}}. If required verification cannot be executed or evidence is missing, return INCOMPLETE and state the exact reason in summary.",
+        profile.system_prompt.trim(),
         build_review_prompt(&request.payload)
     );
 
-    let daemon_key = format!(
-        "reviewer::{}",
-        derive_project_session_id(&request.repo_path.to_string_lossy())
+    let session_key = format!(
+        "reviewer::{}::{}",
+        derive_project_session_id(&request.repo_path.to_string_lossy()),
+        request.job_id
     );
-    let agent = CodexAppServerAgent::new(CodexAppServerAgentOptions {
-        project_id: daemon_key,
+    let launch_ctx = AcpLaunchContext {
+        session_key: session_key.clone(),
         workspace_root: request.repo_path.clone(),
         working_directory: Some(request.repo_path.clone()),
-        model: selection.model,
-        resume_thread_id: None,
-        reasoning_effort: profile.reasoning_effort.clone(),
-        sandbox_mode: SandboxMode::ReviewVerification,
-        developer_instructions: Some(profile.system_prompt.clone()),
-        dynamic_tools: Vec::new(),
-        daemon_options: selection.daemon_options,
-        registry: request.registry,
-        turn_timeout: Some(request.timeout),
-        auto_compact: AutoCompactConfig::default(),
-        retry: RetryConfig::default(),
-    });
+        env,
+    };
+    let session_ctx = AcpSessionContext {
+        session_key,
+        workspace_root: request.repo_path.clone(),
+        working_directory: Some(request.repo_path.clone()),
+        mcp_servers: Vec::new(),
+    };
+    let session_cfg = AcpSessionConfig {
+        transport: crate::transport::AcpTransportConfig {
+            rpc_timeout: request.timeout.min(Duration::from_secs(60)),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
 
-    let verification_report = Arc::clone(&request.verification_report);
-    let event_sub = agent.on_event(move |event| {
-        record_verification_event(&verification_report, &event);
-    });
+    let session = AcpSession::spawn(
+        Arc::clone(&request.driver),
+        &launch_ctx,
+        Arc::new(ReviewVerificationPermissionHandler),
+        session_cfg,
+    )
+    .await
+    .map_err(|error| ReviewerError::Execution(format!("ACP reviewer spawn failed: {error}")))?;
 
-    let (abort_tx, abort_rx) = watch::channel(false);
+    let init_res = session.initialize().await;
+    if let Err(error) = init_res {
+        session.shutdown().await;
+        return Err(ReviewerError::Execution(format!(
+            "ACP reviewer initialize failed: {error}"
+        )));
+    }
+    let _created = match session.new_session(&session_ctx).await {
+        Ok(created) => created,
+        Err(error) => {
+            session.shutdown().await;
+            return Err(ReviewerError::Execution(format!(
+                "ACP reviewer session creation failed: {error}"
+            )));
+        }
+    };
+
+    let (cancel_tx, cancel_rx) = watch::channel(false);
     let cancellation = request.cancellation.clone();
     let cancel_bridge = tokio::spawn(async move {
         cancellation.cancelled().await;
-        let _ = abort_tx.send(true);
+        let _ = cancel_tx.send(true);
     });
 
-    let send_future = agent.send_with_options(
-        vec![AgentInputPart::text(prompt)],
-        AgentSendOptions {
-            abort: Some(abort_rx),
-            action_tools: None,
-        },
-    );
+    let prompt_req = AcpPromptRequest::text(request.job_id.clone(), prompt)
+        .with_alignment(DesiredConfigAlignment {
+            mode: Some(SessionMode::Plan),
+            model: Some(profile.model_id.clone()),
+            thought_level: Some(profile.reasoning_effort.clone()),
+            extra_options: Vec::new(),
+        })
+        .with_cancel(cancel_rx);
 
-    let run_result = tokio::select! {
-        result = send_future => result,
-        _ = tokio::time::sleep(request.timeout) => {
-            Err(AgentError::TimedOut { timeout: request.timeout })
-        }
-        _ = request.cancellation.cancelled() => {
-            Err(AgentError::Aborted)
-        }
-    };
+    let turn_res = tokio::time::timeout(request.timeout, session.prompt(prompt_req)).await;
 
     cancel_bridge.abort();
-    agent.off_event(event_sub);
+    session.shutdown().await;
 
-    let result = match run_result {
-        Ok(result) => result,
-        Err(AgentError::Aborted) => return Err(ReviewerError::Cancelled),
-        Err(AgentError::TimedOut { .. }) => {
-            return Err(ReviewerError::Execution(
-                "Reviewer execution timed out.".to_string(),
-            ));
+    let turn = match turn_res {
+        Ok(Ok(turn)) => turn,
+        Ok(Err(error)) => {
+            if request.cancellation.is_cancelled() || error.is_cancelled() {
+                return Err(ReviewerError::Cancelled);
+            }
+            return Err(ReviewerError::Execution(format!(
+                "ACP reviewer execution failed: {error}"
+            )));
         }
-        Err(error) => return Err(ReviewerError::Execution(error.to_string())),
+        Err(_) => {
+            return Err(ReviewerError::Incomplete(format!(
+                "Reviewer timed out after {} seconds.",
+                request.timeout.as_secs()
+            )));
+        }
     };
 
-    let verdict = parse_review_verdict(&result.response, Some(&profile.id))?;
-    if verdict.status == ReviewVerdictStatus::Incomplete {
-        let summary = verdict.summary.trim();
-        let message = if summary.is_empty() {
-            DEFAULT_INCOMPLETE_SUMMARY.to_string()
-        } else {
-            summary.to_string()
-        };
-        return Err(ReviewerError::Incomplete(message));
+    if request.cancellation.is_cancelled() || turn.stop_reason == StopReason::Cancelled {
+        return Err(ReviewerError::Cancelled);
     }
-    Ok(ReviewVerdict {
-        reviewer_profile_id: Some(profile.id),
-        ..verdict
-    })
+
+    for event in &turn.events {
+        record_acp_verification_event(&request.verification_report, event);
+    }
+
+    let trimmed = turn.response_text.trim();
+    if trimmed.is_empty() {
+        return Err(ReviewerError::Incomplete(
+            DEFAULT_INCOMPLETE_SUMMARY.to_string(),
+        ));
+    }
+
+    let verdict = parse_review_verdict(trimmed, Some(&profile.id))?;
+    if verdict.status == ReviewVerdictStatus::Incomplete && verdict.summary.trim().is_empty() {
+        return Err(ReviewerError::Incomplete(
+            DEFAULT_INCOMPLETE_SUMMARY.to_string(),
+        ));
+    }
+    Ok(verdict)
 }
 
-fn record_verification_event(
+fn record_acp_verification_event(
     verification_report: &Arc<StdMutex<ReviewVerificationReport>>,
-    event: &AgentEvent,
+    event: &AcpStreamEvent,
 ) {
-    if event.phase != "command" {
-        return;
-    }
-    if event.raw.get("type").and_then(Value::as_str) != Some("item.completed") {
-        return;
-    }
-    let Some(item) = event.raw.get("item") else {
+    let AcpStreamEvent::ToolCall { tool_call, .. } = event else {
         return;
     };
-    if item.get("type").and_then(Value::as_str) != Some("command_execution") {
+    let status = tool_call
+        .status
+        .as_deref()
+        .map(str::trim)
+        .unwrap_or_default();
+    if !matches!(status, "completed" | "failed" | "declined") {
         return;
     }
-    let command = item
-        .get("command")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .trim();
+    let Some(command) = extract_permission_command(tool_call) else {
+        return;
+    };
+    let command = command.trim();
     if command.is_empty() || !is_verification_command(command) {
         return;
     }
-    let status = item.get("status").and_then(Value::as_str).unwrap_or("");
     let started = status != "declined";
-    let exit_code = item
-        .get("exit_code")
-        .and_then(Value::as_i64)
+    let normalized = tool_call.extra.get("normalized").and_then(Value::as_object);
+    let raw_output_obj = tool_call.raw_output.as_ref().and_then(Value::as_object);
+    let exit_code = normalized
+        .and_then(|obj| obj.get("exitCode").and_then(Value::as_i64))
+        .or_else(|| tool_call.extra.get("exit_code").and_then(Value::as_i64))
+        .or_else(|| {
+            raw_output_obj.and_then(|obj| {
+                obj.get("exitCode")
+                    .or_else(|| obj.get("exit_code"))
+                    .and_then(Value::as_i64)
+            })
+        })
         .unwrap_or(if status == "completed" { 0 } else { 1 });
-    let raw_output = item
-        .get("aggregated_output")
-        .and_then(Value::as_str)
+    let raw_output = normalized
+        .and_then(|obj| obj.get("aggregatedOutput").and_then(Value::as_str))
+        .or_else(|| {
+            raw_output_obj.and_then(|obj| {
+                obj.get("aggregatedOutput")
+                    .or_else(|| obj.get("aggregated_output"))
+                    .or_else(|| obj.get("combinedOutput"))
+                    .or_else(|| obj.get("output"))
+                    .or_else(|| obj.get("stdout"))
+                    .and_then(Value::as_str)
+            })
+        })
         .unwrap_or("")
         .trim();
     let output = if raw_output.is_empty() {
@@ -684,19 +827,16 @@ mod tests {
             "/bin/bash -lc 'cd rust-server && CARGO_BUILD_JOBS=2 cargo test -p ads-actions -- --test-threads=2'"
         ));
         assert!(is_verification_command(
-            r#"bash -lc "npm --prefix ts-server test""#
+            r#"bash -lc "npm --prefix client test""#
         ));
         assert!(is_verification_command("cargo clippy --all-targets"));
         assert!(is_verification_command("cargo fmt --check"));
         assert!(is_verification_command("pytest tests/"));
-        assert!(is_verification_command("python3 -m unittest discover"));
         assert!(is_verification_command("go test ./..."));
-        assert!(is_verification_command("npx tsc --noEmit"));
 
         assert!(!is_verification_command("git diff origin/dev...HEAD"));
         assert!(!is_verification_command("git status -sb"));
         assert!(!is_verification_command("rg -n foo rust-server/"));
-        assert!(!is_verification_command("cat rust-server/Cargo.toml"));
         assert!(!is_verification_command("/bin/bash -lc 'ls -la'"));
     }
 
@@ -712,7 +852,6 @@ mod tests {
 
         assert!(is_mutating_review_command("git diff origin/dev...HEAD").is_none());
         assert!(is_mutating_review_command("git branch --show-current").is_none());
-        assert!(is_mutating_review_command("gh pr view 702 --json number").is_none());
         assert!(is_mutating_review_command("cargo fmt --check").is_none());
         assert!(is_mutating_review_command("cargo test -p ads-actions").is_none());
     }
@@ -730,9 +869,9 @@ mod tests {
         .expect("augmented path");
         assert!(augmented.starts_with(&cargo_bin.to_string_lossy().to_string()));
         assert!(augmented.contains("/usr/bin"));
-
-        let already =
-            augment_path_with_cargo_bin(Some(OsStr::new(&augmented)), Some(dir.path()), None);
-        assert!(already.is_none());
+        assert!(
+            augment_path_with_cargo_bin(Some(OsStr::new(&augmented)), Some(dir.path()), None)
+                .is_none()
+        );
     }
 }

@@ -291,16 +291,14 @@ fn build_runtime_fixture() -> TestRuntimeFixture {
 
     let mock_agy = write_mock_agy_script(dir.path(), &state_dir.join("providers").join("agy"));
     let native_runner = Arc::new(RecordingNativeRunner::new());
-    let codex_runner = Arc::new(RecordingNativeRunner::new());
 
     let mut reg_cfg = RuntimeRegistryConfig::new(db.clone(), state_dir.clone(), workspace.clone());
     reg_cfg.preferred_default_agent_id = NATIVE_AGENT_ID.to_string();
     reg_cfg.native_runner = Some(native_runner.clone());
     reg_cfg.native_scheduler = Some(native_runner.clone());
-    reg_cfg.codex_runner = Some(codex_runner);
-    reg_cfg.codex_binary = dir
+    reg_cfg.codex_acp_binary = dir
         .path()
-        .join("definitely-missing-codex-bin")
+        .join("definitely-missing-codex-acp-bin")
         .to_string_lossy()
         .to_string();
     reg_cfg.agy_binary = mock_agy.to_string_lossy().to_string();
@@ -1332,4 +1330,455 @@ async fn agy_account_email_and_tier_are_exposed_and_cleared_on_logout() {
     drop(ws);
     server.abort();
     fixture.registry.shutdown_all().await;
+}
+
+fn write_mock_codex_acp_script(dir: &Path) -> PathBuf {
+    let script_path = dir.join("mock-codex-acp-http.py");
+    let script = r#"#!/usr/bin/env python3
+import json, os, sys
+
+def send(obj):
+    sys.stdout.write(json.dumps(obj) + "\n")
+    sys.stdout.flush()
+
+def has_auth():
+    codex_home = os.environ.get("CODEX_HOME", "").strip()
+    if not codex_home:
+        return False
+    auth_path = os.path.join(codex_home, "auth.json")
+    return os.path.isfile(auth_path) and os.path.getsize(auth_path) > 2
+
+for raw in sys.stdin:
+    raw = raw.strip()
+    if not raw:
+        continue
+    msg = json.loads(raw)
+    method = msg.get("method")
+    req_id = msg.get("id")
+    if method == "initialize":
+        send({
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "result": {
+                "protocolVersion": 1,
+                "agentInfo": {"name": "codex-acp", "version": "0.10.2"},
+                "agentCapabilities": {"loadSession": True},
+                "authMethods": [{"id": "chatgpt", "name": "ChatGPT"}]
+            }
+        })
+    elif method == "session/new":
+        if not has_auth():
+            send({
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "error": {"code": -32000, "message": "Authentication required: run codex login"}
+            })
+            continue
+        send({
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "result": {
+                "sessionId": "codex-sess-1",
+                "configOptions": [
+                    {
+                        "id": "model",
+                        "name": "Model",
+                        "category": "model",
+                        "type": "select",
+                        "currentValue": "gpt-5.3-codex",
+                        "options": [
+                            {"value": "gpt-5.3-codex", "name": "GPT-5.3 Codex"},
+                            {"value": "gpt-4.1", "name": "GPT-4.1 (Codex)"}
+                        ]
+                    },
+                    {
+                        "id": "reasoning_effort",
+                        "name": "Reasoning Effort",
+                        "category": "reasoning_effort",
+                        "type": "select",
+                        "currentValue": "high",
+                        "options": [
+                            {"value": "medium", "name": "Medium"},
+                            {"value": "high", "name": "High"}
+                        ]
+                    }
+                ]
+            }
+        })
+    elif method == "session/set_config_option":
+        send({"jsonrpc": "2.0", "id": req_id, "result": {"configOptions": []}})
+    elif method == "session/set_mode":
+        send({"jsonrpc": "2.0", "id": req_id, "result": {}})
+    elif method == "session/prompt":
+        params = msg.get("params") or {}
+        session_id = params.get("sessionId", "codex-sess-1")
+        blocks = params.get("prompt") or []
+        text = " ".join(b.get("text", "") for b in blocks if isinstance(b, dict))
+        send({
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": {
+                "sessionId": session_id,
+                "update": {
+                    "sessionUpdate": "agent_message_chunk",
+                    "content": {"type": "text", "text": f"{text} [via-mock-codex-acp]"}
+                }
+            }
+        })
+        send({"jsonrpc": "2.0", "id": req_id, "result": {"stopReason": "end_turn"}})
+    elif req_id is not None:
+        send({"jsonrpc": "2.0", "id": req_id, "result": {}})
+"#;
+    fs::write(&script_path, script).expect("write mock codex-acp script");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(&script_path).expect("meta").permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&script_path, perms).expect("chmod");
+    }
+    script_path
+}
+
+#[tokio::test]
+async fn codex_acp_probing_three_way_runtime_switching_and_persistent_auth_reuse() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db = StateDb::open(dir.path().join("state.db")).expect("state db");
+    insert_user(
+        &db,
+        "user-1",
+        "admin",
+        &hash_password_scrypt("secret"),
+        1_700_000_000,
+    )
+    .expect("user");
+    let auth = Arc::new(AuthService::new(
+        db.clone(),
+        AuthConfig {
+            session_ttl_seconds: 3_600,
+            session_pepper: "test-pepper".to_string(),
+            sliding_sessions: false,
+            login_max_attempts: 5,
+            login_base_lockout: Duration::from_secs(1),
+        },
+    ));
+    let workspace = dir.path().join("workspace");
+    fs::create_dir_all(&workspace).expect("workspace");
+    let state_dir = dir.path().join("state");
+    fs::create_dir_all(&state_dir).expect("state dir");
+    let codex_home = dir.path().join("codex-home");
+    fs::create_dir_all(&codex_home).expect("codex home");
+    fs::write(
+        codex_home.join("auth.json"),
+        r#"{"auth_mode":"chatgpt","account_email":"codex.user@example.com","tokens":{"access_token":"codex-secret-tok"}}"#,
+    )
+    .expect("write persistent codex auth.json");
+    let workspace_db =
+        Arc::new(WorkspaceDb::open(dir.path().join("workspaces.db")).expect("workspaces db"));
+
+    let mock_codex = write_mock_codex_acp_script(dir.path());
+    let mock_agy = write_mock_agy_script(dir.path(), &state_dir.join("providers").join("agy"));
+    let native_runner = Arc::new(RecordingNativeRunner::new());
+
+    let mut reg_cfg = RuntimeRegistryConfig::new(db.clone(), state_dir.clone(), workspace.clone());
+    reg_cfg.preferred_default_agent_id = NATIVE_AGENT_ID.to_string();
+    reg_cfg.native_runner = Some(native_runner.clone());
+    reg_cfg.native_scheduler = Some(native_runner.clone());
+    reg_cfg.codex_acp_binary = mock_codex.to_string_lossy().to_string();
+    reg_cfg.codex_home = Some(codex_home.clone());
+    reg_cfg.codex_probe_timeout = Duration::from_secs(10);
+    reg_cfg.agy_binary = mock_agy.to_string_lossy().to_string();
+    reg_cfg.agy_probe_timeout = Duration::from_secs(10);
+
+    let registry = RuntimeRegistry::new(reg_cfg.clone());
+    registry.probe_all().await;
+
+    let routing_runner = Arc::new(RoutingPromptRunner::new(Arc::clone(&registry)));
+    let ws_hub = Arc::new(WebSocketHub::new(WebSocketConfig::default()));
+    let mut origins = HashSet::new();
+    origins.insert("http://localhost".to_string());
+    let config = RouterConfig::new(
+        CookieSecureMode::Never,
+        vec![workspace.clone()],
+        origins,
+        workspace_db,
+        workspace.clone(),
+    )
+    .with_workspace_state_dir(state_dir)
+    .with_websocket_hub(ws_hub)
+    .with_prompt_queue_runner(routing_runner)
+    .with_runtime_registry(Arc::clone(&registry));
+    let app = build_router(auth, config);
+    let cookie = login_cookie(&app).await;
+
+    // 1. Add a Native Settings -> Providers model (`gpt-4.1`) and enable it in conversation service.
+    let (status, provider) = authed_request(
+        &app,
+        "POST",
+        "/api/model-providers",
+        &cookie,
+        Some(json!({
+            "name": "NativeOpenAI",
+            "baseUrl": "https://api.example.com/v1",
+            "wireApi": "responses",
+            "isEnabled": true
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{provider}");
+    let provider_id = provider["id"].as_str().expect("provider id").to_string();
+    let (status, native_model) = authed_request(
+        &app,
+        "POST",
+        "/api/model-configs",
+        &cookie,
+        Some(json!({
+            "id": "gpt-4.1",
+            "modelId": "gpt-4.1",
+            "displayName": "GPT-4.1 Native",
+            "provider": "NativeOpenAI",
+            "providerId": provider_id,
+            "isEnabled": true
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{native_model}");
+    let native_model_id = native_model["id"]
+        .as_str()
+        .expect("native model id")
+        .to_string();
+    let (status, service_res) = authed_request(
+        &app,
+        "PUT",
+        "/api/model-services/conversation",
+        &cookie,
+        Some(json!({
+            "modelIds": [native_model_id],
+            "defaultModelId": native_model_id
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{service_res}");
+
+    // 2. Verify /api/runtimes shows native, codex (via ACP), and agy all ready without leaking secrets.
+    let (status, runtimes_body) = authed_request(&app, "GET", "/api/runtimes", &cookie, None).await;
+    assert_eq!(status, StatusCode::OK, "{runtimes_body}");
+    assert!(!runtimes_body.to_string().contains("codex-secret-tok"));
+    let codex_agent = runtimes_body["agents"]
+        .as_array()
+        .expect("agents")
+        .iter()
+        .find(|a| a["id"] == CODEX_AGENT_ID)
+        .expect("codex agent");
+    assert_eq!(codex_agent["ready"], json!(true));
+    assert_eq!(codex_agent["version"], json!("0.10.2"));
+    assert_eq!(codex_agent["authMethod"], json!("chatgpt"));
+    assert_eq!(codex_agent["accountEmail"], json!("codex.user@example.com"));
+
+    // 3. Verify /api/models scopes DB provider model to `native`, and tags Codex & Agy
+    // discovered models to their respective runtimes (plus collision disambiguation).
+    let (status, models_body) = authed_request(&app, "GET", "/api/models", &cookie, None).await;
+    assert_eq!(status, StatusCode::OK, "{models_body}");
+    let models = models_body.as_array().expect("models array");
+    let native_entry = models
+        .iter()
+        .find(|m| m["id"] == native_model_id)
+        .expect("native gpt-4.1");
+    assert_eq!(
+        native_entry["configJson"]["allowedAgents"],
+        json!([NATIVE_AGENT_ID])
+    );
+    let codex_primary = models
+        .iter()
+        .find(|m| m["id"] == "gpt-5.3-codex")
+        .expect("codex gpt-5.3-codex");
+    assert_eq!(codex_primary["provider"], json!("codex"));
+    assert_eq!(
+        codex_primary["configJson"]["allowedAgents"],
+        json!([CODEX_AGENT_ID])
+    );
+    let mut collided_ids = HashSet::new();
+    collided_ids.insert("gpt-4.1".to_string());
+    let collided_codex = registry.discovered_codex_models(&collided_ids);
+    let codex_collided = collided_codex
+        .iter()
+        .find(|m| m.model_id == "gpt-4.1")
+        .expect("disambiguated codex:gpt-4.1");
+    assert_eq!(codex_collided.id, "codex:gpt-4.1");
+    let agy_entry = models
+        .iter()
+        .find(|m| m["id"] == "gemini-2.5-pro")
+        .expect("agy gemini-2.5-pro");
+    assert_eq!(agy_entry["provider"], json!("antigravity"));
+
+    // 4. Three-way WebSocket switching on the same lane: native -> codex -> agy -> codex.
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let app_clone = app.clone();
+    let server = tokio::spawn(async move {
+        let _ = axum::serve(listener, app_clone).await;
+    });
+
+    let req = Request::builder()
+        .method("GET")
+        .uri(format!("ws://{addr}/ws?session=proj-3way&chat_session_id=main"))
+        .header(header::HOST, addr.to_string())
+        .header(header::CONNECTION, "Upgrade")
+        .header(header::UPGRADE, "websocket")
+        .header(header::SEC_WEBSOCKET_VERSION, "13")
+        .header(header::SEC_WEBSOCKET_KEY, "dGhlIHNhbXBsZSBub25jZQ==")
+        .header(
+            header::SEC_WEBSOCKET_PROTOCOL,
+            "ads-session.proj-3way, ads-chat.main",
+        )
+        .header(header::COOKIE, &cookie)
+        .header(header::ORIGIN, "http://localhost")
+        .body(())
+        .expect("ws req");
+    let (mut ws, _) = connect_async(req).await.expect("ws connect");
+    let _ = recv_frame_of_type(&mut ws, "agents").await;
+
+    // Step 4a: Turn on `native`.
+    ws.send(Message::Text(
+        json!({
+            "type": "prompt",
+            "client_message_id": "cm-3way-native",
+            "payload": { "text": "turn one native", "model": "gpt-4.1" }
+        })
+        .to_string()
+        .into(),
+    ))
+    .await
+    .expect("native prompt");
+    let mut saw_native = false;
+    for _ in 0..30 {
+        let frame = recv_json_frame(&mut ws).await;
+        let id_ok = frame["client_message_id"] == "cm-3way-native"
+            || frame["clientMessageId"] == "cm-3way-native";
+        if frame["type"] == "result" && id_ok {
+            assert_eq!(frame["activeAgentId"], NATIVE_AGENT_ID);
+            saw_native = true;
+            break;
+        }
+    }
+    assert!(saw_native);
+
+    // Step 4b: Switch to `codex` (ACP) and run turn.
+    ws.send(Message::Text(
+        json!({ "type": "set_agent", "payload": { "agentId": CODEX_AGENT_ID } })
+            .to_string()
+            .into(),
+    ))
+    .await
+    .expect("switch to codex");
+    let switched_codex = recv_frame_of_type(&mut ws, "agents").await;
+    assert_eq!(switched_codex["activeAgentId"], CODEX_AGENT_ID);
+
+    ws.send(Message::Text(
+        json!({
+            "type": "prompt",
+            "client_message_id": "cm-3way-codex",
+            "payload": { "text": "turn two codex", "model": "codex:gpt-4.1" }
+        })
+        .to_string()
+        .into(),
+    ))
+    .await
+    .expect("codex prompt");
+    let mut saw_codex = false;
+    for _ in 0..30 {
+        let frame = recv_json_frame(&mut ws).await;
+        if frame["type"] == "error" {
+            panic!("unexpected codex error: {frame}");
+        }
+        let id_ok = frame["client_message_id"] == "cm-3way-codex"
+            || frame["clientMessageId"] == "cm-3way-codex";
+        if frame["type"] == "result" && id_ok {
+            assert_eq!(frame["activeAgentId"], CODEX_AGENT_ID);
+            assert!(
+                frame["output"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .contains("[via-mock-codex-acp]")
+            );
+            saw_codex = true;
+            break;
+        }
+    }
+    assert!(saw_codex);
+
+    // Step 4c: Switch to `agy` (ACP) and run turn.
+    ws.send(Message::Text(
+        json!({ "type": "set_agent", "payload": { "agentId": AGY_DEFAULT_AGENT_ID } })
+            .to_string()
+            .into(),
+    ))
+    .await
+    .expect("switch to agy");
+    let switched_agy = recv_frame_of_type(&mut ws, "agents").await;
+    assert_eq!(switched_agy["activeAgentId"], AGY_DEFAULT_AGENT_ID);
+
+    ws.send(Message::Text(
+        json!({
+            "type": "prompt",
+            "client_message_id": "cm-3way-agy",
+            "payload": { "text": "turn three agy", "model": "gemini-2.5-pro" }
+        })
+        .to_string()
+        .into(),
+    ))
+    .await
+    .expect("agy prompt");
+    let mut saw_agy = false;
+    for _ in 0..30 {
+        let frame = recv_json_frame(&mut ws).await;
+        if frame["type"] == "error" {
+            panic!("unexpected agy error: {frame}");
+        }
+        let id_ok = frame["client_message_id"] == "cm-3way-agy"
+            || frame["clientMessageId"] == "cm-3way-agy";
+        if frame["type"] == "result" && id_ok {
+            assert_eq!(frame["activeAgentId"], AGY_DEFAULT_AGENT_ID);
+            assert!(
+                frame["output"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .contains("[via-mock-agy]")
+            );
+            saw_agy = true;
+            break;
+        }
+    }
+    assert!(saw_agy);
+
+    // Step 4d: Verify ADR 0028 shared HistoryStore recorded both ACP runtimes' turns on the same lane.
+    let conn = db.connect().expect("db conn");
+    let history = HistoryStore::new(WEB_ACTIONS_NAMESPACE, 200, 100_000);
+    let entries = history
+        .get(&conn, "user-1::proj-3way::main")
+        .expect("history entries");
+    assert!(
+        entries
+            .iter()
+            .any(|e| e.role == "ai" && e.text.contains("[via-mock-codex-acp]"))
+    );
+    assert!(
+        entries
+            .iter()
+            .any(|e| e.role == "ai" && e.text.contains("[via-mock-agy]"))
+    );
+
+    drop(ws);
+    server.abort();
+    registry.shutdown_all().await;
+
+    // 5. Simulate daemon restart: a fresh RuntimeRegistry reusing the same CODEX_HOME
+    // becomes ready immediately with zero re-login.
+    let restarted_registry = RuntimeRegistry::new(reg_cfg);
+    restarted_registry.probe_all().await;
+    assert!(
+        restarted_registry.is_codex_ready(),
+        "Codex ACP must reuse persisted CODEX_HOME auth across restarts without re-login"
+    );
+    restarted_registry.shutdown_all().await;
 }

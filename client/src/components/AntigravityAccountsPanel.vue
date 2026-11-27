@@ -264,7 +264,7 @@ onBeforeUnmount(() => {
 <template>
   <div data-testid="settings-runtimes-panel">
     <p class="settingsNote introduction">
-      Available agent runtimes are auto-probed at startup. Switch runtimes directly from the chat model selector, or manage isolated Antigravity accounts below.
+      Available agent runtimes are auto-probed at startup. Native uses Settings → Providers; Codex and Antigravity run over ACP with automatic model discovery and persistent credentials.
     </p>
     <p v-if="error && !accountDialog && !deleteTarget" class="settingsFeedback" role="alert">{{ error }}</p>
     <p v-if="notice" class="settingsFeedback" role="status">{{ notice }}</p>

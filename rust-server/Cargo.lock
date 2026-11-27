@@ -14,6 +14,7 @@ version = "0.1.0"
 dependencies = [
  "ads-contract",
  "ads-native",
+ "ads-reviewer",
  "ads-runtime",
  "ads-state",
  "async-trait",
@@ -68,26 +69,6 @@ dependencies = [
  "subtle",
  "tempfile",
  "thiserror",
- "uuid",
-]
-
-[[package]]
-name = "ads-codex-app-server"
-version = "0.1.0"
-dependencies = [
- "ads-contract",
- "ads-native",
- "ads-reviewer",
- "ads-runtime",
- "ads-state",
- "base64 0.22.1",
- "libc",
- "rusqlite",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror",
- "tokio",
  "uuid",
 ]
 
@@ -209,9 +190,9 @@ dependencies = [
 name = "ads-server"
 version = "0.1.0"
 dependencies = [
+ "ads-acp",
  "ads-actions",
  "ads-auth",
- "ads-codex-app-server",
  "ads-http",
  "ads-native",
  "ads-runtime",

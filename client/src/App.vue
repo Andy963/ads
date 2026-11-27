@@ -1505,13 +1505,13 @@ async function onSettingsChanged(): Promise<void> {
   }
 }
 
-const readyAgyAgentSignature = computed(() => {
+const readyAcpAgentSignature = computed(() => {
   const ids = new Set<string>();
   for (const runtime of [activeRuntime.value, activeAcopilotRuntime.value]) {
     const list = runtime?.availableAgents?.value ?? [];
     for (const agent of list) {
       const id = String(agent?.id ?? "").trim();
-      if (agent?.ready && (id === "agy" || id.startsWith("agy:"))) {
+      if (agent?.ready && (id === "codex" || id === "agy" || id.startsWith("agy:"))) {
         ids.add(id);
       }
     }
@@ -1519,7 +1519,7 @@ const readyAgyAgentSignature = computed(() => {
   return Array.from(ids).sort().join(",");
 });
 
-watch(readyAgyAgentSignature, (next, prev) => {
+watch(readyAcpAgentSignature, (next, prev) => {
   if (!loggedIn.value || next === prev) return;
   void loadModels().catch(() => {});
 });

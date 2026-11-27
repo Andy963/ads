@@ -6,9 +6,9 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+ads-acp.workspace = true
 ads-actions.workspace = true
 ads-auth.workspace = true
-ads-codex-app-server.workspace = true
 ads-http.workspace = true
 ads-native.workspace = true
 ads-runtime.workspace = true

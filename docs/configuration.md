@@ -51,8 +51,9 @@ ADS 会在启动时从当前工作目录向上查找 `.env` 文件，并自动�
 
 | 变量名 | 默认值 | 说明 |
 |---|---|---|
-| `ADS_AGENT_RUNTIME` | `native` | Agent 运行时后端：`native`（默认，进程内原生运行时，直连 OpenAI 兼容端点；兼容别名 `in-process`）或 `codex-app-server`（经 Codex App-Server daemon） |
-| `ADS_CODEX_BIN` | `codex` | Codex 二进制执行文件路径或别名，仅 `codex-app-server` 后端使用；ADS 通过 `codex app-server` 启动 |
+| `ADS_AGENT_RUNTIME` | `native` | 启动时首选默认 Agent 运行时：`native`（默认，使用 Settings → Providers 配置的 OpenAI 兼容端点）、`codex`（经 ACP 协议 `codex-acp` 运行）或 `agy`（经 ACP 协议 `agy acp` 运行）；所有可用运行时均会自动探测并在客户端实时切换 |
+| `ADS_CODEX_ACP_BIN` | `codex-acp` | Codex ACP 适配器二进制路径或别名（例如 `@agentclientprotocol/codex-acp`），通过 ACP stdio 协议接入并复用 `$CODEX_HOME` 持久化凭据 |
+| `ADS_AGY_BIN` | `agy` | Antigravity CLI 二进制路径或别名，通过 `agy acp --stdio` 接入 |
 | `ADS_AGENT_PROBE_TIMEOUT_MS` | `5000` | 启动时探测 Agent 可用性的超时时间（毫秒） |
 | `ADS_AGENT_IDLE_TIMEOUT_MS` | `3600000` (1小时) | CLI 连续无标准输出/错误的空闲看门狗超时，`0` 表示禁用 |
 | `ADS_AGENT_MAX_RUN_TIMEOUT_MS` | `43200000` (12小时)| 单次 CLI 运行的最大硬超时保护，`0` 表示禁用 |
