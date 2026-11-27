@@ -6,19 +6,35 @@ import MainChatModelSelectors from "../components/MainChatModelSelectors.vue";
 import ModelManager from "../components/ModelManager.vue";
 
 describe("supportsAgentModel across native, codex, claude, and agy runtimes", () => {
-  const openaiModel: ModelConfig = {
-    id: "gpt-4.1",
+  const providerBoundModel: ModelConfig = {
+    id: "model-provider-gpt",
     modelId: "gpt-4.1",
     displayName: "GPT-4.1",
     provider: "OpenAI",
+    providerId: "provider-openai",
     isEnabled: true,
     isDefault: true,
+  };
+  const codexAcpModel: ModelConfig = {
+    id: "gpt-5.3-codex",
+    modelId: "gpt-5.3-codex",
+    displayName: "GPT-5.3 Codex",
+    provider: "codex",
+    providerId: null,
+    isEnabled: true,
+    isDefault: true,
+    configJson: {
+      allowedAgents: ["codex"],
+      reasoningEfforts: ["medium", "high"],
+      runtime: "codex",
+    },
   };
   const claudeModel: ModelConfig = {
     id: "claude-sonnet-4",
     modelId: "claude-sonnet-4",
     displayName: "Claude Sonnet 4",
     provider: "Anthropic",
+    providerId: "provider-anthropic",
     isEnabled: true,
     isDefault: false,
   };
@@ -32,22 +48,41 @@ describe("supportsAgentModel across native, codex, claude, and agy runtimes", ()
     configJson: {
       allowedAgents: ["agy", "agy:work"],
       reasoningEfforts: ["low", "medium", "high"],
+      runtime: "agy",
     },
   };
 
-  it("matches user-configured models for native and codex while scoping agy models by allowedAgents", () => {
-    expect(supportsAgentModel({ agentId: "native", model: openaiModel })).toBe(true);
+  const legacyProviderWithCodexTag: ModelConfig = {
+    id: "model-legacy-provider",
+    modelId: "gpt-5",
+    displayName: "GPT-5 (Legacy Provider)",
+    provider: "OpenAI",
+    providerId: "provider-openai",
+    isEnabled: true,
+    isDefault: false,
+    configJson: {
+      allowedAgents: ["codex"],
+    },
+  };
+
+  it("scopes Settings -> Providers models to native while codex and agy use ACP-discovered models", () => {
+    expect(supportsAgentModel({ agentId: "native", model: providerBoundModel })).toBe(true);
+    expect(supportsAgentModel({ agentId: "native", model: legacyProviderWithCodexTag })).toBe(true);
     expect(supportsAgentModel({ agentId: "native", model: claudeModel })).toBe(true);
+    expect(supportsAgentModel({ agentId: "native", model: codexAcpModel })).toBe(false);
     expect(supportsAgentModel({ agentId: "native", model: agyModel })).toBe(false);
 
-    expect(supportsAgentModel({ agentId: "codex", model: openaiModel })).toBe(true);
+    expect(supportsAgentModel({ agentId: "codex", model: codexAcpModel })).toBe(true);
+    expect(supportsAgentModel({ agentId: "codex", model: providerBoundModel })).toBe(false);
+    expect(supportsAgentModel({ agentId: "codex", model: legacyProviderWithCodexTag })).toBe(false);
     expect(supportsAgentModel({ agentId: "codex", model: claudeModel })).toBe(false);
     expect(supportsAgentModel({ agentId: "codex", model: agyModel })).toBe(false);
 
     expect(supportsAgentModel({ agentId: "agy", model: agyModel })).toBe(true);
     expect(supportsAgentModel({ agentId: "agy:work", model: agyModel })).toBe(true);
     expect(supportsAgentModel({ agentId: "agy:personal", model: agyModel })).toBe(false);
-    expect(supportsAgentModel({ agentId: "agy", model: openaiModel })).toBe(false);
+    expect(supportsAgentModel({ agentId: "agy", model: providerBoundModel })).toBe(false);
+    expect(supportsAgentModel({ agentId: "agy", model: codexAcpModel })).toBe(false);
   });
 });
 
@@ -316,8 +351,11 @@ describe("AntigravityAccountsPanel inside ModelManager Runtimes tab", () => {
     const wrapper = mount(ModelManager, { props: { api: api as any } });
     await flushPromises();
 
-    // Providers remains the default active tab.
+    // Providers remains the default active tab and scopes Providers to Native runtime.
     expect(wrapper.get('[data-testid="provider-settings-tab"]').attributes("aria-pressed")).toBe("true");
+    expect(wrapper.get('[data-testid="settings-providers-panel"]').text()).toContain(
+      "Native runtime providers",
+    );
 
     // Switch to Runtimes tab.
     await wrapper.get('[data-testid="runtime-settings-tab"]').trigger("click");

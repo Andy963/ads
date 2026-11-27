@@ -325,11 +325,62 @@ pub(super) async fn list_conversation_models(
     })
     .await?;
     if let Some(registry) = state.runtime_registry.as_ref() {
+        // Provider-backed DB models belong exclusively to the Native runtime, and
+        // legacy DB-seeded rows never leak into ACP-backed `codex` / `agy*` selectors.
+        for model in &mut models {
+            scope_provider_model_to_native(model);
+        }
         let existing_ids: std::collections::HashSet<String> =
             models.iter().map(|model| model.id.clone()).collect();
-        models.extend(registry.discovered_agy_models(&existing_ids));
+        models.extend(registry.discovered_acp_models(&existing_ids));
     }
     Ok(Json(models))
+}
+
+fn scope_provider_model_to_native(model: &mut ModelConfig) {
+    let mut obj = match model.config_json.take() {
+        Some(Value::Object(map)) => map,
+        _ => serde_json::Map::new(),
+    };
+    let has_provider = model
+        .provider_id
+        .as_deref()
+        .is_some_and(|value| !value.trim().is_empty());
+    // Provider-backed DB models always belong exclusively to the Native runtime;
+    // legacy DB-seeded rows carrying `allowedAgents: ["codex"]` must not leak into
+    // ACP-backed `codex` / `agy*` selectors either.
+    let scoped_agents: Vec<String> = if has_provider {
+        vec![crate::NATIVE_AGENT_ID.to_string()]
+    } else {
+        let filtered: Vec<String> = obj
+            .get("allowedAgents")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .map(str::trim)
+            .filter(|agent| {
+                !agent.is_empty()
+                    && !agent.eq_ignore_ascii_case(crate::CODEX_AGENT_ID)
+                    && !agent.eq_ignore_ascii_case(crate::AGY_DEFAULT_AGENT_ID)
+                    && !agent.to_ascii_lowercase().starts_with("agy:")
+            })
+            .map(str::to_string)
+            .collect();
+        if filtered.is_empty() {
+            vec![crate::NATIVE_AGENT_ID.to_string()]
+        } else {
+            filtered
+        }
+    };
+    let is_native = scoped_agents
+        .iter()
+        .any(|agent| agent.eq_ignore_ascii_case(crate::NATIVE_AGENT_ID));
+    obj.insert("allowedAgents".to_string(), serde_json::json!(scoped_agents));
+    if is_native {
+        obj.insert("runtime".to_string(), serde_json::json!(crate::NATIVE_AGENT_ID));
+    }
+    model.config_json = Some(Value::Object(obj));
 }
 
 fn validate_patch(patch: &ModelConfigPatch, create: bool) -> Result<(), ApiError> {

@@ -341,6 +341,7 @@ impl ConfigOptionsState {
 
     pub fn resolve_thought_level(&self) -> Option<&ConfigOption> {
         self.get_by_category("thought_level")
+            .or_else(|| self.get_by_category("reasoning_effort"))
             .or_else(|| self.get_by_id("thought_level"))
             .or_else(|| self.get_by_id("reasoning_effort"))
     }

@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, RwLock};
 use std::time::{Duration, Instant};
@@ -8,8 +8,10 @@ use std::time::{Duration, Instant};
 use ads_acp::{
     AcpDriver, AcpPromptRunner, AcpPromptRunnerConfig, AgyAuthConfig, AgyAuthMethod, AgyDriver,
     AgyDriverConfig, AgyIsolatedProfile, AgyLoginHandle, AgyProbeResult, AgyProbeStatus,
-    AgyProfileMode, logout_agy_profile, probe_agy_runtime, resolve_agy_binary,
-    resolve_agy_profile_dir, start_agy_login, validate_agy_login_response,
+    AgyProfileMode, CODEX_ACP_BINARY_ENV, CodexDriver, CodexDriverConfig, CodexProbeResult,
+    CodexProbeStatus, DEFAULT_CODEX_ACP_BINARY, logout_agy_profile, probe_agy_runtime,
+    probe_codex_runtime, resolve_agy_binary, resolve_agy_profile_dir, resolve_codex_acp_binary,
+    start_agy_login, validate_agy_login_response,
 };
 use ads_contract::models::ModelConfig;
 use ads_contract::time::now_unix_millis;
@@ -193,9 +195,9 @@ pub struct RuntimeRegistryConfig {
     pub preferred_default_agent_id: String,
     pub native_runner: Option<Arc<dyn PromptQueueRunner>>,
     pub native_scheduler: Option<Arc<dyn ScheduleExecutor>>,
-    pub codex_runner: Option<Arc<dyn PromptQueueRunner>>,
-    pub codex_scheduler: Option<Arc<dyn ScheduleExecutor>>,
-    pub codex_binary: String,
+    pub codex_acp_binary: String,
+    pub codex_home: Option<PathBuf>,
+    pub codex_probe_timeout: Duration,
     pub agy_binary: String,
     pub agy_probe_timeout: Duration,
 }
@@ -204,11 +206,16 @@ impl RuntimeRegistryConfig {
     pub fn new(db: StateDb, state_dir: PathBuf, default_workspace_root: PathBuf) -> Self {
         let preferred_default_agent_id =
             resolve_initial_default_agent(std::env::var("ADS_AGENT_RUNTIME").ok().as_deref());
-        let codex_binary = std::env::var("ADS_CODEX_BIN")
+        let codex_acp_binary = std::env::var(CODEX_ACP_BINARY_ENV)
             .ok()
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty())
-            .unwrap_or_else(|| "codex".to_string());
+            .unwrap_or_else(|| DEFAULT_CODEX_ACP_BINARY.to_string());
+        let codex_home = std::env::var("CODEX_HOME")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from);
         let agy_binary = std::env::var(ads_acp::AGY_BINARY_ENV)
             .ok()
             .map(|value| value.trim().to_string())
@@ -221,9 +228,9 @@ impl RuntimeRegistryConfig {
             preferred_default_agent_id,
             native_runner: None,
             native_scheduler: None,
-            codex_runner: None,
-            codex_scheduler: None,
-            codex_binary,
+            codex_acp_binary,
+            codex_home,
+            codex_probe_timeout: Duration::from_secs(20),
             agy_binary,
             agy_probe_timeout: Duration::from_secs(20),
         }
@@ -236,7 +243,7 @@ pub fn resolve_initial_default_agent(raw: Option<&str>) -> String {
     let value = raw.unwrap_or_default().trim().to_ascii_lowercase();
     match value.as_str() {
         "" | "native" | "in-process" => NATIVE_AGENT_ID.to_string(),
-        "codex" | "codex-app-server" | "cli" => CODEX_AGENT_ID.to_string(),
+        "codex" | "codex-acp" | "codex-app-server" | "cli" => CODEX_AGENT_ID.to_string(),
         "agy" | "antigravity" => AGY_DEFAULT_AGENT_ID.to_string(),
         other if other.starts_with("agy:") => other.to_string(),
         _ => CODEX_AGENT_ID.to_string(),
@@ -251,10 +258,9 @@ pub struct RuntimeRegistry {
     preferred_default_agent_id: String,
     native_runner: Option<Arc<dyn PromptQueueRunner>>,
     native_scheduler: Option<Arc<dyn ScheduleExecutor>>,
-    codex_runner: Option<Arc<dyn PromptQueueRunner>>,
-    codex_scheduler: Option<Arc<dyn ScheduleExecutor>>,
-    codex_binary: String,
-    codex_status: RwLock<(bool, Option<String>)>,
+    codex_driver_config: CodexDriverConfig,
+    codex_runner: Arc<AcpPromptRunner>,
+    codex_probe: RwLock<CodexProbeResult>,
     agy_binary: String,
     agy_probe_timeout: Duration,
     next_generation: AtomicU64,
@@ -268,7 +274,15 @@ pub struct RuntimeRegistry {
 impl RuntimeRegistry {
     pub fn new(config: RuntimeRegistryConfig) -> Arc<Self> {
         let credentials = UpstreamCredentialStore::for_state_db(config.db.path());
-        let codex_initial = probe_codex_binary(&config.codex_binary, config.codex_runner.is_some());
+        let mut codex_cfg = CodexDriverConfig::default()
+            .with_id(CODEX_AGENT_ID)
+            .with_binary(&config.codex_acp_binary)
+            .with_probe_timeout(config.codex_probe_timeout);
+        if let Some(codex_home) = config.codex_home.as_ref() {
+            codex_cfg = codex_cfg.with_codex_home(codex_home);
+        }
+        let codex_initial = initial_codex_probe_state(&codex_cfg);
+        let codex_runner = build_codex_runner(config.db.clone(), codex_cfg.clone());
         let mut agy_entries = BTreeMap::new();
         let mut generation_seq: u64 = 1;
 
@@ -352,10 +366,9 @@ impl RuntimeRegistry {
             preferred_default_agent_id: config.preferred_default_agent_id,
             native_runner: config.native_runner,
             native_scheduler: config.native_scheduler,
-            codex_runner: config.codex_runner,
-            codex_scheduler: config.codex_scheduler,
-            codex_binary: config.codex_binary,
-            codex_status: RwLock::new(codex_initial),
+            codex_driver_config: codex_cfg,
+            codex_runner,
+            codex_probe: RwLock::new(codex_initial),
             agy_binary: config.agy_binary,
             agy_probe_timeout: config.agy_probe_timeout,
             next_generation: AtomicU64::new(generation_seq),
@@ -405,13 +418,9 @@ impl RuntimeRegistry {
 
     pub async fn probe_all(&self) {
         let _guard = self.probe_lock.lock().await;
-        let codex_binary = self.codex_binary.clone();
-        let has_codex = self.codex_runner.is_some();
-        let codex_state =
-            tokio::task::spawn_blocking(move || probe_codex_binary(&codex_binary, has_codex))
-                .await
-                .unwrap_or((false, Some("Codex binary probe failed.".to_string())));
-        *self.codex_status.write().expect("codex status lock") = codex_state;
+        let codex_probe =
+            probe_codex_runtime(&self.codex_driver_config, &self.default_workspace_root).await;
+        *self.codex_probe.write().expect("codex probe lock") = codex_probe;
 
         let targets: Vec<(String, u64, AgyDriverConfig)> = {
             let entries = self.agy_entries.read().expect("agy entries read lock");
@@ -456,18 +465,19 @@ impl RuntimeRegistry {
                 tier: None,
             });
         }
-        if self.codex_runner.is_some() {
-            let (ready, error) = self.codex_status.read().expect("codex status lock").clone();
+        {
+            let codex_probe = self.codex_probe.read().expect("codex probe lock");
+            let ready = codex_probe.status == CodexProbeStatus::Ready;
             agents.push(RuntimeAgentDescriptor {
                 id: CODEX_AGENT_ID.to_string(),
                 name: "Codex".to_string(),
                 kind: "codex".to_string(),
                 ready,
-                error,
+                error: describe_codex_probe_error(&codex_probe),
                 account_id: None,
-                auth_method: None,
-                version: None,
-                account_email: None,
+                auth_method: ready.then(|| codex_probe.auth_method.clone()).flatten(),
+                version: codex_probe.version.clone(),
+                account_email: ready.then(|| codex_probe.account_email.clone()).flatten(),
                 tier: None,
             });
         }
@@ -532,7 +542,7 @@ impl RuntimeRegistry {
     }
 
     pub fn is_codex_ready(&self) -> bool {
-        self.codex_runner.is_some() && self.codex_status.read().expect("codex status lock").0
+        self.codex_probe.read().expect("codex probe lock").status == CodexProbeStatus::Ready
     }
 
     pub fn runner_for(&self, agent_id: &str) -> Result<Arc<dyn PromptQueueRunner>, String> {
@@ -545,10 +555,7 @@ impl RuntimeRegistry {
         }
         if target == CODEX_AGENT_ID {
             self.is_agent_ready(CODEX_AGENT_ID)?;
-            return self
-                .codex_runner
-                .clone()
-                .ok_or_else(|| "Codex runtime is not enabled.".to_string());
+            return Ok(Arc::clone(&self.codex_runner) as Arc<dyn PromptQueueRunner>);
         }
         let entries = self.agy_entries.read().expect("agy entries read lock");
         let Some(entry) = entries.get(target) else {
@@ -566,7 +573,7 @@ impl RuntimeRegistry {
             return self.native_runner.clone();
         }
         if agent_id == CODEX_AGENT_ID {
-            return self.codex_runner.clone();
+            return Some(Arc::clone(&self.codex_runner) as Arc<dyn PromptQueueRunner>);
         }
         if let Some(entry) = self
             .agy_entries
@@ -578,7 +585,7 @@ impl RuntimeRegistry {
         }
         self.native_runner
             .clone()
-            .or_else(|| self.codex_runner.clone())
+            .or_else(|| Some(Arc::clone(&self.codex_runner) as Arc<dyn PromptQueueRunner>))
     }
 
     pub fn schedule_executor_for(
@@ -594,7 +601,7 @@ impl RuntimeRegistry {
             return self.native_scheduler.clone();
         }
         if target == CODEX_AGENT_ID && self.is_codex_ready() {
-            return self.codex_scheduler.clone();
+            return Some(Arc::clone(&self.codex_runner) as Arc<dyn ScheduleExecutor>);
         }
         if let Some(entry) = self
             .agy_entries
@@ -605,9 +612,80 @@ impl RuntimeRegistry {
         {
             return Some(Arc::clone(&entry.runner) as Arc<dyn ScheduleExecutor>);
         }
-        self.native_scheduler
-            .clone()
-            .or_else(|| self.codex_scheduler.clone())
+        self.native_scheduler.clone().or_else(|| {
+            self.is_codex_ready()
+                .then(|| Arc::clone(&self.codex_runner) as Arc<dyn ScheduleExecutor>)
+        })
+    }
+
+    /// Synthesizes live `ModelConfig` entries for all discovered models on ready ACP runtimes
+    /// (`codex` and `agy*`).
+    pub fn discovered_acp_models(&self, existing_ids: &HashSet<String>) -> Vec<ModelConfig> {
+        let mut combined_existing = existing_ids.clone();
+        let mut models = self.discovered_codex_models(&combined_existing);
+        for model in &models {
+            combined_existing.insert(model.id.clone());
+        }
+        models.extend(self.discovered_agy_models(&combined_existing));
+        models
+    }
+
+    /// Synthesizes live `ModelConfig` entries for all discovered models on a ready `codex` ACP runtime.
+    pub fn discovered_codex_models(&self, existing_ids: &HashSet<String>) -> Vec<ModelConfig> {
+        let probe = self.codex_probe.read().expect("codex probe lock");
+        if probe.status != CodexProbeStatus::Ready {
+            return Vec::new();
+        }
+        let mut efforts: Vec<String> = probe
+            .thought_levels
+            .iter()
+            .map(|opt| opt.value.trim().to_ascii_lowercase())
+            .filter(|value| !value.is_empty())
+            .collect();
+        efforts.sort_by_key(|effort| {
+            EFFORT_ORDER
+                .iter()
+                .position(|candidate| candidate == effort)
+                .unwrap_or(EFFORT_ORDER.len())
+        });
+        efforts.dedup();
+
+        let mut seen = HashSet::new();
+        let mut results = Vec::new();
+        for model in &probe.models {
+            let value = model.value.trim();
+            if value.is_empty() || !seen.insert(value.to_string()) {
+                continue;
+            }
+            let display_name = if model.name.trim().is_empty() {
+                value.to_string()
+            } else {
+                model.name.trim().to_string()
+            };
+            let id = if existing_ids.contains(value) {
+                format!("codex:{value}")
+            } else {
+                value.to_string()
+            };
+            let mut cfg = serde_json::Map::new();
+            cfg.insert("allowedAgents".to_string(), json!([CODEX_AGENT_ID]));
+            if !efforts.is_empty() {
+                cfg.insert("reasoningEfforts".to_string(), json!(efforts));
+            }
+            cfg.insert("runtime".to_string(), json!(CODEX_AGENT_ID));
+            results.push(ModelConfig {
+                id,
+                model_id: value.to_string(),
+                display_name,
+                provider: CODEX_AGENT_ID.to_string(),
+                provider_id: None,
+                is_enabled: true,
+                is_default: results.is_empty(),
+                config_json: Some(Value::Object(cfg)),
+                updated_at: Some(now_unix_millis()),
+            });
+        }
+        results
     }
 
     /// Synthesizes live `ModelConfig` entries for all discovered models on ready `agy*` runtimes.
@@ -1244,6 +1322,7 @@ impl RuntimeRegistry {
         for login in logins {
             login.handle.cancel().await;
         }
+        self.codex_runner.shutdown().await;
         let runners: Vec<Arc<AcpPromptRunner>> = {
             let entries = self.agy_entries.read().expect("agy entries read lock");
             entries.values().map(|e| Arc::clone(&e.runner)).collect()
@@ -1517,54 +1596,64 @@ fn find_entry_by_account_id<'a>(
     entries.get(&agy_agent_id(account_id))
 }
 
-fn probe_codex_binary(binary: &str, has_runner: bool) -> (bool, Option<String>) {
-    if !has_runner {
-        return (false, Some("Codex runtime is not registered.".to_string()));
-    }
-    if resolve_executable(binary).is_some() {
-        (true, None)
-    } else {
-        (
-            false,
-            Some(format!("Codex CLI binary '{binary}' not found in PATH.")),
-        )
-    }
-}
-
-fn resolve_executable(raw: &str) -> Option<PathBuf> {
-    let raw = raw.trim();
-    if raw.is_empty() {
-        return None;
-    }
-    let candidate = Path::new(raw);
-    if candidate.is_absolute() || raw.contains(std::path::MAIN_SEPARATOR) || raw.contains('/') {
-        return is_executable_file(candidate).then(|| candidate.to_path_buf());
-    }
-    let path_var = std::env::var_os("PATH")?;
-    for dir in std::env::split_paths(&path_var) {
-        let full = dir.join(raw);
-        if is_executable_file(&full) {
-            return Some(full);
-        }
-    }
-    None
-}
-
-fn is_executable_file(path: &Path) -> bool {
-    let Ok(meta) = fs::metadata(path) else {
-        return false;
+fn initial_codex_probe_state(config: &CodexDriverConfig) -> CodexProbeResult {
+    let now = now_unix_millis();
+    let Some(binary_path) = resolve_codex_acp_binary(Some(&config.binary)) else {
+        return CodexProbeResult {
+            status: CodexProbeStatus::BinaryNotFound,
+            binary_path: None,
+            version: None,
+            auth_method: None,
+            account_email: None,
+            auth_methods: Vec::new(),
+            models: Vec::new(),
+            thought_levels: Vec::new(),
+            modes: None,
+            config_options: Vec::new(),
+            message: Some(format!(
+                "Codex ACP binary '{}' not found (install @agentclientprotocol/codex-acp or set {CODEX_ACP_BINARY_ENV}).",
+                config.binary
+            )),
+            probed_at_ms: now,
+        };
     };
-    if !meta.is_file() {
-        return false;
+    CodexProbeResult {
+        status: CodexProbeStatus::Error,
+        binary_path: Some(binary_path.to_string_lossy().to_string()),
+        version: None,
+        auth_method: None,
+        account_email: None,
+        auth_methods: Vec::new(),
+        models: Vec::new(),
+        thought_levels: Vec::new(),
+        modes: None,
+        config_options: Vec::new(),
+        message: Some("Probing Codex ACP runtime...".to_string()),
+        probed_at_ms: now,
     }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        (meta.permissions().mode() & 0o111) != 0
-    }
-    #[cfg(not(unix))]
-    {
-        true
+}
+
+fn build_codex_runner(db: StateDb, driver_config: CodexDriverConfig) -> Arc<AcpPromptRunner> {
+    let driver: Arc<dyn AcpDriver> = Arc::new(CodexDriver::new(driver_config));
+    let runner_cfg = AcpPromptRunnerConfig::new(driver).with_agent_id(CODEX_AGENT_ID);
+    Arc::new(AcpPromptRunner::new(db, runner_cfg))
+}
+
+fn describe_codex_probe_error(probe: &CodexProbeResult) -> Option<String> {
+    match probe.status {
+        CodexProbeStatus::Ready => None,
+        CodexProbeStatus::BinaryNotFound => Some(probe.message.clone().unwrap_or_else(|| {
+            "Codex ACP adapter ('codex-acp') not installed.".to_string()
+        })),
+        CodexProbeStatus::AuthenticationRequired => Some(probe.message.clone().unwrap_or_else(|| {
+            "Sign in with `codex login` or set OPENAI_API_KEY / CODEX_API_KEY.".to_string()
+        })),
+        CodexProbeStatus::Error => Some(
+            probe
+                .message
+                .clone()
+                .unwrap_or_else(|| "Codex ACP runtime unavailable.".to_string()),
+        ),
     }
 }
 

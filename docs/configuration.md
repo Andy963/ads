@@ -51,8 +51,9 @@ ADS 会在启动时从当前工作目录向上查找 `.env` 文件，并自动�
 
 | 变量名 | 默认值 | 说明 |
 |---|---|---|
-| `ADS_AGENT_RUNTIME` | `native` | Agent 运行时后端：`native`（默认，进程内原生运行时，直连 OpenAI 兼容端点；兼容别名 `in-process`）或 `codex-app-server`（经 Codex App-Server daemon） |
-| `ADS_CODEX_BIN` | `codex` | Codex 二进制执行文件路径或别名，仅 `codex-app-server` 后端使用；ADS 通过 `codex app-server` 启动 |
+| `ADS_AGENT_RUNTIME` | `native` | 启动时首选默认 Agent 运行时：`native`（默认，使用 Settings → Providers 配置的 OpenAI 兼容端点）、`codex`（经 ACP 协议 `codex-acp` 运行）或 `agy`（经 ACP 协议 `agy acp` 运行）；所有可用运行时均会自动探测并在客户端实时切换 |
+| `ADS_CODEX_ACP_BIN` | `codex-acp` | Codex ACP 适配器二进制路径或别名（例如 `@agentclientprotocol/codex-acp`），通过 ACP stdio 协议接入并复用 `$CODEX_HOME` 持久化凭据 |
+| `ADS_AGY_BIN` | `agy` | Antigravity CLI 二进制路径或别名，通过 `agy acp --stdio` 接入 |
 | `ADS_AGENT_PROBE_TIMEOUT_MS` | `5000` | 启动时探测 Agent 可用性的超时时间（毫秒） |
 | `ADS_AGENT_IDLE_TIMEOUT_MS` | `3600000` (1小时) | CLI 连续无标准输出/错误的空闲看门狗超时，`0` 表示禁用 |
 | `ADS_AGENT_MAX_RUN_TIMEOUT_MS` | `43200000` (12小时)| 单次 CLI 运行的最大硬超时保护，`0` 表示禁用 |
@@ -66,9 +67,9 @@ ADS 会在启动时从当前工作目录向上查找 `.env` 文件，并自动�
 
 ## 4. 原生运行时 (Native Runtime)
 
-Native Runtime 是默认后端。`ADS_AGENT_RUNTIME` 是进程级、互斥的 backend 选择；session 生命周期内不能切换到 Codex app-server，也不能跨 backend resume。每轮 Native 对话都会把该 lane 的 durable transcript id 写入 `history_session_links`，因此会话列表可以列出 Native 会话；选择其他会话时从 `HistoryStore` 读取已保存 transcript 并注入新 Native session，不恢复 provider thread；选择当前 lane 自己的会话则直接续接已有 transcript，不会重置。仅存在于 provider 文件、没有 ADS 历史关联的会话不能使用此恢复路径。逻辑 agent `codex`、runtime backend、execution session、provider session 和 ADS transcript 是不同身份，详见 [ADR 0026](adr/0026-native-runtime-lifecycle-and-capability-contract.md) 与 [ADR 0046](adr/0046-native-runtime-as-default.md)。
+Native Runtime 是默认后端，使用 **Settings → Providers** 中配置的 OpenAI 兼容服务商与加密凭据。启动时 `RuntimeRegistry` 会自动探测所有可用运行时（`native`、经 ACP 接入的 `codex`、以及宿主机默认/多账号隔离的 `agy*`），支持在客户端按 lane 实时切换并通过共享 `HistoryStore` 延续对话上下文（[ADR 0028](adr/0028-cross-runtime-session-continuation-via-history-injection.md)、[ADR 0074](adr/0074-dynamic-runtime-autoprobing-and-multi-account-switcher.md)、[ADR 0075](adr/0075-unify-codex-and-antigravity-on-acp-and-scope-providers-to-native.md)）。每轮 Native 对话都会把该 lane 的 durable transcript id 写入 `history_session_links`，因此会话列表可以列出 Native 会话；选择其他会话时从 `HistoryStore` 读取已保存 transcript 并注入新 Native session，不恢复 provider thread；选择当前 lane 自己的会话则直接续接已有 transcript，不会重置。
 
-无法识别的 `ADS_AGENT_RUNTIME` 值会记录一条 warning 并回退到 `codex-app-server`，不会静默启用宿主机全权限的 Native 执行。
+`ADS_AGENT_RUNTIME` 仅作为启动时的首选默认运行时提示（以及设为 `codex` 时将 Actions Reviewer 路由到 Codex ACP，见 [ADR 0066](adr/0066-runtime-unified-actions-reviewer.md)），不会隐藏或禁用其他已探测到的运行时。
 
 | 变量名 | 默认值 | 说明 |
 |---|---|---|
@@ -110,7 +111,7 @@ Chat Completions 的 `max_tokens` 使用同一个有效上限。输入预算等�
 
 - `durable` Web/Acopilot session 将 completed Native turn 保存到 ADS state store；`ephemeral` session（包括独立 Actions Reviewer session）始终新建，并在使用后释放。
 - 只有 completed turn 才会恢复。interrupted、failed 和 cancelled turn 保留审计记录，但不会作为成功上下文重放；下一次 provider request 使用 durable transcript 的 token-budgeted projection。
-- Native command 直接在宿主机执行，保留现有 safety、allowlist、timeout、output 和 cancellation 检查，并继承宿主 environment 与 `$HOME`。运维不能把 `native` 视为 Codex app-server sandbox 的等价模式。
+- Native command 直接在宿主机执行，保留现有 safety、allowlist、timeout、output 和 cancellation 检查，并继承宿主 environment 与 `$HOME`。运维不能把 `native` 视为外部 ACP 沙箱运行时的等价模式。
 - Provider capability 为 `supported`、`unsupported` 或 `unknown`。请求 unsupported 或 unknown 能力时，在 provider request 前以结构化 `NATIVE_CAPABILITY_UNSUPPORTED` error 失败，不做静默降级。
 
 ---
@@ -171,7 +172,7 @@ Telegram variables belong to the standalone `ads-telegram` connector (`rust-serv
 
 每个服务商下面列出其模型，可以同步上游目录，也可以手动添加、编辑名称和模型选项。同步只新增模型，不覆盖已有别名、选项或推理强度，也不自动启用新模型。不同服务商的同名模型以配置 ID 区分。旧的未关联模型保留在待关联分组中，需要手动指定服务商。
 
-- `codex-app-server` 运行时通过 `-c model_providers.*` 覆盖把服务商注入 `codex app-server` 进程，密钥只出现在该进程的环境变量中（`env_key` 引用），从不出现在命令行参数里；切换服务商会在下一次请求时启动新的 daemon。Native Runtime 不经过该进程，直接使用同一份加密服务商配置。
+- **Settings → Providers 专用于 `native` 运行时**：`native` 运行时经保存的模型配置解析服务商地址、加密密钥及 API format；`codex` 与 `agy` 通过 ACP 自动发现可用模型及推理强度并复用各自持久化凭据（见 [ADR 0075](adr/0075-unify-codex-and-antigravity-on-acp-and-scope-providers-to-native.md)）。
 - `native` 运行时经保存的模型配置解析服务商地址、加密密钥及 API format。`responses` 使用 `/responses`，`chat` 使用 `/chat/completions`；未设置格式的旧服务商仍走 Chat。未知格式会在请求前报错，不会静默切换协议端点。
 - Native Responses 支持流式/非流式文本、图片、函数工具及结构化输出（仍需启用对应 capability）。输出上限映射为 `max_output_tokens`，effort 映射为 `reasoning.effort`。它使用 `store: false`、完整本地投影和 scoped output replay，不依赖 provider conversation；encrypted reasoning 不显示在 UI，也不作为日志内容输出。模型、端点、凭据或协议变更后不跨连接回放 opaque metadata，保留通用对话与工具证据。详见 [ADR 0037](adr/0037-native-responses-protocol.md)。
 - 删除模型（包括旧的未关联模型）前会明确确认同时移除服务引用；删除默认模型时选择剩余候选，没有候选则清空默认。引用该模型的角色改用剩余的对话默认模型。引用调整与删除在同一事务中执行，失败时全部回滚。删除服务商仍需先移除其服务引用；删除服务商不会删除关联模型，模型保留为待关联。
@@ -219,4 +220,4 @@ Reviewer 执行或输出协议错误会显示具体原因并返回操作失败�
 
 Reviewer 的模型、推理强度和 system prompt 来自角色配置；连接使用任务所有者的 HTTP 模型配置和凭据。仅配置 Codex CLI 登录而无可用 HTTP 连接不能保证 Reviewer 可用。检查对象是精确被审查提交，不是未提交工作区；不支持写入、shell、符号链接或子模块检查。详见 ADR 0033。
 
-Acopilot 会话中的 `review_action` 将当前 Issue-backed PR 派入 Actions Reviewer 队列并立即返回 job id，不等待裁决。Reviewer 通过当前活跃运行时（`CodexAppServer` 或 `Native`，见 ADR 0066）在只读审查边界内自主选择并执行验证命令（见 ADR 0060）；PR、Issue 条件、相关 ADR、base/head 与验证报告会绑定到同一任务。任务结束后裁决写成 Issue comment（`<!-- ads:review-verdict -->`），并由服务端创建持久的 Reviewer-to-Acopilot `agent_message`；它不会进入用户 `prompt_queue`。Acopilot 泳道显示明确的 agent handoff 卡片，并以独立 lease 和 lane 执行串行化消费该消息。Reviewer 角色必须启用并配置可用模型，否则任务以操作失败结束。只有对精确目标产生的 PASS 才是该提交的评审结果；head、base 或 Issue 条件变化后须重新派审。PASS 不会自动合并，合并仍需用户明确授权。
+Acopilot 会话中的 `review_action` 将当前 Issue-backed PR 派入 Actions Reviewer 队列并立即返回 job id，不等待裁决。Reviewer 通过当前活跃运行时（`Codex ACP` 或 `Native`，见 ADR 0066 / ADR 0075）在只读审查边界内自主选择并执行验证命令（见 ADR 0060）；PR、Issue 条件、相关 ADR、base/head 与验证报告会绑定到同一任务。任务结束后裁决写成 Issue comment（`<!-- ads:review-verdict -->`），并由服务端创建持久的 Reviewer-to-Acopilot `agent_message`；它不会进入用户 `prompt_queue`。Acopilot 泳道显示明确的 agent handoff 卡片，并以独立 lease 和 lane 执行串行化消费该消息。Reviewer 角色必须启用并配置可用模型，否则任务以操作失败结束。只有对精确目标产生的 PASS 才是该提交的评审结果；head、base 或 Issue 条件变化后须重新派审。PASS 不会自动合并，合并仍需用户明确授权。
