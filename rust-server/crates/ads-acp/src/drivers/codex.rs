@@ -298,7 +298,11 @@ impl AcpDriver for CodexDriver {
 
     fn map_model_id(&self, model: &str) -> String {
         let trimmed = model.trim();
-        trimmed.strip_prefix("codex:").unwrap_or(trimmed).to_string()
+        trimmed
+            .strip_prefix("codex:")
+            .map(str::trim)
+            .unwrap_or(trimmed)
+            .to_string()
     }
 
     fn map_thought_level(&self, thought_level: &str) -> String {

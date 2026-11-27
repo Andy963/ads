@@ -25,7 +25,7 @@
   `$scheduler-compile`、校验 fenced JSON 与 `ScheduleSpec`；HTTP 已接入
   schedule 列表、创建、更新、启用、停用和 run 列表。执行循环已移植 due
   schedule 触发、SQLite lease、liteque 兼容队列、retry、run 状态、下一次
-  `nextRunAt` 计算，并通过当前选择的 Native Runtime 或 Codex App-Server 执行真实
+  `nextRunAt` 计算，并通过当前选择的 Native Runtime 或 ACP 运行时（Codex / Antigravity）执行真实
   prompt。
 - Native Runtime：Chat Completions 与 Responses 的 SSE/非流式执行、上下文
   投影、图片、scoped Responses replay、history 与 native transcript 持久化；

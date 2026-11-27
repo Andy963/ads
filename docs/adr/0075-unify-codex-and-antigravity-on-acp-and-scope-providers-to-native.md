@@ -14,7 +14,7 @@ Maintaining two parallel external-agent transport stacks increased complexity an
 ## Decision
 
 1. **Scope ADS Settings → Providers to the `native` Runtime**:
-   - `GET /api/models` (`routes/models.rs`) scopes user-configured DB conversation models to `allowedAgents: ["native"]` (and `runtime: "native"`) unless an explicit `allowedAgents` override is already configured.
+   - `GET /api/models` (`routes/models.rs`) unconditionally scopes Provider-backed DB conversation models (`provider_id` present) to `allowedAgents: ["native"]` and `runtime: "native"`, and strips `codex` / `agy` / `agy:*` from legacy DB-seeded rows (falling back to `["native"]` when empty while preserving non-ACP agents such as `claude`).
    - `supportsAgentModel` (`client/src/lib/model_agent.ts`) binds Provider-backed models (`providerId` present) and `runtime: "native"` models exclusively to `native`, while `codex` and `agy*` consume dynamically discovered ACP models.
    - `ModelManager.vue` and `AntigravityAccountsPanel.vue` copy explicitly communicate that Providers & model sync serve the **Native** runtime while **Codex** and **Antigravity** discover models via ACP under **Runtimes**.
 

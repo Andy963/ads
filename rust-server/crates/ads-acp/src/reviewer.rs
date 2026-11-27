@@ -682,7 +682,7 @@ fn has_unsafe_output_redirection(segment: &str) -> bool {
                     continue;
                 }
             }
-            while j < bytes.len() && (bytes[j] as char).is_whitespace() {
+            while j < bytes.len() && bytes[j].is_ascii_whitespace() {
                 j += 1;
             }
             let rest = &segment[j..];
