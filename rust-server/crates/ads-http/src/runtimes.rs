@@ -55,6 +55,10 @@ pub struct RuntimeAgentDescriptor {
     pub auth_method: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_email: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tier: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -89,6 +93,10 @@ pub struct AgyAccountView {
     pub status: AgyProbeStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_email: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tier: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
     pub model_count: usize,
@@ -444,6 +452,8 @@ impl RuntimeRegistry {
                 account_id: None,
                 auth_method: None,
                 version: None,
+                account_email: None,
+                tier: None,
             });
         }
         if self.codex_runner.is_some() {
@@ -457,6 +467,8 @@ impl RuntimeRegistry {
                 account_id: None,
                 auth_method: None,
                 version: None,
+                account_email: None,
+                tier: None,
             });
         }
 
@@ -1174,6 +1186,8 @@ impl RuntimeRegistry {
                     status: AgyProbeStatus::AuthenticationRequired,
                     binary_path: entry.probe.binary_path.clone(),
                     version: entry.probe.version.clone(),
+                    account_email: None,
+                    tier: None,
                     auth_methods: entry.probe.auth_methods.clone(),
                     models: Vec::new(),
                     thought_levels: Vec::new(),
@@ -1561,6 +1575,8 @@ fn initial_agy_probe_state(config: &AgyDriverConfig, is_default: bool) -> AgyPro
             status: AgyProbeStatus::BinaryNotFound,
             binary_path: None,
             version: None,
+            account_email: None,
+            tier: None,
             auth_methods: Vec::new(),
             models: Vec::new(),
             thought_levels: Vec::new(),
@@ -1574,6 +1590,8 @@ fn initial_agy_probe_state(config: &AgyDriverConfig, is_default: bool) -> AgyPro
         status: AgyProbeStatus::Error,
         binary_path: Some(binary_path.to_string_lossy().to_string()),
         version: None,
+        account_email: None,
+        tier: None,
         auth_methods: Vec::new(),
         models: Vec::new(),
         thought_levels: Vec::new(),
@@ -1657,6 +1675,8 @@ fn entry_to_descriptor(entry: &ManagedAgyRuntime) -> RuntimeAgentDescriptor {
         account_id: Some(entry.account_id.clone()),
         auth_method: Some(entry.auth_method.as_wire_str().to_string()),
         version: entry.probe.version.clone(),
+        account_email: ready.then(|| entry.probe.account_email.clone()).flatten(),
+        tier: ready.then(|| entry.probe.tier.clone()).flatten(),
     }
 }
 
@@ -1664,6 +1684,7 @@ fn entry_to_account_view(
     entry: &ManagedAgyRuntime,
     authorization_url: Option<String>,
 ) -> AgyAccountView {
+    let ready = entry.probe.status == AgyProbeStatus::Ready;
     AgyAccountView {
         id: entry.account_id.clone(),
         agent_id: entry.agent_id.clone(),
@@ -1673,9 +1694,11 @@ fn entry_to_account_view(
         gcp_project: entry.gcp_project.clone(),
         gcp_location: entry.gcp_location.clone(),
         has_api_key: entry.has_api_key,
-        ready: entry.probe.status == AgyProbeStatus::Ready,
+        ready,
         status: entry.probe.status,
         version: entry.probe.version.clone(),
+        account_email: ready.then(|| entry.probe.account_email.clone()).flatten(),
+        tier: ready.then(|| entry.probe.tier.clone()).flatten(),
         error: describe_agy_probe_error(&entry.probe),
         model_count: entry.probe.models.len(),
         login_pending: authorization_url.is_some(),

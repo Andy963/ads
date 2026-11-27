@@ -83,7 +83,18 @@ describe("MainChatModelSelectors runtime switcher", () => {
     const agents = [
       { id: "native", name: "Native", ready: true },
       { id: "codex", name: "Codex", ready: false, error: "codex CLI not found" },
-      { id: "agy", name: "Antigravity", ready: true },
+      {
+        id: "agy",
+        name: "Antigravity",
+        ready: true,
+        accountEmail: "alice@example.com",
+        tier: "Pro",
+      },
+      {
+        id: "agy:api-key",
+        name: "API Key Agy",
+        ready: true,
+      },
     ];
 
     const wrapper = mount(MainChatModelSelectors, {
@@ -108,7 +119,15 @@ describe("MainChatModelSelectors runtime switcher", () => {
     expect(codexBtn.attributes("disabled")).toBeDefined();
     expect(codexBtn.text()).toContain("codex CLI not found");
 
-    await wrapper.get('[data-testid="agent-picker-item-agy"]').trigger("click");
+    const agyBtn = wrapper.get('[data-testid="agent-picker-item-agy"]');
+    expect(agyBtn.get('[data-testid="agent-picker-tier-agy"]').text()).toBe("Pro");
+    expect(agyBtn.get('[data-testid="agent-picker-detail-agy"]').text()).toBe("alice@example.com · agy");
+
+    const apiKeyBtn = wrapper.get('[data-testid="agent-picker-item-agy:api-key"]');
+    expect(apiKeyBtn.find('[data-testid="agent-picker-tier-agy:api-key"]').exists()).toBe(false);
+    expect(apiKeyBtn.get('[data-testid="agent-picker-detail-agy:api-key"]').text()).toBe("agy:api-key");
+
+    await agyBtn.trigger("click");
     expect(wrapper.emitted("switchAgent")).toEqual([["agy"]]);
 
     wrapper.unmount();
@@ -168,7 +187,15 @@ describe("AntigravityAccountsPanel inside ModelManager Runtimes tab", () => {
       activeAgentId: "native",
       agents: [
         { id: "native", name: "Native", kind: "native", ready: true },
-        { id: "agy", name: "Antigravity", kind: "agy", ready: true, version: "1.5.18" },
+        {
+          id: "agy",
+          name: "Antigravity",
+          kind: "agy",
+          ready: true,
+          version: "1.5.18",
+          accountEmail: "host@example.com",
+          tier: "Ultra",
+        },
       ],
     };
     const accounts: AgyAccountView[] = [
@@ -182,8 +209,27 @@ describe("AntigravityAccountsPanel inside ModelManager Runtimes tab", () => {
         ready: true,
         status: "ready",
         version: "1.5.18",
+        accountEmail: "host@example.com",
+        tier: "Ultra",
         error: null,
         modelCount: 2,
+        loginPending: false,
+        authorizationUrl: null,
+      },
+      {
+        id: "api-key-acct",
+        agentId: "agy:api-key-acct",
+        label: "API Key Account",
+        isDefault: false,
+        authMethod: "gemini-api-key",
+        hasApiKey: true,
+        ready: true,
+        status: "ready",
+        version: "1.5.18",
+        accountEmail: null,
+        tier: null,
+        error: null,
+        modelCount: 1,
         loginPending: false,
         authorizationUrl: null,
       },
@@ -231,6 +277,8 @@ describe("AntigravityAccountsPanel inside ModelManager Runtimes tab", () => {
           const acc = accounts.find((a) => a.id === "work-google")!;
           acc.ready = true;
           acc.status = "ready";
+          acc.accountEmail = "work@example.com";
+          acc.tier = "Pro";
           acc.error = null;
           acc.modelCount = 2;
           acc.loginPending = false;
@@ -241,6 +289,8 @@ describe("AntigravityAccountsPanel inside ModelManager Runtimes tab", () => {
           const acc = accounts.find((a) => a.id === "work-google")!;
           acc.ready = false;
           acc.status = "authentication_required";
+          acc.accountEmail = null;
+          acc.tier = null;
           acc.error = "Signed out. Sign in again to use this account.";
           acc.modelCount = 0;
           acc.loginPending = false;
@@ -274,6 +324,15 @@ describe("AntigravityAccountsPanel inside ModelManager Runtimes tab", () => {
     await flushPromises();
     expect(wrapper.get('[data-testid="settings-runtimes-panel"]').exists()).toBe(true);
     expect(wrapper.get('[data-testid="runtime-row-agy"]').text()).toContain("Ready");
+    expect(wrapper.get('[data-testid="runtime-tier-agy"]').text()).toBe("Ultra");
+    expect(wrapper.get('[data-testid="runtime-row-agy"]').text()).toContain("host@example.com · agy · v1.5.18");
+
+    // Host default card displays email & concise tier badge; API-key card omits them cleanly.
+    expect(wrapper.get('[data-testid="agy-account-email-default"]').text()).toBe("host@example.com");
+    expect(wrapper.get('[data-testid="agy-account-tier-default"]').text()).toBe("Ultra");
+    expect(wrapper.find('[data-testid="agy-account-email-api-key-acct"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="agy-account-tier-api-key-acct"]').exists()).toBe(false);
+    expect(wrapper.get('[data-testid="agy-account-row-api-key-acct"]').text()).not.toContain("·  ·");
 
     // Add isolated OAuth account.
     await wrapper.get('[data-testid="agy-account-add"]').trigger("click");
@@ -305,11 +364,15 @@ describe("AntigravityAccountsPanel inside ModelManager Runtimes tab", () => {
       { code: "ok-code" },
     );
     expect(wrapper.get('[data-testid="agy-account-row-work-google"]').text()).toContain("Ready · 2 models");
+    expect(wrapper.get('[data-testid="agy-account-email-work-google"]').text()).toBe("work@example.com");
+    expect(wrapper.get('[data-testid="agy-account-tier-work-google"]').text()).toBe("Pro");
 
     // Sign out and delete account.
     await wrapper.get('[data-testid="agy-logout-work-google"]').trigger("click");
     await flushPromises();
     expect(wrapper.get('[data-testid="agy-account-row-work-google"]').text()).toContain("Sign in required");
+    expect(wrapper.find('[data-testid="agy-account-email-work-google"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="agy-account-tier-work-google"]').exists()).toBe(false);
 
     await wrapper.get('[data-testid="agy-delete-work-google"]').trigger("click");
     await flushPromises();

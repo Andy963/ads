@@ -91,6 +91,18 @@ async function perform(work: () => Promise<void>): Promise<void> {
   }
 }
 
+function formatRuntimeDetail(runtime: RuntimeAgentDescriptor): string {
+  if (!runtime.ready) {
+    return runtime.error || "Unavailable";
+  }
+  const parts = [
+    runtime.accountEmail?.trim() || "",
+    runtime.id,
+    runtime.version ? `v${runtime.version}` : "",
+  ].filter(Boolean);
+  return parts.join(" · ");
+}
+
 function statusLabel(account: AgyAccountView): string {
   if (account.ready) {
     const count = account.modelCount;
@@ -267,9 +279,16 @@ onBeforeUnmount(() => {
           :data-testid="`runtime-row-${runtime.id}`"
         >
           <span class="settingsRowContent">
-            <span>{{ runtime.name }}</span>
+            <span>
+              {{ runtime.name }}
+              <small
+                v-if="runtime.ready && runtime.tier"
+                class="tierBadge"
+                :data-testid="`runtime-tier-${runtime.id}`"
+              >{{ runtime.tier }}</small>
+            </span>
             <small class="settingsDetail">
-              {{ runtime.ready ? (runtime.version ? `${runtime.id} · v${runtime.version}` : runtime.id) : (runtime.error || 'Unavailable') }}
+              {{ formatRuntimeDetail(runtime) }}
             </small>
           </span>
           <span class="runtimeBadge" :class="{ ready: runtime.ready }">
@@ -299,7 +318,20 @@ onBeforeUnmount(() => {
         >
           <div class="settingsRow agyAccountHeader">
             <span class="settingsRowContent">
-              <span>{{ account.label }} <small v-if="account.isDefault" class="accountTag">Host default</small></span>
+              <span>
+                {{ account.label }}
+                <small v-if="account.isDefault" class="accountTag">Host default</small>
+                <small
+                  v-if="account.ready && account.tier"
+                  class="tierBadge"
+                  :data-testid="`agy-account-tier-${account.id}`"
+                >{{ account.tier }}</small>
+              </span>
+              <small
+                v-if="account.ready && account.accountEmail"
+                class="settingsDetail agyAccountEmail"
+                :data-testid="`agy-account-email-${account.id}`"
+              >{{ account.accountEmail }}</small>
               <small class="settingsDetail">
                 {{ AUTH_METHOD_LABELS[account.authMethod] || account.authMethod }} · {{ account.agentId }}
               </small>
@@ -537,6 +569,19 @@ onBeforeUnmount(() => {
   font-weight: 500;
   background: rgba(15, 23, 42, 0.06);
   color: var(--settings-secondary);
+}
+.tierBadge {
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  background: rgba(0, 122, 255, 0.12);
+  color: var(--settings-tint);
+}
+.agyAccountEmail {
+  color: var(--settings-text);
+  font-weight: 500;
 }
 .agyAccountCard + .agyAccountCard {
   border-top: 0.5px solid var(--settings-separator);

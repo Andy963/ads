@@ -68,7 +68,8 @@ const USER_SKILL_RELATIVE_DIRS: [&[&str]; 2] =
     [&["config", "skills"], &["antigravity-cli", "skills"]];
 const USER_CONFIG_RELATIVE_FILES: [&[&str]; 3] =
     [&["AGENTS.md"], &["GEMINI.md"], &["config", "skills.json"]];
-const PROFILE_TOKEN_FILES: [&str; 6] = [
+const PROFILE_TOKEN_FILES: [&str; 7] = [
+    "antigravity-oauth-token",
     "acp_token.json",
     "oauth_creds.json",
     "google_accounts.json",
@@ -76,6 +77,7 @@ const PROFILE_TOKEN_FILES: [&str; 6] = [
     "credentials.json",
     "token.json",
 ];
+const MAX_OAUTH_META_FILE_BYTES: u64 = 256 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 pub enum AgyAuthMethod {
@@ -1779,6 +1781,10 @@ pub struct AgyProbeResult {
     pub status: AgyProbeStatus,
     pub binary_path: Option<String>,
     pub version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_email: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tier: Option<String>,
     pub auth_methods: Vec<AuthMethod>,
     pub models: Vec<ConfigOptionValue>,
     pub thought_levels: Vec<ConfigOptionValue>,
@@ -1786,6 +1792,259 @@ pub struct AgyProbeResult {
     pub config_options: Vec<ConfigOption>,
     pub message: Option<String>,
     pub probed_at_ms: i64,
+}
+
+#[derive(Deserialize)]
+struct OAuthTokenEmailMeta {
+    #[serde(default)]
+    id_token_email: Option<String>,
+    #[serde(default)]
+    active: Option<String>,
+    #[serde(default)]
+    email: Option<String>,
+}
+
+fn normalize_account_email(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty()
+        || trimmed.len() > 254
+        || trimmed.chars().any(|ch| ch.is_whitespace() || ch.is_control())
+    {
+        return None;
+    }
+    let mut parts = trimmed.split('@');
+    let local = parts.next()?;
+    let domain = parts.next()?;
+    if parts.next().is_some()
+        || local.is_empty()
+        || domain.is_empty()
+        || !domain.contains('.')
+        || domain.starts_with('.')
+        || domain.ends_with('.')
+    {
+        return None;
+    }
+    Some(trimmed.to_string())
+}
+
+fn read_email_from_oauth_file(path: &Path) -> Option<String> {
+    let meta = fs::metadata(path).ok()?;
+    if !meta.is_file() || meta.len() == 0 || meta.len() > MAX_OAUTH_META_FILE_BYTES {
+        return None;
+    }
+    let raw = fs::read_to_string(path).ok()?;
+    let parsed: OAuthTokenEmailMeta = serde_json::from_str(&raw).ok()?;
+    for candidate in [parsed.id_token_email, parsed.active, parsed.email]
+        .into_iter()
+        .flatten()
+    {
+        if let Some(email) = normalize_account_email(&candidate) {
+            return Some(email);
+        }
+    }
+    None
+}
+
+/// Reads the signed-in Google account email for an OAuth Antigravity profile from its local
+/// token metadata file (`antigravity-oauth-token`, `google_accounts.json`, or `oauth_creds.json`),
+/// without reading, returning, or logging any OAuth token secrets.
+pub fn read_agy_profile_email(config: &AgyDriverConfig) -> Option<String> {
+    let candidates: Vec<PathBuf> = match &config.profile {
+        AgyProfileMode::Isolated(isolated) => {
+            if !isolated.auth.method.uses_browser() {
+                return None;
+            }
+            let acp_dir = isolated.profile_dir.join(AGY_APP_DATA_DIR_NAME);
+            vec![
+                acp_dir.join("antigravity-oauth-token"),
+                acp_dir.join("google_accounts.json"),
+                acp_dir.join("oauth_creds.json"),
+            ]
+        }
+        AgyProfileMode::HostDefault => {
+            let gemini_home = config
+                .extra_env
+                .get("GEMINI_HOME")
+                .map(String::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(PathBuf::from)
+                .or_else(|| {
+                    env::var("GEMINI_HOME")
+                        .ok()
+                        .map(|value| value.trim().to_string())
+                        .filter(|value| !value.is_empty())
+                        .map(PathBuf::from)
+                })
+                .or_else(|| {
+                    resolve_user_home(None, &config.extra_env).map(|home| home.join(".gemini"))
+                })?;
+            vec![
+                gemini_home
+                    .join("antigravity-cli")
+                    .join("antigravity-oauth-token"),
+                gemini_home
+                    .join(AGY_APP_DATA_DIR_NAME)
+                    .join("antigravity-oauth-token"),
+                gemini_home.join("google_accounts.json"),
+                gemini_home.join("oauth_creds.json"),
+            ]
+        }
+    };
+
+    for path in candidates {
+        if let Some(email) = read_email_from_oauth_file(&path) {
+            return Some(email);
+        }
+    }
+    None
+}
+
+fn extract_agy_email_from_session_extra(extra: &Map<String, Value>) -> Option<String> {
+    let agy_meta = extra.get("_meta")?.get("antigravity")?;
+    let candidates = [
+        agy_meta.get("accountEmail").and_then(Value::as_str),
+        agy_meta.get("account_email").and_then(Value::as_str),
+        agy_meta.get("email").and_then(Value::as_str),
+        agy_meta
+            .get("user")
+            .and_then(|u| u.get("email"))
+            .and_then(Value::as_str),
+    ];
+    for candidate in candidates.into_iter().flatten() {
+        if let Some(email) = normalize_account_email(candidate) {
+            return Some(email);
+        }
+    }
+    None
+}
+
+/// Normalizes Antigravity subscription tier identifiers/names (e.g. `g1-pro-tier`, `Google AI Pro`)
+/// into concise user-facing badge labels (`Free`, `Plus`, `Pro`, `Ultra`, `Enterprise`, etc.).
+pub fn normalize_agy_tier(id: Option<&str>, name: Option<&str>) -> Option<String> {
+    let clean_id = id.map(str::trim).filter(|value| !value.is_empty());
+    let clean_name = name.map(str::trim).filter(|value| !value.is_empty());
+    if clean_id.is_none() && clean_name.is_none() {
+        return None;
+    }
+
+    let mut tokens: Vec<String> = Vec::new();
+    for raw in [clean_id, clean_name].into_iter().flatten() {
+        for token in raw
+            .split(|ch: char| !ch.is_ascii_alphanumeric())
+            .filter(|part| !part.is_empty())
+        {
+            tokens.push(token.to_ascii_lowercase());
+        }
+    }
+
+    let has_token = |needle: &str| tokens.iter().any(|token| token == needle);
+    if has_token("ultra") {
+        return Some("Ultra".to_string());
+    }
+    if has_token("enterprise") {
+        return Some("Enterprise".to_string());
+    }
+    if has_token("business") {
+        return Some("Business".to_string());
+    }
+    if has_token("pro") {
+        return Some("Pro".to_string());
+    }
+    if has_token("plus") {
+        return Some("Plus".to_string());
+    }
+    if has_token("free") {
+        return Some("Free".to_string());
+    }
+    if has_token("standard") {
+        return Some("Standard".to_string());
+    }
+
+    let (source, from_id) = match (clean_name, clean_id) {
+        (Some(name), _) => (name, false),
+        (None, Some(id)) => (id, true),
+        (None, None) => return None,
+    };
+
+    let mut label = source.trim().to_string();
+    loop {
+        let lower = label.to_ascii_lowercase();
+        let stripped = [
+            "google one ai ",
+            "google ai ",
+            "google one ",
+            "gemini code assist ",
+            "gemini ",
+            "antigravity ",
+            "g1-",
+            "g1_",
+        ]
+        .iter()
+        .find_map(|prefix| {
+            lower
+                .starts_with(prefix)
+                .then(|| label[prefix.len()..].trim().to_string())
+        });
+        match stripped {
+            Some(next) if !next.is_empty() => label = next,
+            _ => break,
+        }
+    }
+
+    loop {
+        let lower = label.to_ascii_lowercase();
+        let stripped = [" tier", "-tier", "_tier", " plan", "-plan", " subscription"]
+            .iter()
+            .find_map(|suffix| {
+                lower
+                    .ends_with(suffix)
+                    .then(|| label[..label.len() - suffix.len()].trim().to_string())
+            });
+        match stripped {
+            Some(next) if !next.is_empty() => label = next,
+            _ => break,
+        }
+    }
+
+    if from_id {
+        let words: Vec<String> = label
+            .split(['-', '_'])
+            .filter(|part| !part.is_empty())
+            .map(|word| {
+                let mut chars = word.chars();
+                match chars.next() {
+                    Some(first) => {
+                        let mut out = first.to_uppercase().to_string();
+                        out.push_str(&chars.as_str().to_ascii_lowercase());
+                        out
+                    }
+                    None => String::new(),
+                }
+            })
+            .collect();
+        label = words.join(" ");
+    }
+
+    let final_label = label.trim();
+    if final_label.is_empty() {
+        return None;
+    }
+    Some(final_label.chars().take(40).collect())
+}
+
+/// Extracts and normalizes `_meta.antigravity.tier` from ACP `session/new` response metadata.
+pub fn extract_agy_tier_from_session_extra(extra: &Map<String, Value>) -> Option<String> {
+    let tier = extra.get("_meta")?.get("antigravity")?.get("tier")?;
+    match tier {
+        Value::String(raw) => normalize_agy_tier(None, Some(raw)),
+        Value::Object(obj) => {
+            let id = obj.get("id").and_then(Value::as_str);
+            let name = obj.get("name").and_then(Value::as_str);
+            normalize_agy_tier(id, name)
+        }
+        _ => None,
+    }
 }
 
 fn is_executable_file(path: &Path) -> bool {
@@ -1853,6 +2112,8 @@ pub async fn probe_agy_runtime(config: &AgyDriverConfig, workspace_root: &Path) 
             status: AgyProbeStatus::BinaryNotFound,
             binary_path: None,
             version: None,
+            account_email: None,
+            tier: None,
             auth_methods: Vec::new(),
             models: Vec::new(),
             thought_levels: Vec::new(),
@@ -1871,6 +2132,8 @@ pub async fn probe_agy_runtime(config: &AgyDriverConfig, workspace_root: &Path) 
             status: AgyProbeStatus::Error,
             binary_path: Some(binary_str),
             version: None,
+            account_email: None,
+            tier: None,
             auth_methods: Vec::new(),
             models: Vec::new(),
             thought_levels: Vec::new(),
@@ -1889,7 +2152,8 @@ pub async fn probe_agy_runtime(config: &AgyDriverConfig, workspace_root: &Path) 
         effective_config.probe_timeout
     };
 
-    let driver: Arc<dyn crate::driver::AcpDriver> = Arc::new(AgyDriver::new(effective_config));
+    let driver: Arc<dyn crate::driver::AcpDriver> =
+        Arc::new(AgyDriver::new(effective_config.clone()));
     let launch_ctx = AcpLaunchContext {
         session_key: "agy-probe".to_string(),
         workspace_root: workspace_root.to_path_buf(),
@@ -1959,10 +2223,15 @@ pub async fn probe_agy_runtime(config: &AgyDriverConfig, workspace_root: &Path) 
                         .collect::<Vec<_>>()
                 })
                 .unwrap_or_default();
+            let tier = extract_agy_tier_from_session_extra(&created.extra);
+            let account_email = read_agy_profile_email(&effective_config)
+                .or_else(|| extract_agy_email_from_session_extra(&created.extra));
             AgyProbeResult {
                 status: AgyProbeStatus::Ready,
                 binary_path: Some(binary_str),
                 version,
+                account_email,
+                tier,
                 auth_methods,
                 models,
                 thought_levels,
@@ -1994,6 +2263,8 @@ fn probe_error_result(
         status,
         binary_path,
         version,
+        account_email: None,
+        tier: None,
         auth_methods,
         models: Vec::new(),
         thought_levels: Vec::new(),

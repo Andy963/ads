@@ -118,8 +118,12 @@ if "--login" in args:
         if home:
             acp_dir = os.path.join(home, "antigravity-acp")
             os.makedirs(acp_dir, exist_ok=True)
-            with open(os.path.join(acp_dir, "oauth_creds.json"), "w") as fh:
-                json.dump({{"access_token": "tok"}}, fh)
+            with open(os.path.join(acp_dir, "antigravity-oauth-token"), "w") as fh:
+                json.dump({{
+                    "token": "super-secret-oauth-token",
+                    "auth_method": "oauth-personal",
+                    "id_token_email": "work.user@example.com"
+                }}, fh)
         print("Authentication successful.", flush=True)
         sys.exit(0)
     print("Invalid authorization code", file=sys.stderr, flush=True)
@@ -132,7 +136,11 @@ def is_authenticated():
     if not home or not home.startswith(ISOLATED_ROOT):
         # Host default profile is treated as pre-authenticated in tests.
         return True
-    return os.path.exists(os.path.join(home, "antigravity-acp", "oauth_creds.json"))
+    acp_dir = os.path.join(home, "antigravity-acp")
+    return (
+        os.path.exists(os.path.join(acp_dir, "antigravity-oauth-token"))
+        or os.path.exists(os.path.join(acp_dir, "oauth_creds.json"))
+    )
 
 def send(obj):
     sys.stdout.write(json.dumps(obj) + "\n")
@@ -169,6 +177,14 @@ for raw in sys.stdin:
             "id": req_id,
             "result": {{
                 "sessionId": "agy-sess-1",
+                "_meta": {{
+                    "antigravity": {{
+                        "tier": {{
+                            "id": "g1-pro-tier",
+                            "name": "Google AI Pro"
+                        }}
+                    }}
+                }},
                 "configOptions": [
                     {{
                         "id": "model",
@@ -354,6 +370,35 @@ async fn login_cookie(app: &Router) -> String {
         .next()
         .expect("cookie pair")
         .to_string()
+}
+
+async fn authed_request(
+    app: &Router,
+    method: &str,
+    uri: &str,
+    cookie: &str,
+    body: Option<Value>,
+) -> (StatusCode, Value) {
+    let mut builder = Request::builder()
+        .method(method)
+        .uri(uri)
+        .header(header::COOKIE, cookie)
+        .header(header::ORIGIN, "http://localhost");
+    let req_body = match body {
+        Some(value) => {
+            builder = builder.header(header::CONTENT_TYPE, "application/json");
+            Body::from(value.to_string())
+        }
+        None => Body::empty(),
+    };
+    let response = app
+        .clone()
+        .oneshot(builder.body(req_body).expect("authed request"))
+        .await
+        .expect("authed response");
+    let status = response.status();
+    let json_body = response_json(response).await;
+    (status, json_body)
 }
 
 #[tokio::test]
@@ -670,9 +715,9 @@ async fn multi_account_agy_crud_encrypted_api_key_and_headless_oauth_flow() {
     assert!(
         oauth_profile_dir
             .join("antigravity-acp")
-            .join("oauth_creds.json")
+            .join("antigravity-oauth-token")
             .exists(),
-        "expected oauth_creds.json inside hashed antigravity-acp profile dir"
+        "expected antigravity-oauth-token inside hashed antigravity-acp profile dir"
     );
 
     // Logout removes credentials on disk; re-probing via /refresh confirms authentication_required.
@@ -697,9 +742,9 @@ async fn multi_account_agy_crud_encrypted_api_key_and_headless_oauth_flow() {
     assert!(
         !oauth_profile_dir
             .join("antigravity-acp")
-            .join("oauth_creds.json")
+            .join("antigravity-oauth-token")
             .exists(),
-        "logout must delete oauth_creds.json on disk"
+        "logout must delete antigravity-oauth-token on disk"
     );
 
     let refresh_after_logout = fixture
@@ -1125,6 +1170,166 @@ async fn handoff_turns_abort_scheduler_model_collision_and_multiplexed_broadcast
     );
 
     drop(mux_ws);
+    server.abort();
+    fixture.registry.shutdown_all().await;
+}
+
+#[tokio::test]
+async fn agy_account_email_and_tier_are_exposed_and_cleared_on_logout() {
+    let fixture = build_runtime_fixture();
+    fixture.registry.probe_all().await;
+    let cookie = login_cookie(&fixture.app).await;
+
+    // 1. Create an isolated OAuth account and complete login -> writes antigravity-oauth-token.
+    let (status, created) = authed_request(
+        &fixture.app,
+        "POST",
+        "/api/runtimes/agy/accounts",
+        &cookie,
+        Some(json!({
+            "label": "Work Pro",
+            "authMethod": "oauth-personal"
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{created}");
+    let account_id = created["id"].as_str().expect("account id").to_string();
+    let agent_id = created["agentId"].as_str().expect("agent id").to_string();
+    assert!(created.get("accountEmail").is_none());
+    assert!(created.get("tier").is_none());
+
+    let (status, started) = authed_request(
+        &fixture.app,
+        "POST",
+        &format!("/api/runtimes/agy/accounts/{account_id}/login/start"),
+        &cookie,
+        Some(json!({})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{started}");
+
+    let (status, completed) = authed_request(
+        &fixture.app,
+        "POST",
+        &format!("/api/runtimes/agy/accounts/{account_id}/login/complete"),
+        &cookie,
+        Some(json!({ "code": "ok-code" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{completed}");
+    assert_eq!(completed["ready"], json!(true));
+    assert_eq!(completed["accountEmail"], json!("work.user@example.com"));
+    assert_eq!(completed["tier"], json!("Pro"));
+    assert!(
+        !completed.to_string().contains("super-secret-oauth-token"),
+        "OAuth token secret must never appear in account view"
+    );
+
+    // 2. Verify /api/runtimes and /api/runtimes/agy/accounts expose email & tier without secret.
+    let (status, runtimes_body) =
+        authed_request(&fixture.app, "GET", "/api/runtimes", &cookie, None).await;
+    assert_eq!(status, StatusCode::OK, "{runtimes_body}");
+    assert!(!runtimes_body.to_string().contains("super-secret-oauth-token"));
+    let work_agent = runtimes_body["agents"]
+        .as_array()
+        .expect("agents array")
+        .iter()
+        .find(|entry| entry["id"] == agent_id)
+        .expect("work agent in /api/runtimes");
+    assert_eq!(work_agent["accountEmail"], json!("work.user@example.com"));
+    assert_eq!(work_agent["tier"], json!("Pro"));
+
+    // 3. Create an API-key isolated account: must omit accountEmail while exposing tier.
+    let (status, api_key_acc) = authed_request(
+        &fixture.app,
+        "POST",
+        "/api/runtimes/agy/accounts",
+        &cookie,
+        Some(json!({
+            "label": "Key Account",
+            "authMethod": "gemini-api-key",
+            "apiKey": "AIza-test-secret"
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{api_key_acc}");
+    assert_eq!(api_key_acc["ready"], json!(true));
+    assert!(api_key_acc.get("accountEmail").is_none());
+    assert_eq!(api_key_acc["tier"], json!("Pro"));
+
+    // 4. Verify WebSocket `agents` frame carries accountEmail and tier without leaking token secret.
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let app = fixture.app.clone();
+    let server = tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+    let req = Request::builder()
+        .method("GET")
+        .uri(format!("ws://{addr}/ws?session=proj-email&chat_session_id=main"))
+        .header(header::HOST, addr.to_string())
+        .header(header::CONNECTION, "Upgrade")
+        .header(header::UPGRADE, "websocket")
+        .header(header::SEC_WEBSOCKET_VERSION, "13")
+        .header(header::SEC_WEBSOCKET_KEY, "dGhlIHNhbXBsZSBub25jZQ==")
+        .header(
+            header::SEC_WEBSOCKET_PROTOCOL,
+            "ads-session.proj-email, ads-chat.main",
+        )
+        .header(header::COOKIE, &cookie)
+        .header(header::ORIGIN, "http://localhost")
+        .body(())
+        .expect("ws req");
+    let (mut ws, _) = connect_async(req).await.expect("ws connect");
+    let agents_frame = recv_frame_of_type(&mut ws, "agents").await;
+    assert!(!agents_frame.to_string().contains("super-secret-oauth-token"));
+    let ws_work = agents_frame["agents"]
+        .as_array()
+        .expect("ws agents array")
+        .iter()
+        .find(|entry| entry["id"] == agent_id)
+        .expect("work agent in ws agents");
+    assert_eq!(ws_work["accountEmail"], json!("work.user@example.com"));
+    assert_eq!(ws_work["tier"], json!("Pro"));
+
+    // 5. Logout must delete antigravity-oauth-token and clear accountEmail & tier everywhere.
+    let profile_dir = resolve_agy_profile_dir(&fixture.state_dir, &account_id);
+    let token_path = profile_dir
+        .join(ads_acp::AGY_APP_DATA_DIR_NAME)
+        .join("antigravity-oauth-token");
+    assert!(token_path.exists(), "expected token file before logout");
+
+    let (status, logged_out) = authed_request(
+        &fixture.app,
+        "POST",
+        &format!("/api/runtimes/agy/accounts/{account_id}/logout"),
+        &cookie,
+        Some(json!({})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{logged_out}");
+    assert_eq!(logged_out["ready"], json!(false));
+    assert!(logged_out.get("accountEmail").is_none());
+    assert!(logged_out.get("tier").is_none());
+    assert!(
+        !token_path.exists(),
+        "antigravity-oauth-token must be removed on logout"
+    );
+
+    let (status, runtimes_after) =
+        authed_request(&fixture.app, "GET", "/api/runtimes", &cookie, None).await;
+    assert_eq!(status, StatusCode::OK, "{runtimes_after}");
+    let work_after = runtimes_after["agents"]
+        .as_array()
+        .expect("agents array after logout")
+        .iter()
+        .find(|entry| entry["id"] == agent_id)
+        .expect("work agent after logout");
+    assert_eq!(work_after["ready"], json!(false));
+    assert!(work_after.get("accountEmail").is_none());
+    assert!(work_after.get("tier").is_none());
+
+    drop(ws);
     server.abort();
     fixture.registry.shutdown_all().await;
 }

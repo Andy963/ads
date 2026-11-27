@@ -1414,3 +1414,173 @@ async fn real_agy_acp_prompt_runner_executes_and_persists_state() {
 
     runner.shutdown().await;
 }
+
+#[test]
+fn read_agy_profile_email_extracts_oauth_email_and_ignores_non_oauth_or_malformed() {
+    let temp = tempfile::tempdir().expect("temp dir");
+
+    // 1. Host default via GEMINI_HOME/antigravity-cli/antigravity-oauth-token
+    let host_gemini = temp.path().join("host-gemini");
+    fs::create_dir_all(host_gemini.join("antigravity-cli")).expect("host cli dir");
+    fs::write(
+        host_gemini
+            .join("antigravity-cli")
+            .join("antigravity-oauth-token"),
+        r#"{"token":"secret-token-value","auth_method":"oauth-personal","id_token_email":"host.user@example.com"}"#,
+    )
+    .expect("write host oauth token");
+    let host_cfg =
+        AgyDriverConfig::default().with_env("GEMINI_HOME", host_gemini.to_string_lossy().as_ref());
+    assert_eq!(
+        ads_acp::read_agy_profile_email(&host_cfg).as_deref(),
+        Some("host.user@example.com")
+    );
+
+    // 2. Host default fallback to google_accounts.json (`active`)
+    let fallback_gemini = temp.path().join("fallback-gemini");
+    fs::create_dir_all(&fallback_gemini).expect("fallback dir");
+    fs::write(
+        fallback_gemini.join("google_accounts.json"),
+        r#"{"active":"fallback.user@example.com","old":["older@example.com"]}"#,
+    )
+    .expect("write google_accounts");
+    let fallback_cfg = AgyDriverConfig::default()
+        .with_env("GEMINI_HOME", fallback_gemini.to_string_lossy().as_ref());
+    assert_eq!(
+        ads_acp::read_agy_profile_email(&fallback_cfg).as_deref(),
+        Some("fallback.user@example.com")
+    );
+
+    // 3. Isolated OAuth profile via antigravity-acp/antigravity-oauth-token
+    let isolated_dir = temp.path().join("isolated-oauth");
+    fs::create_dir_all(isolated_dir.join(ads_acp::AGY_APP_DATA_DIR_NAME)).expect("acp dir");
+    fs::write(
+        isolated_dir
+            .join(ads_acp::AGY_APP_DATA_DIR_NAME)
+            .join("antigravity-oauth-token"),
+        r#"{"token":"iso-secret","auth_method":"oauth-personal","id_token_email":"work@corp.example.com"}"#,
+    )
+    .expect("write isolated oauth token");
+    let iso_oauth_cfg = AgyDriverConfig::isolated(AgyIsolatedProfile::new(&isolated_dir));
+    assert_eq!(
+        ads_acp::read_agy_profile_email(&iso_oauth_cfg).as_deref(),
+        Some("work@corp.example.com")
+    );
+
+    // 4. Non-OAuth isolated profile returns None even if token file exists
+    let api_key_cfg = AgyDriverConfig::isolated(
+        AgyIsolatedProfile::new(&isolated_dir).with_auth(AgyAuthConfig {
+            method: AgyAuthMethod::GeminiApiKey,
+            api_key: Some("AIza-test".to_string()),
+            ..AgyAuthConfig::default()
+        }),
+    );
+    assert_eq!(ads_acp::read_agy_profile_email(&api_key_cfg), None);
+
+    // 5. Malformed JSON or invalid email returns None cleanly
+    let malformed_dir = temp.path().join("malformed");
+    fs::create_dir_all(malformed_dir.join(ads_acp::AGY_APP_DATA_DIR_NAME)).expect("malformed dir");
+    fs::write(
+        malformed_dir
+            .join(ads_acp::AGY_APP_DATA_DIR_NAME)
+            .join("antigravity-oauth-token"),
+        "{not-json",
+    )
+    .expect("write bad json");
+    let malformed_cfg = AgyDriverConfig::isolated(AgyIsolatedProfile::new(&malformed_dir));
+    assert_eq!(ads_acp::read_agy_profile_email(&malformed_cfg), None);
+
+    fs::write(
+        malformed_dir
+            .join(ads_acp::AGY_APP_DATA_DIR_NAME)
+            .join("antigravity-oauth-token"),
+        r#"{"id_token_email":"not-an-email"}"#,
+    )
+    .expect("write invalid email");
+    assert_eq!(ads_acp::read_agy_profile_email(&malformed_cfg), None);
+
+    // 6. Missing profile returns None
+    let missing_cfg = AgyDriverConfig::isolated(AgyIsolatedProfile::new(temp.path().join("nope")));
+    assert_eq!(ads_acp::read_agy_profile_email(&missing_cfg), None);
+}
+
+#[test]
+fn normalize_agy_tier_and_extract_session_meta_cover_known_and_fallback_tiers() {
+    assert_eq!(
+        ads_acp::normalize_agy_tier(Some("free-tier"), Some("Google AI Free")).as_deref(),
+        Some("Free")
+    );
+    assert_eq!(
+        ads_acp::normalize_agy_tier(Some("g1-plus-tier"), Some("Google AI Plus")).as_deref(),
+        Some("Plus")
+    );
+    assert_eq!(
+        ads_acp::normalize_agy_tier(Some("g1-pro-tier"), Some("Google AI Pro")).as_deref(),
+        Some("Pro")
+    );
+    assert_eq!(
+        ads_acp::normalize_agy_tier(Some("g1-ultra-tier"), Some("Google AI Ultra")).as_deref(),
+        Some("Ultra")
+    );
+    assert_eq!(
+        ads_acp::normalize_agy_tier(Some("gemini-enterprise"), Some("Gemini Enterprise")).as_deref(),
+        Some("Enterprise")
+    );
+    // Avoid false match on "profile" containing substring "pro"
+    assert_eq!(
+        ads_acp::normalize_agy_tier(Some("profile-tier"), Some("Google AI Starter Tier"))
+            .as_deref(),
+        Some("Starter")
+    );
+    assert_eq!(
+        ads_acp::normalize_agy_tier(Some("g1-preview-tier"), None).as_deref(),
+        Some("Preview")
+    );
+    assert_eq!(ads_acp::normalize_agy_tier(None, None), None);
+
+    let mut extra = Map::new();
+    extra.insert(
+        "_meta".to_string(),
+        json!({
+            "antigravity": {
+                "tier": {
+                    "id": "g1-pro-tier",
+                    "name": "Google AI Pro"
+                }
+            }
+        }),
+    );
+    assert_eq!(
+        ads_acp::extract_agy_tier_from_session_extra(&extra).as_deref(),
+        Some("Pro")
+    );
+
+    let empty = Map::new();
+    assert_eq!(ads_acp::extract_agy_tier_from_session_extra(&empty), None);
+}
+
+#[test]
+fn logout_agy_profile_removes_antigravity_oauth_token_file() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let profile_dir = temp.path().join("profile-logout");
+    let acp_dir = profile_dir.join(ads_acp::AGY_APP_DATA_DIR_NAME);
+    fs::create_dir_all(&acp_dir).expect("acp dir");
+    let oauth_file = acp_dir.join("antigravity-oauth-token");
+    let settings_file = acp_dir.join("settings.json");
+    fs::write(
+        &oauth_file,
+        r#"{"token":"secret","id_token_email":"bye@example.com"}"#,
+    )
+    .expect("write oauth token");
+    fs::write(&settings_file, r#"{"auth":{"type":"oauth-personal"}}"#).expect("write settings");
+
+    ads_acp::logout_agy_profile(&profile_dir).expect("logout");
+    assert!(
+        !oauth_file.exists(),
+        "antigravity-oauth-token must be deleted on logout"
+    );
+    assert!(
+        settings_file.exists(),
+        "settings.json must be preserved on logout"
+    );
+}

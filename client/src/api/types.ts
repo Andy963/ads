@@ -58,6 +58,8 @@ export interface RuntimeAgentDescriptor {
   accountId?: string | null;
   authMethod?: string | null;
   version?: string | null;
+  accountEmail?: string | null;
+  tier?: string | null;
 }
 
 export interface RuntimesSnapshot {
@@ -83,6 +85,8 @@ export interface AgyAccountView {
   ready: boolean;
   status: string;
   version?: string | null;
+  accountEmail?: string | null;
+  tier?: string | null;
   error?: string | null;
   modelCount: number;
   loginPending: boolean;
