@@ -482,8 +482,10 @@ async fn supervisor_isolates_sessions_reclaims_idle_gracefully_and_resumes_on_ne
         driver,
         Arc::new(AutoApprovePermissionHandler),
         AcpSupervisorConfig {
-            idle_ttl: Duration::from_millis(250),
-            reap_interval: Duration::from_millis(30),
+            // Keep TTL well above CI subprocess startup time so both idle sessions
+            // are active together before idle reclamation begins.
+            idle_ttl: Duration::from_millis(800),
+            reap_interval: Duration::from_millis(40),
             session: AcpSessionConfig::default(),
             fallback_to_new_on_resume_error: true,
         },
@@ -492,15 +494,13 @@ async fn supervisor_isolates_sessions_reclaims_idle_gracefully_and_resumes_on_ne
     let req_a = SupervisedSessionRequest::new("thread-a", temp.path());
     let req_b = SupervisedSessionRequest::new("thread-b", temp.path());
 
-    let turn_a1 = supervisor
-        .run_turn(req_a.clone(), AcpPromptRequest::text("a1", "echo_session"))
-        .await
-        .expect("turn a1");
+    let (turn_a1, turn_b1) = tokio::join!(
+        supervisor.run_turn(req_a.clone(), AcpPromptRequest::text("a1", "echo_session")),
+        supervisor.run_turn(req_b.clone(), AcpPromptRequest::text("b1", "echo_session")),
+    );
+    let turn_a1 = turn_a1.expect("turn a1");
+    let turn_b1 = turn_b1.expect("turn b1");
     let pid_a1 = supervisor.active_pid("thread-a").expect("pid a1");
-    let turn_b1 = supervisor
-        .run_turn(req_b.clone(), AcpPromptRequest::text("b1", "echo_session"))
-        .await
-        .expect("turn b1");
 
     assert_eq!(turn_a1.attach_mode, SessionAttachMode::CreatedNew);
     assert_eq!(turn_b1.attach_mode, SessionAttachMode::CreatedNew);
@@ -515,7 +515,7 @@ async fn supervisor_isolates_sessions_reclaims_idle_gracefully_and_resumes_on_ne
     assert_eq!(saved_id_a, turn_a1.turn.session_id);
 
     // Wait for background idle TTL reaper to reclaim idle processes gracefully.
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     while supervisor.active_process_count() > 0 {
         assert!(
             tokio::time::Instant::now() < deadline,
