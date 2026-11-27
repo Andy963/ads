@@ -1,14 +1,11 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
+use ads_acp::{AcpDriver, AcpReviewRequest, CodexDriver, run_acp_review};
 use ads_actions::{
     ReviewError, ReviewQueue, ReviewQueueOptions, ReviewerRunner, review_action_tools_factory,
 };
 use ads_auth::{AuthConfig, AuthService, InitAdminOutcome, ResetAdminOutcome};
-use ads_codex_app_server::{
-    AgentActionTools, CodexActionToolsFactory, CodexAppServerPromptRunner,
-    CodexAppServerPromptRunnerOptions, CodexReviewRequest, SpawnOptions, run_codex_review,
-};
 use ads_http::{
     ActionsLaneMessage, CODEX_AGENT_ID, CookieSecureMode, NATIVE_AGENT_ID, ReviewVerdictMessage,
     RouterConfig, RoutingPromptRunner, RuntimeRegistry, RuntimeRegistryConfig, WebSocketConfig,
@@ -17,8 +14,7 @@ use ads_http::{
     resolve_allowed_dirs, resolve_client_dir, resolve_initial_default_agent,
 };
 use ads_native::{
-    ActionTools, ModelResolver, NativePromptRunner, NativePromptRunnerOptions,
-    NativeScheduleCompiler,
+    ModelResolver, NativePromptRunner, NativePromptRunnerOptions, NativeScheduleCompiler,
 };
 use ads_runtime::PromptQueueRunner;
 use ads_runtime::scheduler::{ScheduleExecutor, SchedulerRuntime, SchedulerRuntimeOptions};
@@ -63,16 +59,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         NativePromptRunnerOptions::new(state_db.clone(), model_resolver.clone());
     native_options.agent_id = NATIVE_AGENT_ID.to_string();
     let native_action_tools = review_action_tools_factory(Arc::clone(&review_queue));
-    native_options.action_tools_factory = Some(Arc::clone(&native_action_tools));
+    native_options.action_tools_factory = Some(native_action_tools);
     let native_runner = Arc::new(NativePromptRunner::new(native_options));
-
-    let codex_action_tools: CodexActionToolsFactory = Arc::new(move |entry| {
-        native_action_tools(entry).map(|tools: ActionTools| AgentActionTools::from_native(tools))
-    });
-    let mut codex_options =
-        CodexAppServerPromptRunnerOptions::new(state_db.clone(), SpawnOptions::default());
-    codex_options.action_tools_factory = Some(codex_action_tools);
-    let codex_runner = Arc::new(CodexAppServerPromptRunner::new(codex_options));
 
     let mut registry_config = RuntimeRegistryConfig::new(
         state_db.clone(),
@@ -80,9 +68,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         fallback_allowed_dir.clone(),
     );
     registry_config.native_runner = Some(native_runner.clone());
-    registry_config.native_scheduler = Some(native_runner.clone());
-    registry_config.codex_runner = Some(codex_runner.clone());
-    registry_config.codex_scheduler = Some(codex_runner.clone());
+    registry_config.native_scheduler = Some(native_runner);
     let runtime_registry = RuntimeRegistry::new(registry_config);
     runtime_registry.attach_ws_hub(Arc::clone(&websocket_hub));
     let startup_probe = runtime_registry.spawn_startup_probe();
@@ -194,21 +180,21 @@ fn build_review_queue(
     });
     let reviewer: Option<ReviewerRunner> = if use_codex_reviewer {
         let reviewer_db = db.clone();
+        let codex_driver: Arc<dyn AcpDriver> = Arc::new(CodexDriver::from_env());
         Some(Arc::new(move |request| {
             let db = reviewer_db.clone();
+            let driver = Arc::clone(&codex_driver);
             Box::pin(async move {
-                run_codex_review(CodexReviewRequest {
+                run_acp_review(AcpReviewRequest {
                     db,
+                    driver,
                     payload: request.payload,
                     repo_path: request.repo_path,
                     profile_id: request.profile_id,
                     job_id: request.job_id,
-                    owner: request.owner,
                     timeout: std::time::Duration::from_secs(30 * 60),
                     cancellation: request.cancellation,
                     verification_report: request.verification_report,
-                    daemon_options: SpawnOptions::default(),
-                    registry: None,
                 })
                 .await
                 .map_err(ReviewError::from)

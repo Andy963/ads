@@ -7,7 +7,14 @@ import { supportsAgentModel } from "../lib/model_agent";
 import SettingsSheet from "./SettingsSheet.vue";
 import ReasoningEffortSlider from "./ReasoningEffortSlider.vue";
 
-type AgentOption = { id: string; name: string; ready: boolean; error?: string };
+type AgentOption = {
+  id: string;
+  name: string;
+  ready: boolean;
+  error?: string;
+  accountEmail?: string | null;
+  tier?: string | null;
+};
 
 const DEFAULT_REASONING_EFFORTS = ["medium", "high"] as const;
 const REASONING_EFFORT_LABELS: Record<string, string> = {
@@ -118,6 +125,11 @@ function modelKeyOrEmpty(model: ModelConfig | null): string {
 
 function formatModelLabel(model: ModelConfig): string {
   return String(model.displayName ?? "").trim() || String(model.modelId ?? "").trim() || "Model";
+}
+
+function formatReadyAgentDetail(agent: AgentOption): string {
+  const email = typeof agent.accountEmail === "string" ? agent.accountEmail.trim() : "";
+  return email ? `${email} · ${agent.id}` : agent.id;
 }
 
 function preferredModel(options: readonly ModelConfig[]): ModelConfig | null {
@@ -371,9 +383,16 @@ defineExpose({
             @click="selectAgent(agent.id)"
           >
             <span class="settingsRowContent">
-              <span>{{ agent.name }}</span>
+              <span>
+                {{ agent.name }}
+                <small
+                  v-if="agent.ready && agent.tier"
+                  class="agentTierBadge"
+                  :data-testid="`agent-picker-tier-${agent.id}`"
+                >{{ agent.tier }}</small>
+              </span>
               <small v-if="!agent.ready" class="settingsDetail">{{ agent.error || 'Unavailable' }}</small>
-              <small v-else class="settingsDetail">{{ agent.id }}</small>
+              <small v-else class="settingsDetail" :data-testid="`agent-picker-detail-${agent.id}`">{{ formatReadyAgentDetail(agent) }}</small>
             </span>
             <span class="settingsCheckmark" aria-hidden="true">{{ agent.id === selectedAgentId ? '✓' : '' }}</span>
           </button>
@@ -449,6 +468,16 @@ defineExpose({
   border-radius: 6px;
   background: rgba(15, 23, 42, 0.07);
   color: var(--text);
+}
+
+.agentTierBadge {
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  background: rgba(0, 122, 255, 0.12);
+  color: var(--settings-tint, #007aff);
 }
 
 .modelCapsuleEffort { flex: 0 0 auto; font-size: 11px; opacity: .8; }

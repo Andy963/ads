@@ -4,6 +4,7 @@ pub mod drivers;
 pub mod error;
 pub mod prompt_runner;
 pub mod protocol;
+pub mod reviewer;
 pub mod session;
 pub mod supervisor;
 pub mod transport;
@@ -18,13 +19,22 @@ pub use drivers::{
     AGY_APP_DATA_DIR_NAME, AGY_AUTH_STDOUT_PREFIX, AGY_BINARY_ENV, AGY_CODE_REDIRECT_URI,
     AGY_DRIVER_ID, AGY_NO_BROWSER_PREFIX, AgyAuthConfig, AgyAuthMethod, AgyAuthUrlKind,
     AgyAuthorizationUrl, AgyDriver, AgyDriverConfig, AgyIsolatedProfile, AgyLoginHandle,
-    AgyProbeCache, AgyProbeResult, AgyProbeStatus, AgyProfileMode, DEFAULT_AGY_BINARY,
-    DEFAULT_AGY_PROBE_TTL, PreparedAgyProfile, build_agy_launch_spec, logout_agy_profile,
+    AgyProbeCache, AgyProbeResult, AgyProbeStatus, AgyProfileMode, CODEX_ACP_BINARY_ENV,
+    CODEX_DRIVER_ID, CodexDriver, CodexDriverConfig, CodexProbeCache, CodexProbeResult,
+    CodexProbeStatus, DEFAULT_AGY_BINARY, DEFAULT_AGY_PROBE_TTL, DEFAULT_CODEX_ACP_BINARY,
+    DEFAULT_CODEX_PROBE_TTL, PreparedAgyProfile, build_agy_launch_spec, build_codex_launch_spec,
+    extract_agy_tier_from_session_extra, logout_agy_profile, normalize_agy_tier,
     parse_agy_authorization_url, prepare_agy_isolated_profile, probe_agy_runtime,
-    resolve_agy_binary, resolve_agy_profile_dir, start_agy_login, validate_agy_login_response,
+    probe_codex_runtime, read_agy_profile_email, read_codex_auth_metadata, resolve_agy_binary,
+    resolve_agy_profile_dir, resolve_codex_acp_binary, resolve_codex_home_dir, start_agy_login,
+    validate_agy_login_response,
 };
 pub use error::{AcpError, AcpResult, DriverErrorDetails, RpcErrorDetails};
 pub use prompt_runner::{ACP_THREAD_NAMESPACE, AcpPromptRunner, AcpPromptRunnerConfig};
+pub use reviewer::{
+    AcpReviewRequest, ReviewVerificationPermissionHandler, augment_path_with_cargo_bin,
+    is_mutating_review_command, is_verification_command, run_acp_review,
+};
 pub use protocol::{
     ACP_PROTOCOL_VERSION, AgentCapabilities, AuthMethod, AvailableCommand, ClientCapabilities,
     CompactionUpdateInfo, ConfigOption, ConfigOptionChoice, ConfigOptionGroup, ConfigOptionValue,

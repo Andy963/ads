@@ -2,7 +2,6 @@
 members = [
   "crates/ads-acp",
   "crates/ads-actions",
-  "crates/ads-codex-app-server",
   "crates/ads-contract",
   "crates/ads-native",
   "crates/ads-reviewer",
@@ -24,7 +23,6 @@ rust-version = "1.85"
 [workspace.dependencies]
 ads-acp = { path = "crates/ads-acp" }
 ads-actions = { path = "crates/ads-actions" }
-ads-codex-app-server = { path = "crates/ads-codex-app-server" }
 ads-auth = { path = "crates/ads-auth" }
 ads-contract = { path = "crates/ads-contract" }
 ads-http = { path = "crates/ads-http" }

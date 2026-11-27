@@ -78,14 +78,30 @@ describe("ws session state", () => {
         agents: [
           { id: "codex", name: "Codex", ready: true },
           { id: "claude", name: "Claude", ready: false, error: "missing api key" },
+          {
+            id: "agy",
+            name: "Antigravity",
+            ready: true,
+            accountEmail: "dev@example.com",
+            tier: "Pro",
+          },
         ],
         threadId: "thread-123",
       });
 
       expect(rt.activeAgentId.value).toBe("claude");
-      expect(rt.availableAgents.value.length).toBe(2);
+      expect(rt.availableAgents.value.length).toBe(3);
       expect(rt.availableAgents.value[0].id).toBe("codex");
+      expect(rt.availableAgents.value[0].accountEmail).toBeUndefined();
+      expect(rt.availableAgents.value[0].tier).toBeUndefined();
       expect(rt.availableAgents.value[1].ready).toBe(false);
+      expect(rt.availableAgents.value[2]).toMatchObject({
+        id: "agy",
+        name: "Antigravity",
+        ready: true,
+        accountEmail: "dev@example.com",
+        tier: "Pro",
+      });
       expect(rt.activeThreadId.value).toBe("thread-123");
     });
 

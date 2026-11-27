@@ -6,19 +6,35 @@ import MainChatModelSelectors from "../components/MainChatModelSelectors.vue";
 import ModelManager from "../components/ModelManager.vue";
 
 describe("supportsAgentModel across native, codex, claude, and agy runtimes", () => {
-  const openaiModel: ModelConfig = {
-    id: "gpt-4.1",
+  const providerBoundModel: ModelConfig = {
+    id: "model-provider-gpt",
     modelId: "gpt-4.1",
     displayName: "GPT-4.1",
     provider: "OpenAI",
+    providerId: "provider-openai",
     isEnabled: true,
     isDefault: true,
+  };
+  const codexAcpModel: ModelConfig = {
+    id: "gpt-5.3-codex",
+    modelId: "gpt-5.3-codex",
+    displayName: "GPT-5.3 Codex",
+    provider: "codex",
+    providerId: null,
+    isEnabled: true,
+    isDefault: true,
+    configJson: {
+      allowedAgents: ["codex"],
+      reasoningEfforts: ["medium", "high"],
+      runtime: "codex",
+    },
   };
   const claudeModel: ModelConfig = {
     id: "claude-sonnet-4",
     modelId: "claude-sonnet-4",
     displayName: "Claude Sonnet 4",
     provider: "Anthropic",
+    providerId: "provider-anthropic",
     isEnabled: true,
     isDefault: false,
   };
@@ -32,22 +48,41 @@ describe("supportsAgentModel across native, codex, claude, and agy runtimes", ()
     configJson: {
       allowedAgents: ["agy", "agy:work"],
       reasoningEfforts: ["low", "medium", "high"],
+      runtime: "agy",
     },
   };
 
-  it("matches user-configured models for native and codex while scoping agy models by allowedAgents", () => {
-    expect(supportsAgentModel({ agentId: "native", model: openaiModel })).toBe(true);
+  const legacyProviderWithCodexTag: ModelConfig = {
+    id: "model-legacy-provider",
+    modelId: "gpt-5",
+    displayName: "GPT-5 (Legacy Provider)",
+    provider: "OpenAI",
+    providerId: "provider-openai",
+    isEnabled: true,
+    isDefault: false,
+    configJson: {
+      allowedAgents: ["codex"],
+    },
+  };
+
+  it("scopes Settings -> Providers models to native while codex and agy use ACP-discovered models", () => {
+    expect(supportsAgentModel({ agentId: "native", model: providerBoundModel })).toBe(true);
+    expect(supportsAgentModel({ agentId: "native", model: legacyProviderWithCodexTag })).toBe(true);
     expect(supportsAgentModel({ agentId: "native", model: claudeModel })).toBe(true);
+    expect(supportsAgentModel({ agentId: "native", model: codexAcpModel })).toBe(false);
     expect(supportsAgentModel({ agentId: "native", model: agyModel })).toBe(false);
 
-    expect(supportsAgentModel({ agentId: "codex", model: openaiModel })).toBe(true);
+    expect(supportsAgentModel({ agentId: "codex", model: codexAcpModel })).toBe(true);
+    expect(supportsAgentModel({ agentId: "codex", model: providerBoundModel })).toBe(false);
+    expect(supportsAgentModel({ agentId: "codex", model: legacyProviderWithCodexTag })).toBe(false);
     expect(supportsAgentModel({ agentId: "codex", model: claudeModel })).toBe(false);
     expect(supportsAgentModel({ agentId: "codex", model: agyModel })).toBe(false);
 
     expect(supportsAgentModel({ agentId: "agy", model: agyModel })).toBe(true);
     expect(supportsAgentModel({ agentId: "agy:work", model: agyModel })).toBe(true);
     expect(supportsAgentModel({ agentId: "agy:personal", model: agyModel })).toBe(false);
-    expect(supportsAgentModel({ agentId: "agy", model: openaiModel })).toBe(false);
+    expect(supportsAgentModel({ agentId: "agy", model: providerBoundModel })).toBe(false);
+    expect(supportsAgentModel({ agentId: "agy", model: codexAcpModel })).toBe(false);
   });
 });
 
@@ -83,7 +118,18 @@ describe("MainChatModelSelectors runtime switcher", () => {
     const agents = [
       { id: "native", name: "Native", ready: true },
       { id: "codex", name: "Codex", ready: false, error: "codex CLI not found" },
-      { id: "agy", name: "Antigravity", ready: true },
+      {
+        id: "agy",
+        name: "Antigravity",
+        ready: true,
+        accountEmail: "alice@example.com",
+        tier: "Pro",
+      },
+      {
+        id: "agy:api-key",
+        name: "API Key Agy",
+        ready: true,
+      },
     ];
 
     const wrapper = mount(MainChatModelSelectors, {
@@ -108,7 +154,15 @@ describe("MainChatModelSelectors runtime switcher", () => {
     expect(codexBtn.attributes("disabled")).toBeDefined();
     expect(codexBtn.text()).toContain("codex CLI not found");
 
-    await wrapper.get('[data-testid="agent-picker-item-agy"]').trigger("click");
+    const agyBtn = wrapper.get('[data-testid="agent-picker-item-agy"]');
+    expect(agyBtn.get('[data-testid="agent-picker-tier-agy"]').text()).toBe("Pro");
+    expect(agyBtn.get('[data-testid="agent-picker-detail-agy"]').text()).toBe("alice@example.com · agy");
+
+    const apiKeyBtn = wrapper.get('[data-testid="agent-picker-item-agy:api-key"]');
+    expect(apiKeyBtn.find('[data-testid="agent-picker-tier-agy:api-key"]').exists()).toBe(false);
+    expect(apiKeyBtn.get('[data-testid="agent-picker-detail-agy:api-key"]').text()).toBe("agy:api-key");
+
+    await agyBtn.trigger("click");
     expect(wrapper.emitted("switchAgent")).toEqual([["agy"]]);
 
     wrapper.unmount();
@@ -168,7 +222,15 @@ describe("AntigravityAccountsPanel inside ModelManager Runtimes tab", () => {
       activeAgentId: "native",
       agents: [
         { id: "native", name: "Native", kind: "native", ready: true },
-        { id: "agy", name: "Antigravity", kind: "agy", ready: true, version: "1.5.18" },
+        {
+          id: "agy",
+          name: "Antigravity",
+          kind: "agy",
+          ready: true,
+          version: "1.5.18",
+          accountEmail: "host@example.com",
+          tier: "Ultra",
+        },
       ],
     };
     const accounts: AgyAccountView[] = [
@@ -182,8 +244,27 @@ describe("AntigravityAccountsPanel inside ModelManager Runtimes tab", () => {
         ready: true,
         status: "ready",
         version: "1.5.18",
+        accountEmail: "host@example.com",
+        tier: "Ultra",
         error: null,
         modelCount: 2,
+        loginPending: false,
+        authorizationUrl: null,
+      },
+      {
+        id: "api-key-acct",
+        agentId: "agy:api-key-acct",
+        label: "API Key Account",
+        isDefault: false,
+        authMethod: "gemini-api-key",
+        hasApiKey: true,
+        ready: true,
+        status: "ready",
+        version: "1.5.18",
+        accountEmail: null,
+        tier: null,
+        error: null,
+        modelCount: 1,
         loginPending: false,
         authorizationUrl: null,
       },
@@ -231,6 +312,8 @@ describe("AntigravityAccountsPanel inside ModelManager Runtimes tab", () => {
           const acc = accounts.find((a) => a.id === "work-google")!;
           acc.ready = true;
           acc.status = "ready";
+          acc.accountEmail = "work@example.com";
+          acc.tier = "Pro";
           acc.error = null;
           acc.modelCount = 2;
           acc.loginPending = false;
@@ -241,6 +324,8 @@ describe("AntigravityAccountsPanel inside ModelManager Runtimes tab", () => {
           const acc = accounts.find((a) => a.id === "work-google")!;
           acc.ready = false;
           acc.status = "authentication_required";
+          acc.accountEmail = null;
+          acc.tier = null;
           acc.error = "Signed out. Sign in again to use this account.";
           acc.modelCount = 0;
           acc.loginPending = false;
@@ -266,14 +351,26 @@ describe("AntigravityAccountsPanel inside ModelManager Runtimes tab", () => {
     const wrapper = mount(ModelManager, { props: { api: api as any } });
     await flushPromises();
 
-    // Providers remains the default active tab.
+    // Providers remains the default active tab and scopes Providers to Native runtime.
     expect(wrapper.get('[data-testid="provider-settings-tab"]').attributes("aria-pressed")).toBe("true");
+    expect(wrapper.get('[data-testid="settings-providers-panel"]').text()).toContain(
+      "Native runtime providers",
+    );
 
     // Switch to Runtimes tab.
     await wrapper.get('[data-testid="runtime-settings-tab"]').trigger("click");
     await flushPromises();
     expect(wrapper.get('[data-testid="settings-runtimes-panel"]').exists()).toBe(true);
     expect(wrapper.get('[data-testid="runtime-row-agy"]').text()).toContain("Ready");
+    expect(wrapper.get('[data-testid="runtime-tier-agy"]').text()).toBe("Ultra");
+    expect(wrapper.get('[data-testid="runtime-row-agy"]').text()).toContain("host@example.com · agy · v1.5.18");
+
+    // Host default card displays email & concise tier badge; API-key card omits them cleanly.
+    expect(wrapper.get('[data-testid="agy-account-email-default"]').text()).toBe("host@example.com");
+    expect(wrapper.get('[data-testid="agy-account-tier-default"]').text()).toBe("Ultra");
+    expect(wrapper.find('[data-testid="agy-account-email-api-key-acct"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="agy-account-tier-api-key-acct"]').exists()).toBe(false);
+    expect(wrapper.get('[data-testid="agy-account-row-api-key-acct"]').text()).not.toContain("·  ·");
 
     // Add isolated OAuth account.
     await wrapper.get('[data-testid="agy-account-add"]').trigger("click");
@@ -305,11 +402,15 @@ describe("AntigravityAccountsPanel inside ModelManager Runtimes tab", () => {
       { code: "ok-code" },
     );
     expect(wrapper.get('[data-testid="agy-account-row-work-google"]').text()).toContain("Ready · 2 models");
+    expect(wrapper.get('[data-testid="agy-account-email-work-google"]').text()).toBe("work@example.com");
+    expect(wrapper.get('[data-testid="agy-account-tier-work-google"]').text()).toBe("Pro");
 
     // Sign out and delete account.
     await wrapper.get('[data-testid="agy-logout-work-google"]').trigger("click");
     await flushPromises();
     expect(wrapper.get('[data-testid="agy-account-row-work-google"]').text()).toContain("Sign in required");
+    expect(wrapper.find('[data-testid="agy-account-email-work-google"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="agy-account-tier-work-google"]').exists()).toBe(false);
 
     await wrapper.get('[data-testid="agy-delete-work-google"]').trigger("click");
     await flushPromises();

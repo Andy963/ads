@@ -98,6 +98,8 @@ export type AgentDescriptor = {
   name: string;
   ready: boolean;
   error?: string;
+  accountEmail?: string;
+  tier?: string;
 };
 
 export type LaneStatus = {

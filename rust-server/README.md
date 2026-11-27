@@ -25,7 +25,7 @@
   `$scheduler-compile`、校验 fenced JSON 与 `ScheduleSpec`；HTTP 已接入
   schedule 列表、创建、更新、启用、停用和 run 列表。执行循环已移植 due
   schedule 触发、SQLite lease、liteque 兼容队列、retry、run 状态、下一次
-  `nextRunAt` 计算，并通过当前选择的 Native Runtime 或 Codex App-Server 执行真实
+  `nextRunAt` 计算，并通过当前选择的 Native Runtime 或 ACP 运行时（Codex / Antigravity）执行真实
   prompt。
 - Native Runtime：Chat Completions 与 Responses 的 SSE/非流式执行、上下文
   投影、图片、scoped Responses replay、history 与 native transcript 持久化；
@@ -42,21 +42,7 @@
 - TypeScript/Rust 双向交叉测试覆盖 state、workspace、加密凭证和
   native transcript redaction；skill 命令通过独立 conformance 脚本对比两套
   command line 的输出与落盘文件。
-- Codex App-Server：新增 `ads-codex-app-server`，支持 stdio JSON-RPC、初始化握手、
-  通知与 server request、超时/关闭语义，以及按 project 复用和配置变更重启的
-  daemon registry；`CodexAppServerAgent` 已覆盖 thread start/resume、turn start、
-  流式回复聚合、usage、timeout 与 abort/interrupt，并接入 command/file approval
-  和带重放去重的 `review_action` builtin bridge。persisted thread 工具兼容与完整
-  fresh-thread 判定、resume/turn 阶段 thread 丢失重建已接入，并通过完整黑盒。
-  auto-compaction 已覆盖 usage 跟踪、80% 默认阈值、独立 compact turn、timeout 与
-  interrupt，以及 compaction 中 thread 丢失后的 fresh-thread 恢复。
-  context compaction 与工具事件已桥接；reasoning/plan/provider collaboration 不进入
-  UI，并保留 side-effect 标记。transient retry 已支持同一输入重试和 side-effect
-  禁止重放；与 TypeScript adapter 的完整 fake app-server 黑盒已通过。
-  `ADS_AGENT_RUNTIME=codex-app-server` 可通过 `CodexAppServerPromptRunner` 接入
-  queued prompt、history、WebSocket 事件、abort、scheduler executor 和图片 data
-  URI 到临时本地文件转换，默认 native 可即时回滚；Codex thread id 已持久化到
-  `kv_state` 并在新进程 resume。
+- 统一 ACP 运行时内核（`ads-acp`）：同时支撑 Antigravity（`AgyDriver`）与 Codex（`CodexDriver`，通过 `codex-acp` stdio ACP 接入），提供进程监督、能力与模型探测、流式事件桥接、权限控制、多账号/持久化凭据复用与 ADR 0066 Actions Reviewer（`run_acp_review`）；遗留 `ads-codex-app-server` 已退役（详见 ADR 0072–0075）。
 
 WebSocket 的 command 入站分发、reset barrier、inFlight 与活跃
 `delta_snapshot`/`command_snapshot` runtime snapshot 已实现；`delta_snapshot`

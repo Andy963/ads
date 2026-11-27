@@ -56,7 +56,14 @@ type WsMessage =
   | {
       type: "agents";
       activeAgentId?: string;
-      agents?: Array<{ id?: string; name?: string; ready?: boolean; error?: string }>;
+      agents?: Array<{
+        id?: string;
+        name?: string;
+        ready?: boolean;
+        error?: string;
+        accountEmail?: string | null;
+        tier?: string | null;
+      }>;
       threadId?: string | null;
     }
   | { type: string; seq?: number; [k: string]: unknown };
