@@ -14,12 +14,12 @@ use crate::error::{AcpError, AcpResult};
 use crate::protocol::{
     ACP_PROTOCOL_VERSION, AgentCapabilities, AvailableCommand, ClientCapabilities, ConfigOption,
     ConfigOptionsState, ContentBlock, ImplementationInfo, InitializeRequest, InitializeResponse,
-    PermissionOutcome, RequestPermissionParams, RequestPermissionResponse, SessionCancelParams,
-    SessionLoadRequest, SessionLoadResponse, SessionMode, SessionModeState, SessionNewRequest,
-    SessionNewResponse, SessionPromptRequest, SessionPromptResponse, SessionResumeRequest,
-    SessionResumeResponse, SessionSetConfigOptionRequest, SessionSetConfigOptionResponse,
-    SessionSetModeRequest, SessionSetModeResponse, SessionUpdate, SessionUpdateNotification,
-    StopReason, UsageUpdateInfo,
+    PermissionOptionKind, PermissionOutcome, RequestPermissionParams, RequestPermissionResponse,
+    SessionCancelParams, SessionLoadRequest, SessionLoadResponse, SessionMode, SessionModeState,
+    SessionNewRequest, SessionNewResponse, SessionPromptRequest, SessionPromptResponse,
+    SessionResumeRequest, SessionResumeResponse, SessionSetConfigOptionRequest,
+    SessionSetConfigOptionResponse, SessionSetModeRequest, SessionSetModeResponse, SessionUpdate,
+    SessionUpdateNotification, StopReason, UsageUpdateInfo,
 };
 use crate::transport::{AcpTransport, AcpTransportConfig, StdoutLineInterceptor, Subscription};
 
@@ -282,6 +282,7 @@ pub struct AcpPromptRequest {
     pub context: Option<PromptRunContext>,
     pub cancel: Option<watch::Receiver<bool>>,
     pub liveness: Option<Arc<AcpTurnLiveness>>,
+    pub retry_fence: Option<Arc<AtomicBool>>,
 }
 
 impl AcpPromptRequest {
@@ -294,6 +295,7 @@ impl AcpPromptRequest {
             context: None,
             cancel: None,
             liveness: None,
+            retry_fence: None,
         }
     }
 
@@ -306,6 +308,7 @@ impl AcpPromptRequest {
             context: None,
             cancel: None,
             liveness: None,
+            retry_fence: None,
         }
     }
 
@@ -326,6 +329,11 @@ impl AcpPromptRequest {
 
     pub fn with_liveness(mut self, liveness: Arc<AcpTurnLiveness>) -> Self {
         self.liveness = Some(liveness);
+        self
+    }
+
+    pub fn with_retry_fence(mut self, retry_fence: Arc<AtomicBool>) -> Self {
+        self.retry_fence = Some(retry_fence);
         self
     }
 }
@@ -532,6 +540,7 @@ impl AcpSession {
                     let _liveness_guard = active_liveness
                         .as_ref()
                         .map(AcpTurnLiveness::enter_permission);
+                    let options = parsed.options.clone();
                     let request = PendingPermissionRequest {
                         request_id: format!("acp-perm-{rpc_id}-{}", uuid::Uuid::new_v4().simple()),
                         session_id: parsed.session_id,
@@ -540,6 +549,25 @@ impl AcpSession {
                     };
                     let outcome: PermissionOutcome =
                         perm_handler.request_permission(request, cancel_rx).await;
+                    let approved = match &outcome {
+                        PermissionOutcome::Selected { option_id } => options
+                            .iter()
+                            .find(|option| option.option_id == *option_id)
+                            .is_none_or(|option| {
+                                matches!(
+                                    option.kind,
+                                    PermissionOptionKind::AllowOnce
+                                        | PermissionOptionKind::AllowAlways
+                                )
+                            }),
+                        PermissionOutcome::Cancelled => false,
+                    };
+                    if approved {
+                        let guard = state.lock().expect("session state lock");
+                        if let Some(bridge) = guard.active_bridge.as_ref() {
+                            bridge.lock().expect("turn bridge lock").mark_retry_unsafe();
+                        }
+                    }
                     let response = RequestPermissionResponse { outcome };
                     serde_json::to_value(response).map_err(|error| AcpError::InvalidResponse {
                         method: "session/request_permission".to_string(),
@@ -1069,11 +1097,8 @@ impl AcpSession {
             {
                 post_input.thought_level = initial_desired.thought_level.clone();
             }
-            self.driver.resolve_alignment(
-                &guard.config_options,
-                guard.modes.as_ref(),
-                post_input,
-            )
+            self.driver
+                .resolve_alignment(&guard.config_options, guard.modes.as_ref(), post_input)
         };
 
         if let Some(desired_thought) = post_model_desired
@@ -1156,10 +1181,12 @@ impl AcpSession {
             return Err(AcpError::Cancelled);
         }
 
-        let bridge = Arc::new(StdMutex::new(AcpEventBridge::new(
-            request.client_message_id.clone(),
-            request.context.clone(),
-        )));
+        let mut event_bridge =
+            AcpEventBridge::new(request.client_message_id.clone(), request.context.clone());
+        if let Some(retry_fence) = request.retry_fence.clone() {
+            event_bridge = event_bridge.with_retry_fence(retry_fence);
+        }
+        let bridge = Arc::new(StdMutex::new(event_bridge));
         let (perm_cancel_tx, _perm_cancel_rx) = watch::channel(false);
         if let Some(liveness) = request.liveness.as_ref() {
             liveness.mark_prompt_started(self.transport.io_activity_handle());

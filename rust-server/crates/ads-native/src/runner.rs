@@ -471,7 +471,7 @@ impl NativePromptRunner {
                         &context,
                         turn_deadline,
                         true,
-                        make_delta,
+                        |emitted| Some(make_delta(emitted)),
                     )
                     .await?;
                 cancellation.check()?;
@@ -698,9 +698,18 @@ impl NativePromptRunner {
                             output_schema: None,
                             options: summary_options,
                         };
+                        let context_ref = &context;
                         async move {
-                            let summary =
-                                complete_native_model(&request, &summary_cancellation, None).await?;
+                            let summary = self
+                                .complete_with_retry(
+                                    &request,
+                                    &summary_cancellation,
+                                    context_ref,
+                                    turn_deadline,
+                                    true,
+                                    |_| None,
+                                )
+                                .await?;
                             summary_cancellation.check()?;
                             if let Some(round_usage) = summary.usage.as_ref() {
                                 let mut captured =
@@ -959,7 +968,7 @@ impl NativePromptRunner {
         mut make_delta: F,
     ) -> NativeResult<crate::NativeCompletion>
     where
-        F: FnMut(Arc<AtomicBool>) -> NativeTextDelta,
+        F: FnMut(Arc<AtomicBool>) -> Option<NativeTextDelta>,
     {
         let attempts = if allow_retry {
             crate::max_attempts(self.options.upstream_retry_count)
@@ -976,7 +985,7 @@ impl NativePromptRunner {
             let emitted = Arc::new(AtomicBool::new(false));
             let on_delta = make_delta(Arc::clone(&emitted));
             match self
-                .complete_with_timeout(request, cancellation, turn_deadline, Some(on_delta))
+                .complete_with_timeout(request, cancellation, turn_deadline, on_delta)
                 .await
             {
                 Ok(completion) => return Ok(completion),

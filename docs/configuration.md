@@ -60,7 +60,7 @@ ADS 会在启动时从当前工作目录向上查找 `.env` 文件，并自动�
 | `ADS_ACP_RPC_TIMEOUT_MS` | `60000`（生命周期 RPC 默认 `180000`） | ACP 控制面 JSON-RPC 请求超时（毫秒）；`initialize` / `session/new` / `session/resume` / `session/load` 至少使用 180 秒窗口，resume/load 超时后自动重建子进程并回退 `session/new` |
 | `ADS_AGENT_MAX_RUN_TIMEOUT_MS` | `43200000` (12小时)| 历史 CLI 最大运行时长保护（毫秒），`0` 表示禁用 |
 | `ADS_CLI_POST_COMPLETION_GRACE_MS`| `10000` (10秒) | CLI 报告终态结果后等待其正常退出的宽限时长 |
-| `ADS_UPSTREAM_RETRY_COUNT` | `1` | 遭遇上游瞬态网络/服务故障或提前 SSE 断流时的自动安全重试次数（按轮次在当前轮输出/工具前生效，`0` 表示关闭） |
+| `ADS_UPSTREAM_RETRY_COUNT` | `3` | Native 与 ACP（`codex` / `agy*`）运行时遭遇上游瞬态网络/服务故障或提前 SSE 断流时的默认自动安全重试次数（按轮次在当前轮输出/工具前生效，`0` 表示关闭） |
 | `ADS_NATIVE_STREAM_IDLE_TIMEOUT_MS` | `600000` (10分钟) | Native 上游 HTTP 流的单次响应头/chunk 空闲读超时（毫秒），`0` 表示禁用；配合 30 秒 TCP keepalive 防止半开连接无限挂起，不限制持续流式输出的总时长 |
 | `ADS_REVIEWER_IDLE_TIMEOUT_MS` | `900000` (15分钟) | Actions Reviewer（Native 与 ACP）的活跃度无响应超时（毫秒），`0` 表示禁用；ACP 工具/验证命令运行期间暂停计时 |
 | `ADS_REVIEWER_MAX_DURATION_MS` | `0`（不限制） | 可选的 Actions Reviewer 总时长上限（毫秒），默认禁用以免误杀正常进展中的深度审查与全量验证；触发时取消检查并返回 `INCOMPLETE` |

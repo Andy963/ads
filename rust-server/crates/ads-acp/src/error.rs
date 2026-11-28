@@ -107,4 +107,130 @@ impl AcpError {
     pub fn is_timeout(&self) -> bool {
         matches!(self, Self::Timeout { .. })
     }
+
+    pub fn is_retryable(&self) -> bool {
+        match self {
+            Self::Transport(_) => true,
+            Self::Closed { graceful, .. } => !graceful,
+            Self::Driver(details) => details.retryable,
+            Self::Rpc(details) => is_retryable_rpc_error(details),
+            Self::Spawn(_)
+            | Self::MalformedFrame { .. }
+            | Self::Timeout { .. }
+            | Self::AuthenticationRequired(_)
+            | Self::InvalidResponse { .. }
+            | Self::UnsupportedCapability(_)
+            | Self::InvalidState(_)
+            | Self::Cancelled => false,
+        }
+    }
+}
+
+fn is_retryable_rpc_error(details: &RpcErrorDetails) -> bool {
+    // Standard JSON-RPC parse/protocol/method/param errors are permanent.
+    if matches!(details.code, -32700 | -32600 | -32601 | -32602) {
+        return false;
+    }
+    if let Some(data) = details.data.as_ref()
+        && let Some(decision) = ads_native::is_transient_upstream_payload(data)
+    {
+        return decision;
+    }
+    ads_native::is_transient_upstream_model_error(&details.message)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn classifies_retryable_and_permanent_acp_errors() {
+        assert!(AcpError::Transport("broken pipe".to_string()).is_retryable());
+        assert!(
+            AcpError::Closed {
+                exit_code: Some(1),
+                graceful: false,
+                stderr_tail: None,
+            }
+            .is_retryable()
+        );
+        assert!(
+            !AcpError::Closed {
+                exit_code: Some(0),
+                graceful: true,
+                stderr_tail: None,
+            }
+            .is_retryable()
+        );
+        assert!(
+            AcpError::driver(DriverErrorDetails {
+                driver_id: "agy".to_string(),
+                kind: "transient".to_string(),
+                code: None,
+                message: "temporary error".to_string(),
+                retryable: true,
+                data: None,
+            })
+            .is_retryable()
+        );
+        assert!(
+            !AcpError::driver(DriverErrorDetails {
+                driver_id: "agy".to_string(),
+                kind: "permanent".to_string(),
+                code: None,
+                message: "bad config".to_string(),
+                retryable: false,
+                data: None,
+            })
+            .is_retryable()
+        );
+        assert!(
+            AcpError::rpc("session/prompt", -32000, "HTTP 429 Too Many Requests", None)
+                .is_retryable()
+        );
+        assert!(
+            AcpError::rpc("session/prompt", -32603, "HTTP 502 Bad Gateway", None).is_retryable()
+        );
+        assert!(
+            AcpError::rpc(
+                "session/prompt",
+                -32000,
+                "upstream failed",
+                Some(json!({ "status": 503 })),
+            )
+            .is_retryable()
+        );
+
+        // Permanent JSON-RPC protocol/param errors and auth errors must never retry.
+        assert!(
+            !AcpError::rpc("session/prompt", -32602, "HTTP 429 Too Many Requests", None)
+                .is_retryable()
+        );
+        assert!(!AcpError::rpc("session/prompt", -32601, "Method not found", None).is_retryable());
+        assert!(
+            !AcpError::rpc(
+                "session/prompt",
+                -32000,
+                "HTTP 429 Too Many Requests",
+                Some(json!({ "status": 401 })),
+            )
+            .is_retryable()
+        );
+        assert!(
+            !AcpError::authentication_required("initialize", -32000, "login required", None)
+                .is_retryable()
+        );
+        assert!(!AcpError::Cancelled.is_retryable());
+        assert!(
+            !AcpError::Timeout {
+                method: "session/prompt".to_string(),
+                timeout: Duration::from_secs(5),
+            }
+            .is_retryable()
+        );
+        assert!(!AcpError::Spawn("not found".to_string()).is_retryable());
+        assert!(!AcpError::UnsupportedCapability("load".to_string()).is_retryable());
+        assert!(!AcpError::InvalidState("closed".to_string()).is_retryable());
+    }
 }

@@ -418,8 +418,8 @@ async fn acp_supervisor_recycles_and_falls_back_to_new_session_on_resume_timeout
     let sup_cfg = AcpSupervisorConfig {
         session: AcpSessionConfig {
             transport: AcpTransportConfig {
-                rpc_timeout: Duration::from_millis(1500),
-                lifecycle_rpc_timeout: Duration::from_millis(1500),
+                rpc_timeout: Duration::from_secs(3),
+                lifecycle_rpc_timeout: Duration::from_secs(3),
                 graceful_exit_timeout: Duration::from_millis(150),
                 term_exit_timeout: Duration::from_millis(150),
             },

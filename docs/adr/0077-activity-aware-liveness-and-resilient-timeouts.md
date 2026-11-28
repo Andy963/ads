@@ -1,9 +1,9 @@
-# ADR 0076: Activity-Aware Liveness Watchdogs and Resilient Transport Timeouts Across Native and ACP Runtimes
+# ADR 0077: Activity-Aware Liveness Watchdogs and Resilient Transport Timeouts Across Native and ACP Runtimes
 
 - **Status**: Accepted
 - **Date**: 2026-11-28
 - **Issue**: #757
-- **Related**: [ADR 0025](0025-native-bounded-retry-and-recovery.md), [ADR 0038](0038-progress-based-execution.md), [ADR 0066](0066-runtime-unified-actions-reviewer.md), [ADR 0072](0072-generic-acp-v1-runtime-kernel.md), [ADR 0073](0073-agy-driver-and-acp-prompt-runner.md), [ADR 0075](0075-unify-codex-and-antigravity-on-acp-and-scope-providers-to-native.md)
+- **Related**: [ADR 0025](0025-native-bounded-retry-and-recovery.md), [ADR 0038](0038-progress-based-execution.md), [ADR 0066](0066-runtime-unified-actions-reviewer.md), [ADR 0072](0072-generic-acp-v1-runtime-kernel.md), [ADR 0073](0073-agy-driver-and-acp-prompt-runner.md), [ADR 0075](0075-unify-codex-and-antigravity-on-acp-and-scope-providers-to-native.md), [ADR 0076](0076-unified-bounded-transient-retry-for-native-and-acp.md)
 
 ## Context
 

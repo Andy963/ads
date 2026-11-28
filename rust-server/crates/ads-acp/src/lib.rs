@@ -34,12 +34,6 @@ pub use error::{AcpError, AcpResult, DriverErrorDetails, RpcErrorDetails};
 pub use prompt_runner::{
     ACP_THREAD_NAMESPACE, AcpPromptRunner, AcpPromptRunnerConfig, DEFAULT_IDLE_TIMEOUT,
 };
-pub use reviewer::{
-    AcpReviewRequest, DEFAULT_REVIEWER_IDLE_TIMEOUT, REVIEWER_IDLE_TIMEOUT_ENV,
-    REVIEWER_MAX_DURATION_ENV, ReviewVerificationPermissionHandler, augment_path_with_cargo_bin,
-    is_mutating_review_command, is_verification_command, resolve_reviewer_idle_timeout,
-    resolve_reviewer_max_duration, run_acp_review,
-};
 pub use protocol::{
     ACP_PROTOCOL_VERSION, AgentCapabilities, AuthMethod, AvailableCommand, ClientCapabilities,
     CompactionUpdateInfo, ConfigOption, ConfigOptionChoice, ConfigOptionGroup, ConfigOptionValue,
@@ -52,6 +46,12 @@ pub use protocol::{
     SessionResumeRequest, SessionResumeResponse, SessionSetConfigOptionRequest,
     SessionSetConfigOptionResponse, SessionSetModeRequest, SessionSetModeResponse, SessionUpdate,
     SessionUpdateNotification, StopReason, ToolCallInfo, ToolCallLocation, UsageUpdateInfo,
+};
+pub use reviewer::{
+    AcpReviewRequest, DEFAULT_REVIEWER_IDLE_TIMEOUT, REVIEWER_IDLE_TIMEOUT_ENV,
+    REVIEWER_MAX_DURATION_ENV, ReviewVerificationPermissionHandler, augment_path_with_cargo_bin,
+    is_mutating_review_command, is_verification_command, resolve_reviewer_idle_timeout,
+    resolve_reviewer_max_duration, run_acp_review, run_acp_review_with_retry,
 };
 pub use session::{
     AcpPromptRequest, AcpSession, AcpSessionConfig, AcpSessionLifecycle, AcpTurnLiveness,
