@@ -65,6 +65,22 @@ impl ReviewQueue {
         crate::dispatch::dispatch_review_job(&self.db, request, now)
     }
 
+    pub fn resolve_acopilot_lane_generation(
+        &self,
+        project_id: &str,
+        repo_path: &Path,
+        auth_user_id: &str,
+        now: i64,
+    ) -> Result<i64, ReviewError> {
+        crate::dispatch::resolve_acopilot_lane_generation(
+            &self.db,
+            project_id,
+            repo_path,
+            auth_user_id,
+            now,
+        )
+    }
+
     pub async fn process(&self, project_id: &str, repo_path: &Path) -> Result<bool, ReviewError> {
         let canonical = canonical_project_id(project_id, Some(repo_path));
         {

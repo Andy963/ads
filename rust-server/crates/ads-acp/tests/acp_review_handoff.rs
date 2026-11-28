@@ -88,28 +88,40 @@ for line in sys.stdin:
         })
 
         if "[ADS Host Handoff Result: review_action FAILED]" in prompt_text:
-            rework_payload = {
-                "rework": {
-                    "prior_job_id": "job-rejected-1",
-                    "issue_id": 758,
-                    "pr_number": 760,
-                    "base_sha": "aaa111",
-                    "rejected_head_sha": "bbb222",
-                    "new_head_sha": "ccc333",
-                    "root_cause": "Missing ACP review_action handoff",
-                    "invariant": "All ACP Acopilot turns dispatch via host-owned handoff",
-                    "audited_scope": ["rust-server/crates/ads-acp/src/prompt_runner.rs"],
-                    "changed_behavior": "Added host-owned ads-review-action parser and repair loop",
-                    "regression_cases": ["post-REJECT rework repair round"],
-                    "verification_evidence": ["cargo test -p ads-acp"],
-                    "residual_risks": [],
+            if "always_fail_rework" in prompt_text or os.environ.get("MOCK_ALWAYS_FAIL_REPAIR") == "1":
+                reply = "Still retrying with empty payload.\n\n```ads-review-action\n{}\n```"
+            else:
+                rework_payload = {
+                    "rework": {
+                        "prior_job_id": "job-rejected-1",
+                        "issue_id": 758,
+                        "pr_number": 760,
+                        "base_sha": "aaa111",
+                        "rejected_head_sha": "bbb222",
+                        "new_head_sha": "ccc333",
+                        "root_cause": "Missing ACP review_action handoff",
+                        "invariant": "All ACP Acopilot turns dispatch via host-owned handoff",
+                        "audited_scope": ["rust-server/crates/ads-acp/src/prompt_runner.rs"],
+                        "changed_behavior": "Added host-owned ads-review-action parser and repair loop",
+                        "regression_cases": ["post-REJECT rework repair round"],
+                        "verification_evidence": ["cargo test -p ads-acp"],
+                        "residual_risks": [],
+                    }
                 }
-            }
+                reply = (
+                    "Added the required ADR 0059 rework declaration and re-dispatched.\n\n"
+                    "```ads-review-action\n"
+                    + json.dumps(rework_payload)
+                    + "\n```"
+                )
+        elif "quoted_example_only" in prompt_text:
             reply = (
-                "Added the required ADR 0059 rework declaration and re-dispatched.\n\n"
+                "Here is the documented format:\n\n"
+                "````markdown\n"
                 "```ads-review-action\n"
-                + json.dumps(rework_payload)
-                + "\n```"
+                "{}\n"
+                "```\n"
+                "````\n"
             )
         elif "trigger_rework_repair" in prompt_text:
             reply = "Attempting redispatch.\n\n```ads-review-action\n{}\n```"
@@ -346,6 +358,29 @@ async fn acp_prompt_runner_dispatches_initial_and_repaired_rework_handoffs_witho
     assert_eq!(handoff_evs[1]["ok"], json!(true));
     assert_eq!(handoff_evs[1]["jobId"], json!("job-rework-2"));
     assert_eq!(handoff_evs[1]["attempt"], json!(2));
+    // Verify non-colliding assistantItemIds across repair rounds and stripped raw blocks.
+    let rework_items: Vec<&Value> = recorded_rework
+        .iter()
+        .filter(|ev| ev["type"] == "assistant_item")
+        .collect();
+    assert_eq!(
+        rework_items.len(),
+        2,
+        "two distinct phases across two rounds"
+    );
+    assert_ne!(
+        rework_items[0]["assistantItemId"],
+        rework_items[1]["assistantItemId"]
+    );
+    for item in &rework_items {
+        assert!(
+            !item["assistantItemText"]
+                .as_str()
+                .unwrap_or("")
+                .contains("ads-review-action"),
+            "every reconciled assistant_item must have raw ads-review-action stripped: {item}"
+        );
+    }
 
     // Verify zero MCP servers were configured and protocol instructions were injected
     let logs = read_mock_log(&log_path);
@@ -464,5 +499,225 @@ async fn acp_prompt_runner_dispatches_initial_and_repaired_rework_handoffs_witho
         "Actions lane ACP session must stay in read-only plan mode"
     );
 
+    // 5. Quoted ads-review-action example inside outer Markdown code fence MUST NOT dispatch or corrupt output.
+    let count_before_quoted = dispatched.lock().expect("dispatched").len();
+    let events_quoted = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let events_quoted_h = Arc::clone(&events_quoted);
+    let quoted_outcome = runner
+        .run_lane_turn(
+            make_turn(
+                &workspace,
+                WEB_ACOPILOT_NAMESPACE,
+                LaneTurnKind::UserPrompt,
+                "cm-quoted",
+                "user-1::proj-758::acopilot",
+                "quoted_example_only",
+            ),
+            PromptRunContext::new(Arc::new(move |ev| {
+                events_quoted_h.lock().expect("evs").push(ev);
+            })),
+        )
+        .await
+        .expect("quoted turn");
+    assert!(quoted_outcome.ok);
+    assert_eq!(
+        dispatched.lock().expect("dispatched").len(),
+        count_before_quoted,
+        "quoted ads-review-action block inside outer fence must not trigger live dispatch"
+    );
+    let quoted_result = events_quoted
+        .lock()
+        .expect("evs")
+        .iter()
+        .find(|ev| ev["type"] == "result")
+        .cloned()
+        .expect("quoted result");
+    assert!(
+        quoted_result["output"]
+            .as_str()
+            .unwrap_or("")
+            .contains("````markdown\n```ads-review-action\n{}\n```\n````"),
+        "quoted markdown example must remain uncorrupted: {quoted_result}"
+    );
+
     runner.shutdown().await;
+}
+
+#[tokio::test]
+async fn acp_review_handoff_handles_repair_exhaustion_cancellation_and_restart_protocol_rebootstrap()
+ {
+    let temp = TempDir::new().expect("temp dir");
+    let workspace = temp.path().join("ws");
+    fs::create_dir_all(&workspace).expect("ws");
+    let log_path = temp.path().join("mock_edge_log.jsonl");
+    let script = write_handoff_mock_acp_script(temp.path());
+    let db = StateDb::open(temp.path().join("state.db")).expect("db");
+
+    // 1. Repair-round exhaustion (3 attempts total -> retrying=false and explicit failure text).
+    let always_fail_driver: Arc<dyn AcpDriver> = Arc::new(
+        GenericAcpDriver::new("mock-handoff-edge", script.to_string_lossy().as_ref())
+            .with_env("MOCK_LOG_FILE", log_path.to_string_lossy().into_owned())
+            .with_env("MOCK_ALWAYS_FAIL_REPAIR", "1"),
+    );
+    let always_reject_factory: ActionToolsFactory = Arc::new(|_entry: &LaneTurn| {
+        Some(ActionTools::new_with_arguments(|_args| async {
+            Err(NativeError::Tool(
+                "Missing required rework fields".to_string(),
+            ))
+        }))
+    });
+    let runner_exhaust = AcpPromptRunner::new(
+        db.clone(),
+        AcpPromptRunnerConfig::new(always_fail_driver)
+            .with_action_tools_factory(always_reject_factory),
+    );
+
+    let exhaust_evs = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let exhaust_evs_h = Arc::clone(&exhaust_evs);
+    let exhaust_out = runner_exhaust
+        .run_lane_turn(
+            make_turn(
+                &workspace,
+                WEB_ACOPILOT_NAMESPACE,
+                LaneTurnKind::UserPrompt,
+                "cm-exhaust",
+                "user-1::proj-758::exhaust",
+                "trigger_rework_repair",
+            ),
+            PromptRunContext::new(Arc::new(move |ev| {
+                exhaust_evs_h.lock().expect("evs").push(ev);
+            })),
+        )
+        .await
+        .expect("exhaust turn");
+    assert!(exhaust_out.ok);
+    let recorded_exhaust = exhaust_evs.lock().expect("evs").clone();
+    let handoff_evs: Vec<&Value> = recorded_exhaust
+        .iter()
+        .filter(|ev| ev["type"] == "review_action_handoff")
+        .collect();
+    assert_eq!(handoff_evs.len(), 3, "1 initial + 2 repair rounds");
+    assert_eq!(handoff_evs[0]["retrying"], json!(true));
+    assert_eq!(handoff_evs[1]["retrying"], json!(true));
+    assert_eq!(handoff_evs[2]["retrying"], json!(false));
+    let exhaust_result = recorded_exhaust
+        .iter()
+        .find(|ev| ev["type"] == "result")
+        .expect("exhaust result");
+    assert!(
+        exhaust_result["output"]
+            .as_str()
+            .unwrap_or("")
+            .contains("review_action failed.\nReason: Missing required rework fields")
+    );
+    runner_exhaust.shutdown().await;
+
+    // 2. Restarting AcpPromptRunner against the same StateDb (no live session in supervisor)
+    // must re-inject [Review Action Handoff Protocol] so newly created/fallback sessions have it.
+    let restart_log = temp.path().join("mock_restart_log.jsonl");
+    let restart_driver: Arc<dyn AcpDriver> = Arc::new(
+        GenericAcpDriver::new("mock-handoff-edge", script.to_string_lossy().as_ref())
+            .with_env("MOCK_LOG_FILE", restart_log.to_string_lossy().into_owned()),
+    );
+    let ok_factory: ActionToolsFactory = Arc::new(|_entry: &LaneTurn| {
+        Some(ActionTools::new_with_arguments(|_args| async {
+            Ok(json!({"ok": true, "jobId": "j-restart", "status": "queued"}))
+        }))
+    });
+    let runner_restarted = AcpPromptRunner::new(
+        db.clone(),
+        AcpPromptRunnerConfig::new(restart_driver).with_action_tools_factory(ok_factory),
+    );
+    let restart_out = runner_restarted
+        .run_lane_turn(
+            make_turn(
+                &workspace,
+                WEB_ACOPILOT_NAMESPACE,
+                LaneTurnKind::UserPrompt,
+                "cm-after-restart",
+                "user-1::proj-758::exhaust",
+                "hello after restart",
+            ),
+            PromptRunContext::new(Arc::new(|_| {})),
+        )
+        .await
+        .expect("after restart turn");
+    assert!(restart_out.ok);
+    let restart_logs = read_mock_log(&restart_log);
+    let restart_prompt = restart_logs
+        .iter()
+        .find(|e| e["method"] == "session/prompt")
+        .expect("restart prompt");
+    assert!(
+        restart_prompt["text"]
+            .as_str()
+            .unwrap_or("")
+            .contains("[Review Action Handoff Protocol]"),
+        "post-restart session without live subprocess must re-inject Review Action Handoff Protocol"
+    );
+    runner_restarted.shutdown().await;
+
+    // 3. Cancellation occurring during a failing review_action dispatch must return turn_cancelled (ok: false).
+    let cancel_driver: Arc<dyn AcpDriver> = Arc::new(
+        GenericAcpDriver::new("mock-handoff-cancel", script.to_string_lossy().as_ref()).with_env(
+            "MOCK_LOG_FILE",
+            temp.path()
+                .join("cancel.jsonl")
+                .to_string_lossy()
+                .into_owned(),
+        ),
+    );
+    let runner_holder: Arc<Mutex<Option<Arc<AcpPromptRunner>>>> = Arc::new(Mutex::new(None));
+    let runner_holder_cb = Arc::clone(&runner_holder);
+    let cancel_factory: ActionToolsFactory = Arc::new(move |entry: &LaneTurn| {
+        let runner_holder_cb = Arc::clone(&runner_holder_cb);
+        let turn_clone = entry.clone();
+        Some(ActionTools::new_with_arguments(move |_args| {
+            let runner_holder_cb = Arc::clone(&runner_holder_cb);
+            let turn_clone = turn_clone.clone();
+            async move {
+                if let Some(runner) = runner_holder_cb.lock().expect("holder").as_ref() {
+                    runner.abort_lane_turn(&turn_clone);
+                }
+                Err(NativeError::Tool("aborted mid-dispatch".to_string()))
+            }
+        }))
+    });
+    let runner_cancel = Arc::new(AcpPromptRunner::new(
+        db,
+        AcpPromptRunnerConfig::new(cancel_driver).with_action_tools_factory(cancel_factory),
+    ));
+    *runner_holder.lock().expect("holder") = Some(Arc::clone(&runner_cancel));
+
+    let cancel_evs = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let cancel_evs_h = Arc::clone(&cancel_evs);
+    let cancel_out = runner_cancel
+        .run_lane_turn(
+            make_turn(
+                &workspace,
+                WEB_ACOPILOT_NAMESPACE,
+                LaneTurnKind::UserPrompt,
+                "cm-cancel-handoff",
+                "user-1::proj-758::cancel",
+                "trigger_rework_repair",
+            ),
+            PromptRunContext::new(Arc::new(move |ev| {
+                cancel_evs_h.lock().expect("evs").push(ev);
+            })),
+        )
+        .await
+        .expect("cancel turn");
+    assert!(
+        !cancel_out.ok,
+        "cancellation during review_action dispatch must fail, not succeed"
+    );
+    assert!(
+        cancel_evs
+            .lock()
+            .expect("evs")
+            .iter()
+            .any(|ev| ev["type"] == "error" && ev["errorInfo"]["code"] == json!("turn_cancelled")),
+        "expected turn_cancelled error event when aborted during review_action handoff"
+    );
+    runner_cancel.shutdown().await;
 }

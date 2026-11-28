@@ -406,6 +406,11 @@ impl AcpEventBridge {
         self
     }
 
+    pub fn with_phase_index_offset(mut self, offset: usize) -> Self {
+        self.phase_index = offset;
+        self
+    }
+
     pub fn mark_retry_unsafe(&self) {
         if let Some(fence) = self.retry_fence.as_ref() {
             fence.store(true, Ordering::Release);

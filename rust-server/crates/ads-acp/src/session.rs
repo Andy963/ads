@@ -283,6 +283,7 @@ pub struct AcpPromptRequest {
     pub cancel: Option<watch::Receiver<bool>>,
     pub liveness: Option<Arc<AcpTurnLiveness>>,
     pub retry_fence: Option<Arc<AtomicBool>>,
+    pub phase_index_offset: usize,
 }
 
 impl AcpPromptRequest {
@@ -296,6 +297,7 @@ impl AcpPromptRequest {
             cancel: None,
             liveness: None,
             retry_fence: None,
+            phase_index_offset: 0,
         }
     }
 
@@ -309,6 +311,7 @@ impl AcpPromptRequest {
             cancel: None,
             liveness: None,
             retry_fence: None,
+            phase_index_offset: 0,
         }
     }
 
@@ -334,6 +337,11 @@ impl AcpPromptRequest {
 
     pub fn with_retry_fence(mut self, retry_fence: Arc<AtomicBool>) -> Self {
         self.retry_fence = Some(retry_fence);
+        self
+    }
+
+    pub fn with_phase_index_offset(mut self, offset: usize) -> Self {
+        self.phase_index_offset = offset;
         self
     }
 }
@@ -1182,7 +1190,8 @@ impl AcpSession {
         }
 
         let mut event_bridge =
-            AcpEventBridge::new(request.client_message_id.clone(), request.context.clone());
+            AcpEventBridge::new(request.client_message_id.clone(), request.context.clone())
+                .with_phase_index_offset(request.phase_index_offset);
         if let Some(retry_fence) = request.retry_fence.clone() {
             event_bridge = event_bridge.with_retry_fence(retry_fence);
         }

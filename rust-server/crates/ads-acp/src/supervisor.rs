@@ -253,6 +253,20 @@ impl AcpSessionSupervisor {
             .and_then(|session| session.transport().pid())
     }
 
+    /// Returns whether a live, non-closed ACP session is currently cached for `session_key`.
+    pub fn has_live_session(&self, session_key: &str) -> bool {
+        self.entries
+            .lock()
+            .expect("supervisor entries lock")
+            .get(session_key)
+            .is_some_and(|entry| {
+                entry
+                    .session
+                    .as_ref()
+                    .is_some_and(|session| !session.is_closed())
+            })
+    }
+
     pub async fn run_turn(
         &self,
         session_request: SupervisedSessionRequest,

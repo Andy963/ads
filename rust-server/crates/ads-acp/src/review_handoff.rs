@@ -5,39 +5,107 @@ pub const MAX_REVIEW_HANDOFF_REPAIR_ROUNDS: usize = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReviewActionDirective {
+    pub start_byte: usize,
+    pub end_byte: usize,
     pub raw: String,
     pub body: String,
 }
 
-/// Extracts host-owned `review_action` handoff envelopes from an ACP agent's output.
+/// Extracts top-level host-owned `review_action` handoff envelopes from an ACP agent's output.
+///
+/// Tracks outer Markdown code fences (`` ` `` and `~`, length >= 3) so quoted examples or diffs
+/// containing ```` ```ads-review-action ```` or `<<<tool.review_action>>>` inside ordinary code
+/// blocks are never treated as live handoff directives.
 ///
 /// Supports:
-/// 1. Canonical fenced blocks:
+/// 1. Canonical top-level fenced blocks:
 ///    ````markdown
 ///    ```ads-review-action
 ///    {}
 ///    ```
 ///    ````
-/// 2. Legacy/compatible ADS directive syntax:
+/// 2. Legacy/compatible ADS directive syntax outside code fences:
 ///    `<<<tool.review_action>>> ... >>>`
 pub fn extract_review_action_directives(text: &str) -> Vec<ReviewActionDirective> {
-    let mut directives = extract_fenced_review_action_directives(text);
-    for directive in ads_native::extract_tool_directives(text) {
-        if directive.name == "review_action" {
-            directives.push(ReviewActionDirective {
-                raw: directive.raw,
-                body: directive.body,
-            });
+    let mut directives = Vec::new();
+    let lines = split_lines_with_offsets(text);
+
+    let mut outer_fence: Option<(u8, usize)> = None;
+    let mut plain_segment_start: Option<usize> = None;
+    let mut idx = 0usize;
+
+    while idx < lines.len() {
+        let (line_start, line_end, line) = lines[idx];
+        let trimmed_start = line.trim_start();
+
+        if let Some((fence_char, min_len)) = outer_fence {
+            if is_closing_fence(trimmed_start, fence_char, min_len) {
+                outer_fence = None;
+            }
+            idx += 1;
+            continue;
         }
+
+        if let Some((fence_char, fence_len, info)) = parse_opening_fence(trimmed_start) {
+            if let Some(seg_start) = plain_segment_start.take() {
+                collect_inline_review_directives(text, seg_start, line_start, &mut directives);
+            }
+
+            if fence_char == b'`' && info.eq_ignore_ascii_case(REVIEW_ACTION_FENCE_TAG) {
+                if let Some(end_idx) = find_closing_fence(&lines, idx + 1, fence_char, fence_len) {
+                    let (close_start, close_end, _) = lines[end_idx];
+                    directives.push(ReviewActionDirective {
+                        start_byte: line_start,
+                        end_byte: close_end,
+                        raw: text[line_start..close_end].to_string(),
+                        body: text[line_end..close_start].trim().to_string(),
+                    });
+                    idx = end_idx + 1;
+                    continue;
+                }
+                // Unclosed ads-review-action fence: treat as outer code fence so we do not match
+                // anything nested inside it.
+                outer_fence = Some((fence_char, fence_len));
+                idx += 1;
+                continue;
+            }
+
+            outer_fence = Some((fence_char, fence_len));
+            idx += 1;
+            continue;
+        }
+
+        if plain_segment_start.is_none() {
+            plain_segment_start = Some(line_start);
+        }
+        idx += 1;
     }
+
+    if let Some(seg_start) = plain_segment_start {
+        collect_inline_review_directives(text, seg_start, text.len(), &mut directives);
+    }
+
+    directives.sort_by_key(|directive| directive.start_byte);
     directives
 }
 
-/// Removes all host-owned `review_action` handoff envelopes from visible prose.
+/// Removes only the exact matched top-level `review_action` handoff byte spans from visible prose,
+/// leaving any quoted examples inside ordinary code blocks untouched.
 pub fn strip_review_action_directives(text: &str) -> String {
-    let mut output = text.to_string();
-    for directive in extract_review_action_directives(text) {
-        output = output.replace(&directive.raw, "");
+    let directives = extract_review_action_directives(text);
+    if directives.is_empty() {
+        return text.trim().to_string();
+    }
+    let mut output = String::with_capacity(text.len());
+    let mut cursor = 0usize;
+    for directive in directives {
+        if directive.start_byte >= cursor && directive.end_byte <= text.len() {
+            output.push_str(&text[cursor..directive.start_byte]);
+            cursor = directive.end_byte;
+        }
+    }
+    if cursor < text.len() {
+        output.push_str(&text[cursor..]);
     }
     collapse_excess_blank_lines(&output).trim().to_string()
 }
@@ -113,7 +181,7 @@ pub fn build_review_action_handoff_instructions(is_actions_lane: bool) -> String
     let scope_note = if is_actions_lane {
         "In this user-initiated Actions lane session, you remain read-only on workspace files, but you may enqueue an Actions Reviewer job via the host-owned `review_action` agent handoff below when the user asks to trigger or re-run a PR review."
     } else {
-        "In this ACP runtime, `review_action` is handled as a host-owned ADS agent handoff (not an MCP tool). When you are ready to enqueue a PR review for the Actions Reviewer, emit a fenced `ads-review-action` JSON block in your response; ADS strips the block, dispatches the review using your authenticated workspace/branch context, and records the queued job."
+        "In this ACP runtime, `review_action` is handled as a host-owned ADS agent handoff (not an MCP tool). When you are ready to enqueue a PR review for the Actions Reviewer, emit a top-level fenced `ads-review-action` JSON block in your response; ADS strips the block, dispatches the review using your authenticated workspace/branch context, and records the queued job."
     };
 
     format!(
@@ -142,7 +210,7 @@ pub fn build_review_action_handoff_instructions(is_actions_lane: bool) -> String
            }}\n\
          }}\n\
          ```\n\n\
-         Only emit an `{REVIEW_ACTION_FENCE_TAG}` block when you actually intend to enqueue a review right now (never emit one merely as an example)."
+         Only emit a top-level `{REVIEW_ACTION_FENCE_TAG}` block when you actually intend to enqueue a review right now (never emit one merely as an example)."
     )
 }
 
@@ -156,68 +224,110 @@ pub fn build_review_action_repair_prompt(error: &str) -> String {
     )
 }
 
-fn extract_fenced_review_action_directives(text: &str) -> Vec<ReviewActionDirective> {
-    let mut directives = Vec::new();
-    let mut lines_with_offsets: Vec<(usize, usize, &str)> = Vec::new();
+fn split_lines_with_offsets(text: &str) -> Vec<(usize, usize, &str)> {
+    let mut lines = Vec::new();
     let mut offset = 0usize;
     for chunk in text.split_inclusive('\n') {
         let len = chunk.len();
         let line = chunk.trim_end_matches(['\r', '\n']);
-        lines_with_offsets.push((offset, offset + len, line));
+        lines.push((offset, offset + len, line));
         offset += len;
     }
     if offset < text.len() {
-        let line = &text[offset..];
-        lines_with_offsets.push((offset, text.len(), line));
+        lines.push((offset, text.len(), &text[offset..]));
     }
-
-    let mut idx = 0usize;
-    while idx < lines_with_offsets.len() {
-        let (start_byte, body_start_byte, line) = lines_with_offsets[idx];
-        let trimmed_start = line.trim_start();
-        if let Some(fence_len) = opening_review_action_fence_len(trimmed_start) {
-            let mut close_idx = None;
-            let mut probe = idx + 1;
-            while probe < lines_with_offsets.len() {
-                let (_, _, candidate) = lines_with_offsets[probe];
-                if is_closing_backtick_fence(candidate.trim(), fence_len) {
-                    close_idx = Some(probe);
-                    break;
-                }
-                probe += 1;
-            }
-            if let Some(end_idx) = close_idx {
-                let (close_start_byte, end_byte, _) = lines_with_offsets[end_idx];
-                let raw = text[start_byte..end_byte].to_string();
-                let body = text[body_start_byte..close_start_byte].trim().to_string();
-                directives.push(ReviewActionDirective { raw, body });
-                idx = end_idx + 1;
-                continue;
-            }
-        }
-        idx += 1;
-    }
-    directives
+    lines
 }
 
-fn opening_review_action_fence_len(trimmed_start: &str) -> Option<usize> {
-    let tick_count = trimmed_start
-        .bytes()
-        .take_while(|byte| *byte == b'`')
-        .count();
-    if tick_count < 3 {
+fn parse_opening_fence(trimmed_start: &str) -> Option<(u8, usize, &str)> {
+    let first = *trimmed_start.as_bytes().first()?;
+    if first != b'`' && first != b'~' {
         return None;
     }
-    let info = trimmed_start[tick_count..].trim();
-    if info.eq_ignore_ascii_case(REVIEW_ACTION_FENCE_TAG) {
-        Some(tick_count)
-    } else {
-        None
+    let count = trimmed_start
+        .bytes()
+        .take_while(|byte| *byte == first)
+        .count();
+    if count < 3 {
+        return None;
     }
+    let info = trimmed_start[count..].trim();
+    // Backtick fence info strings may not contain backticks (CommonMark rule).
+    if first == b'`' && info.contains('`') {
+        return None;
+    }
+    Some((first, count, info))
 }
 
-fn is_closing_backtick_fence(trimmed: &str, min_ticks: usize) -> bool {
-    trimmed.len() >= min_ticks && trimmed.bytes().all(|byte| byte == b'`')
+fn is_closing_fence(trimmed_start: &str, fence_char: u8, min_len: usize) -> bool {
+    let count = trimmed_start
+        .bytes()
+        .take_while(|byte| *byte == fence_char)
+        .count();
+    count >= min_len && trimmed_start[count..].trim().is_empty()
+}
+
+fn find_closing_fence(
+    lines: &[(usize, usize, &str)],
+    start_idx: usize,
+    fence_char: u8,
+    min_len: usize,
+) -> Option<usize> {
+    let mut probe = start_idx;
+    while probe < lines.len() {
+        let (_, _, candidate) = lines[probe];
+        if is_closing_fence(candidate.trim_start(), fence_char, min_len) {
+            return Some(probe);
+        }
+        probe += 1;
+    }
+    None
+}
+
+fn collect_inline_review_directives(
+    text: &str,
+    seg_start: usize,
+    seg_end: usize,
+    out: &mut Vec<ReviewActionDirective>,
+) {
+    if seg_start >= seg_end {
+        return;
+    }
+    const PREFIX: &str = "<<<tool.review_action";
+    let slice = &text[seg_start..seg_end];
+    let lower = slice.to_ascii_lowercase();
+    let mut cursor = 0usize;
+    while let Some(rel_start) = lower[cursor..].find(PREFIX) {
+        let start = cursor + rel_start;
+        let after_prefix = start + PREFIX.len();
+        let Some(open_end_rel) = slice[after_prefix..].find(">>>") else {
+            break;
+        };
+        let header_tail = &slice[after_prefix..after_prefix + open_end_rel];
+        // Ensure `<<<tool.review_action` is followed by `>>>` or whitespace+attrs (not e.g. `<<<tool.review_action_foo>>>`).
+        let valid_boundary = header_tail.is_empty()
+            || header_tail
+                .as_bytes()
+                .first()
+                .is_some_and(u8::is_ascii_whitespace);
+        if !valid_boundary || header_tail.contains('>') {
+            cursor = after_prefix;
+            continue;
+        }
+        let body_start = after_prefix + open_end_rel + 3;
+        let Some(close_rel) = slice[body_start..].find(">>>") else {
+            break;
+        };
+        let end = body_start + close_rel + 3;
+        let body = slice[body_start..body_start + close_rel].trim().to_string();
+        out.push(ReviewActionDirective {
+            start_byte: seg_start + start,
+            end_byte: seg_start + end,
+            raw: slice[start..end].to_string(),
+            body,
+        });
+        cursor = end;
+    }
 }
 
 fn collapse_excess_blank_lines(text: &str) -> String {
@@ -283,6 +393,44 @@ mod tests {
         assert_eq!(legacy_directives.len(), 1);
         assert!(legacy_directives[0].body.contains("prior_job_id"));
         assert_eq!(strip_review_action_directives(legacy), "Done.");
+    }
+
+    #[test]
+    fn ignores_quoted_review_action_blocks_inside_outer_code_fences_and_preserves_them() {
+        let quoted_markdown = concat!(
+            "Example syntax:\n\n",
+            "````markdown\n",
+            "```ads-review-action\n",
+            "{}\n",
+            "```\n",
+            "````\n\n",
+            "~~~rust\n",
+            "let s = \"<<<tool.review_action>>>{}>>>\";\n",
+            "~~~\n\n",
+            "Now actually dispatching:\n\n",
+            "```ads-review-action\n",
+            "{}\n",
+            "```\n"
+        );
+        let directives = extract_review_action_directives(quoted_markdown);
+        assert_eq!(
+            directives.len(),
+            1,
+            "only the top-level ads-review-action block should match, not quoted examples"
+        );
+        let stripped = strip_review_action_directives(quoted_markdown);
+        assert!(
+            stripped.contains("````markdown\n```ads-review-action\n{}\n```\n````"),
+            "quoted markdown example must remain completely intact: {stripped}"
+        );
+        assert!(
+            stripped.contains("<<<tool.review_action>>>{}>>>"),
+            "quoted inline directive inside tilde fence must remain intact: {stripped}"
+        );
+        assert!(
+            !stripped.ends_with("```ads-review-action\n{}\n```"),
+            "top-level live directive must be stripped: {stripped}"
+        );
     }
 
     #[test]

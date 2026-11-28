@@ -403,6 +403,11 @@ impl AcpPromptRunner {
             .action_tools_factory
             .as_ref()
             .and_then(|factory| factory(&entry));
+        let supervisor = if is_readonly {
+            &self.readonly_supervisor
+        } else {
+            &self.workspace_supervisor
+        };
         let storage_key = session_storage_key(
             &entry,
             self.config.driver.id(),
@@ -410,11 +415,15 @@ impl AcpPromptRunner {
             role,
         );
         let saved_acp_session_id = load_acp_session_id(&self.db, &storage_key)?;
-        let review_protocol_bootstrapped =
-            load_review_protocol_bootstrapped(&self.db, &storage_key)?;
+        let bootstrapped_session_id = load_review_protocol_session_id(&self.db, &storage_key)?;
+        let review_protocol_matches_saved = saved_acp_session_id
+            .as_deref()
+            .is_some_and(|saved| bootstrapped_session_id.as_deref() == Some(saved));
+        let has_live_session = supervisor.has_live_session(&storage_key);
         let include_review_protocol = action_tools.is_some()
             && (saved_acp_session_id.is_none()
-                || !review_protocol_bootstrapped
+                || !has_live_session
+                || !review_protocol_matches_saved
                 || entry.kind == LaneTurnKind::AgentHandoff);
         let review_protocol_instructions = include_review_protocol.then(|| {
             build_review_action_handoff_instructions(entry.lane_namespace == WEB_ACTIONS_NAMESPACE)
@@ -448,17 +457,12 @@ impl AcpPromptRunner {
             session_req = session_req.with_preferred_session_id(saved_id);
         }
 
-        let supervisor = if is_readonly {
-            &self.readonly_supervisor
-        } else {
-            &self.workspace_supervisor
-        };
-
         let mut final_supervised: Option<SupervisedTurnResult> = None;
         let mut first_attach_mode: Option<SessionAttachMode> = None;
-        let mut final_output = String::new();
-        let mut any_directive_rewrites = false;
-        let mut final_extra_results: Vec<String> = Vec::new();
+        let mut accumulated_prose: Vec<String> = Vec::new();
+        let mut accumulated_extra_results: Vec<String> = Vec::new();
+        let mut accumulated_phases: Vec<(String, String)> = Vec::new();
+        let mut phase_index_offset: usize = 0;
 
         for handoff_round in 0..=MAX_REVIEW_HANDOFF_REPAIR_ROUNDS {
             let supervised = match self
@@ -472,6 +476,7 @@ impl AcpPromptRunner {
                     &desired_mode,
                     requested_model.as_deref(),
                     requested_thought.as_deref(),
+                    phase_index_offset,
                     &cancel_tx,
                     &cancel_rx,
                 )
@@ -487,9 +492,13 @@ impl AcpPromptRunner {
             if !supervised.turn.session_id.trim().is_empty() {
                 save_acp_session_id(&self.db, &storage_key, &supervised.turn.session_id)?;
                 session_req = session_req.with_preferred_session_id(&supervised.turn.session_id);
-            }
-            if include_review_protocol {
-                mark_review_protocol_bootstrapped(&self.db, &storage_key)?;
+                if include_review_protocol {
+                    save_review_protocol_session_id(
+                        &self.db,
+                        &storage_key,
+                        &supervised.turn.session_id,
+                    )?;
+                }
             }
 
             let raw_output = supervised.turn.response_text.trim().to_string();
@@ -506,11 +515,35 @@ impl AcpPromptRunner {
                 &without_review_directives,
             );
             let cleaned_prose = ads_native::strip_tool_directives(&without_review_directives);
-            let mut extra_results = directive_results;
+            let round_had_rewrites = had_review_directives || !directive_results.is_empty();
+
+            let mut round_phases = collect_raw_assistant_phases(&supervised.turn.events);
+            phase_index_offset += round_phases.len();
+            if round_had_rewrites {
+                for (_, text) in &mut round_phases {
+                    *text =
+                        ads_native::strip_tool_directives(&strip_review_action_directives(text));
+                }
+            }
+            accumulated_phases.extend(round_phases);
+            if !cleaned_prose.is_empty() {
+                accumulated_prose.push(cleaned_prose);
+            }
+            accumulated_extra_results.extend(directive_results);
 
             let mut handoff_error: Option<String> = None;
             if had_review_directives && let Some(tools) = action_tools.as_ref() {
                 for (directive_idx, directive) in review_directives.iter().enumerate() {
+                    if *cancel_rx.borrow() {
+                        return self.fail_after_user_persisted(
+                            &entry,
+                            &context,
+                            "已中断，输出可能不完整".to_string(),
+                            "turn_cancelled",
+                            false,
+                            false,
+                        );
+                    }
                     let command_id = format!(
                         "{}:review_action:{}:{}",
                         entry.client_message_id,
@@ -534,6 +567,16 @@ impl AcpPromptRunner {
                             .map_err(|error| error.to_string()),
                         Err(error) => Err(error),
                     };
+                    if *cancel_rx.borrow() {
+                        return self.fail_after_user_persisted(
+                            &entry,
+                            &context,
+                            "已中断，输出可能不完整".to_string(),
+                            "turn_cancelled",
+                            false,
+                            false,
+                        );
+                    }
                     match dispatch_result {
                         Ok(ack) => {
                             let formatted = format_review_action_ack(&ack);
@@ -561,7 +604,7 @@ impl AcpPromptRunner {
                                 "ack": ack,
                                 "ts": now_unix_millis(),
                             }));
-                            extra_results.push(formatted);
+                            accumulated_extra_results.push(formatted);
                         }
                         Err(error) => {
                             let formatted_err = format_review_action_failure(&error);
@@ -596,27 +639,25 @@ impl AcpPromptRunner {
             }
 
             if let Some(error) = handoff_error {
-                if handoff_round < MAX_REVIEW_HANDOFF_REPAIR_ROUNDS && !*cancel_rx.borrow() {
+                if *cancel_rx.borrow() {
+                    return self.fail_after_user_persisted(
+                        &entry,
+                        &context,
+                        "已中断，输出可能不完整".to_string(),
+                        "turn_cancelled",
+                        false,
+                        false,
+                    );
+                }
+                if handoff_round < MAX_REVIEW_HANDOFF_REPAIR_ROUNDS {
                     current_blocks = vec![ContentBlock::text(build_review_action_repair_prompt(
                         &error,
                     ))];
                     continue;
                 }
-                extra_results.push(format_review_action_failure(&error));
+                accumulated_extra_results.push(format_review_action_failure(&error));
             }
 
-            any_directive_rewrites = had_review_directives || !extra_results.is_empty();
-            final_output = if extra_results.is_empty() {
-                cleaned_prose
-            } else if cleaned_prose.is_empty() {
-                extra_results.join("\n")
-            } else {
-                [cleaned_prose.as_str(), "", &extra_results.join("\n")]
-                    .join("\n")
-                    .trim()
-                    .to_string()
-            };
-            final_extra_results = extra_results;
             final_supervised = Some(supervised);
             break;
         }
@@ -631,7 +672,21 @@ impl AcpPromptRunner {
                 false,
             );
         };
-        let output = final_output;
+        let combined_prose = accumulated_prose.join("\n\n");
+        let output = if accumulated_extra_results.is_empty() {
+            combined_prose
+        } else if combined_prose.is_empty() {
+            accumulated_extra_results.join("\n")
+        } else {
+            [
+                combined_prose.as_str(),
+                "",
+                &accumulated_extra_results.join("\n"),
+            ]
+            .join("\n")
+            .trim()
+            .to_string()
+        };
 
         let cfg_state = ConfigOptionsState::from_vec(supervised.turn.config_options.clone());
         let effective_model = cfg_state
@@ -671,12 +726,11 @@ impl AcpPromptRunner {
             }
         }
 
-        let assistant_phases = collect_assistant_phases(
-            &supervised.turn.events,
+        let assistant_phases = finalize_assistant_phases(
+            accumulated_phases,
             &entry.client_message_id,
             &output,
-            any_directive_rewrites,
-            &final_extra_results,
+            &accumulated_extra_results,
         );
         let ts = now_unix_millis();
         for (item_id, item_text) in &assistant_phases {
@@ -732,6 +786,7 @@ impl AcpPromptRunner {
         desired_mode: &SessionMode,
         requested_model: Option<&str>,
         requested_thought: Option<&str>,
+        phase_index_offset: usize,
         cancel_tx: &watch::Sender<bool>,
         cancel_rx: &watch::Receiver<bool>,
     ) -> StateResult<Result<SupervisedTurnResult, PromptQueueRunOutcome>> {
@@ -779,7 +834,8 @@ impl AcpPromptRunner {
             .with_context(activity_context)
             .with_cancel(cancel_rx.clone())
             .with_liveness(Arc::clone(&liveness))
-            .with_retry_fence(Arc::clone(&unsafe_to_retry));
+            .with_retry_fence(Arc::clone(&unsafe_to_retry))
+            .with_phase_index_offset(phase_index_offset);
 
             let (watchdog_stop_tx, watchdog_stop_rx) = watch::channel(false);
             let watchdog_handle = self
@@ -806,10 +862,11 @@ impl AcpPromptRunner {
             let is_signal_cancelled = !is_timed_out && *turn_cancel_rx.borrow();
 
             if is_timed_out {
-                // Recycle the stalled subprocess and forget its in-memory session ID (matching
-                // T3 Code's inactivity recovery) so the next turn starts cleanly without resuming
-                // a wedged session.
+                // Recycle the stalled subprocess and forget both in-memory and persisted session
+                // / protocol bootstrap state (matching T3 Code's inactivity recovery) so the next
+                // turn starts cleanly with full role + review handoff instructions.
                 supervisor.discard_session(storage_key).await;
+                let _ = clear_acp_session_state(&self.db, storage_key);
             }
 
             match turn_res {
@@ -1091,13 +1148,7 @@ impl ScheduleExecutor for AcpPromptRunner {
     }
 }
 
-fn collect_assistant_phases(
-    events: &[AcpStreamEvent],
-    client_message_id: &str,
-    final_output: &str,
-    has_directive_rewrites: bool,
-    extra_results: &[String],
-) -> Vec<(String, String)> {
+fn collect_raw_assistant_phases(events: &[AcpStreamEvent]) -> Vec<(String, String)> {
     let mut phases: Vec<(String, String)> = Vec::new();
     for event in events {
         if let AcpStreamEvent::MessageDelta {
@@ -1115,35 +1166,32 @@ fn collect_assistant_phases(
             }
         }
     }
+    phases
+}
+
+fn finalize_assistant_phases(
+    mut phases: Vec<(String, String)>,
+    client_message_id: &str,
+    final_output: &str,
+    extra_results: &[String],
+) -> Vec<(String, String)> {
     if phases.is_empty() {
         return vec![(
             format!("{client_message_id}-assistant-1"),
             final_output.to_string(),
         )];
     }
-    if has_directive_rewrites {
-        if phases.len() == 1 {
-            phases[0].1 = final_output.to_string();
-        } else {
-            for (_, text) in &mut phases {
-                let stripped =
-                    ads_native::strip_tool_directives(&strip_review_action_directives(text));
-                *text = stripped;
-            }
-            phases.retain(|(_, text)| !text.is_empty());
-            if !extra_results.is_empty() {
-                let summary = extra_results.join("\n");
-                if let Some((_, last_text)) = phases.last_mut() {
-                    *last_text = format!("{last_text}\n\n{summary}").trim().to_string();
-                } else {
-                    phases.push((format!("{client_message_id}-assistant-1"), summary));
-                }
-            }
-            if phases.is_empty() {
-                phases.push((
-                    format!("{client_message_id}-assistant-1"),
-                    final_output.to_string(),
-                ));
+    if phases.len() == 1 {
+        phases[0].1 = final_output.to_string();
+        return phases;
+    }
+    if !extra_results.is_empty() {
+        let summary = extra_results.join("\n");
+        if let Some((_, last_text)) = phases.last_mut() {
+            if last_text.trim().is_empty() {
+                *last_text = summary;
+            } else {
+                *last_text = format!("{last_text}\n\n{summary}").trim().to_string();
             }
         }
     }
@@ -1259,28 +1307,41 @@ fn save_acp_session_id(db: &StateDb, key: &str, session_id: &str) -> StateResult
     Ok(())
 }
 
-fn load_review_protocol_bootstrapped(db: &StateDb, key: &str) -> StateResult<bool> {
+fn load_review_protocol_session_id(db: &StateDb, key: &str) -> StateResult<Option<String>> {
     let connection = db.connect()?;
-    let value = connection
+    connection
         .query_row(
             "SELECT value FROM kv_state WHERE namespace = ?1 AND key = ?2",
             params![ACP_REVIEW_PROTOCOL_NAMESPACE, key],
             |row| row.get::<_, String>(0),
         )
         .optional()
-        .map_err(StateError::from)?;
-    Ok(value.as_deref() == Some("v1"))
+        .map_err(StateError::from)
 }
 
-fn mark_review_protocol_bootstrapped(db: &StateDb, key: &str) -> StateResult<()> {
+fn save_review_protocol_session_id(db: &StateDb, key: &str, session_id: &str) -> StateResult<()> {
     let connection = db.connect()?;
     connection.execute(
         "INSERT INTO kv_state (namespace, key, value, updated_at)
-         VALUES (?1, ?2, 'v1', ?3)
+         VALUES (?1, ?2, ?3, ?4)
          ON CONFLICT(namespace, key) DO UPDATE SET
            value = excluded.value,
            updated_at = excluded.updated_at",
-        params![ACP_REVIEW_PROTOCOL_NAMESPACE, key, now_unix_millis()],
+        params![
+            ACP_REVIEW_PROTOCOL_NAMESPACE,
+            key,
+            session_id,
+            now_unix_millis()
+        ],
+    )?;
+    Ok(())
+}
+
+fn clear_acp_session_state(db: &StateDb, key: &str) -> StateResult<()> {
+    let connection = db.connect()?;
+    connection.execute(
+        "DELETE FROM kv_state WHERE namespace IN (?1, ?2) AND key = ?3",
+        params![ACP_THREAD_NAMESPACE, ACP_REVIEW_PROTOCOL_NAMESPACE, key],
     )?;
     Ok(())
 }

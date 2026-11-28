@@ -132,6 +132,8 @@ pub struct ReviewQueueAck {
     pub status: ActionJobStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub issue_id: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
     pub note: String,
 }
 

@@ -334,6 +334,13 @@ impl NativePromptRunner {
                 .read_history(&history_transcript_id, after, offset)
                 .map_err(|error| error.to_string())
         }));
+        let action_tools = self
+            .options
+            .action_tools_factory
+            .as_ref()
+            .and_then(|factory| factory(&entry))
+            .or_else(|| self.options.action_tools.clone());
+        let has_action_tools = action_tools.is_some();
         let tool_executor = match NativeToolExecutor::new(
             entry.workspace_root.clone().into(),
             vec![model.api_key.clone()],
@@ -341,12 +348,6 @@ impl NativePromptRunner {
             read_history,
         ) {
             Ok(executor) => {
-                let action_tools = self
-                    .options
-                    .action_tools_factory
-                    .as_ref()
-                    .and_then(|factory| factory(&entry))
-                    .or_else(|| self.options.action_tools.clone());
                 let executor = match action_tools {
                     Some(tools) => executor.with_action_tools(tools),
                     None => executor,
@@ -382,10 +383,22 @@ impl NativePromptRunner {
             }
         };
         let mut tools = native_tool_definitions();
-        let hide_review_action = (entry.lane_namespace == ads_state::WEB_ACTIONS_NAMESPACE
-            && entry.kind != ads_runtime::LaneTurnKind::UserPrompt)
-            || entry.lane_namespace == "scheduler";
-        if hide_review_action {
+        let allow_review_action = if self.options.action_tools_factory.is_some() {
+            has_action_tools
+        } else {
+            match entry.lane_namespace.as_str() {
+                ads_state::WEB_ACOPILOT_NAMESPACE => matches!(
+                    entry.kind,
+                    ads_runtime::LaneTurnKind::UserPrompt | ads_runtime::LaneTurnKind::AgentHandoff
+                ),
+                ads_state::WEB_ACTIONS_NAMESPACE => {
+                    entry.kind == ads_runtime::LaneTurnKind::UserPrompt
+                }
+                "scheduler" => false,
+                _ => entry.kind == ads_runtime::LaneTurnKind::UserPrompt,
+            }
+        };
+        if !allow_review_action {
             tools.retain(|tool| tool.function.name != "review_action");
         }
         let mut response_text = String::new();

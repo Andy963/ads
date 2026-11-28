@@ -2703,11 +2703,12 @@ for line in sys.stdin:
         .expect("codex turn");
     assert!(outcome.ok);
     assert!(
-        codex_events
-            .lock()
-            .expect("evs")
-            .iter()
-            .any(|ev| ev["type"] == "review_action_handoff" && ev["ok"] == json!(true))
+        codex_events.lock().expect("evs").iter().any(|ev| {
+            ev["type"] == "review_action_handoff"
+                && ev["ok"] == json!(true)
+                && ev["branch"] == json!("feat/758-acp-review-action-handoff")
+        }),
+        "codex ACP review_action_handoff must include real branch from ReviewQueueAck"
     );
 
     let jobs = {
@@ -2803,6 +2804,59 @@ for line in sys.stdin:
             .iter()
             .any(|ev| ev["type"] == "review_action_handoff"),
         "non-user-initiated Actions lane turn must not invoke review_action"
+    );
+
+    // 4. Dynamically created isolated `agy:<account_id>` runner also receives action_tools_factory.
+    let isolated = registry
+        .create_or_update_agy_account(ads_http::UpsertAgyAccountInput {
+            id: Some("iso-758".to_string()),
+            label: Some("Isolated 758".to_string()),
+            auth_method: ads_acp::AgyAuthMethod::GeminiApiKey,
+            api_key: Some("test-api-key".to_string()),
+            gcp_project: None,
+            gcp_location: None,
+        })
+        .await
+        .expect("create isolated agy account");
+    registry.probe_all().await;
+    let mut iso_payload = serde_json::Map::new();
+    iso_payload.insert("agentId".to_string(), json!(isolated.agent_id));
+    iso_payload.insert("text".to_string(), json!("Dispatch from isolated agy"));
+    let iso_events = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let iso_events_h = Arc::clone(&iso_events);
+    let iso_outcome = routing
+        .run_lane_turn(
+            LaneTurn {
+                kind: LaneTurnKind::UserPrompt,
+                key: LaneTurnKey::PromptQueue(103),
+                client_message_id: "cm-agy-iso-758".to_string(),
+                auth_user_id: "user-1".to_string(),
+                user_id: 1,
+                session_id: project_id.clone(),
+                chat_session_id: "acopilot".to_string(),
+                history_key: format!("user-1::{project_id}::acopilot"),
+                logical_history_key: format!("user-1::{project_id}::acopilot"),
+                lane_namespace: WEB_ACOPILOT_NAMESPACE.to_string(),
+                lane_generation: 1,
+                workspace_root: repo.to_string_lossy().to_string(),
+                payload: iso_payload,
+                history_display_text: None,
+                created_at: 5_000,
+            },
+            PromptRunContext::new(Arc::new(move |ev| {
+                iso_events_h.lock().expect("evs").push(ev);
+            })),
+        )
+        .await
+        .expect("isolated agy turn");
+    assert!(iso_outcome.ok);
+    assert!(
+        iso_events.lock().expect("evs").iter().any(|ev| {
+            ev["type"] == "review_action_handoff"
+                && ev["ok"] == json!(true)
+                && ev["branch"] == json!("feat/758-acp-review-action-handoff")
+        }),
+        "dynamically created isolated agy runner must execute review_action handoff"
     );
 
     registry.shutdown_all().await;
