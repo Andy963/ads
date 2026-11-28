@@ -1,6 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { config, flushPromises, mount } from "@vue/test-utils";
 import type { AgyAccountView, ModelConfig, RuntimesSnapshot } from "../api/types";
+import {
+  AGY_PENDING_LOGIN_TTL_MS,
+  clearPendingAgyLoginView,
+  hasPendingAgyLoginView,
+  markPendingAgyLoginView,
+} from "../lib/agyPendingLogin";
 import { supportsAgentModel } from "../lib/model_agent";
 import MainChatModelSelectors from "../components/MainChatModelSelectors.vue";
 import ModelManager from "../components/ModelManager.vue";
@@ -208,6 +214,50 @@ describe("MainChatModelSelectors runtime switcher", () => {
     await capsule.trigger("click");
     await flushPromises();
     expect(wrapper.find('[data-testid="agent-picker-section"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="agy-account-picker-section"]').exists()).toBe(false);
+    expect(wrapper.get('[data-testid="agent-picker-item-agy"]').exists()).toBe(true);
+    wrapper.unmount();
+  });
+
+  it("switches to a ready isolated Antigravity account when host default is unavailable", async () => {
+    const wrapper = mount(MainChatModelSelectors, {
+      props: {
+        connected: true,
+        busy: false,
+        agents: [
+          { id: "native", name: "Native", ready: true },
+          { id: "agy", name: "Antigravity", ready: false, error: "Sign in required" },
+          { id: "agy:api-key", name: "Gemini API Key", ready: true },
+        ],
+        activeAgentId: "native",
+        models: [
+          {
+            id: "gemini-2.5-pro",
+            modelId: "gemini-2.5-pro",
+            displayName: "Gemini 2.5 Pro",
+            provider: "antigravity",
+            isEnabled: true,
+            isDefault: true,
+            configJson: { allowedAgents: ["agy:api-key"] },
+          },
+        ],
+        modelId: "",
+      },
+    });
+    await flushPromises();
+
+    await wrapper.get('[data-testid="chat-model-capsule"]').trigger("click");
+    await flushPromises();
+
+    const agyRuntimeBtn = wrapper.get('[data-testid="agent-picker-runtime-agy"]');
+    expect(agyRuntimeBtn.attributes("disabled")).toBeUndefined();
+    expect(agyRuntimeBtn.text()).toContain("1 of 2 accounts ready");
+    await agyRuntimeBtn.trigger("click");
+    expect(wrapper.emitted("switchAgent")).toEqual([["agy:api-key"]]);
+
+    await wrapper.setProps({ activeAgentId: "agy:api-key" });
+    await flushPromises();
+    expect(wrapper.get('[data-testid="agent-picker-runtime-agy"]').text()).toContain("Gemini API Key · 1/2 ready");
     wrapper.unmount();
   });
 });
@@ -474,5 +524,167 @@ describe("AntigravityAccountsPanel inside ModelManager Runtimes tab", () => {
     expect((restoredWrapper.emitted("changed") ?? []).length).toBeGreaterThanOrEqual(3);
 
     restoredWrapper.unmount();
+  });
+
+  it("opens desktop sign-in via popup without double-opening, handles clipboard errors, cancels cleanly, and aggregates isolated ready agy runtime", async () => {
+    const snapshot: RuntimesSnapshot = {
+      activeAgentId: "native",
+      agents: [
+        { id: "native", name: "Native", kind: "native", ready: true },
+        { id: "agy", name: "Antigravity", kind: "agy", ready: false, error: "Sign in required" },
+        {
+          id: "agy:acct-iso",
+          name: "isolated@example.com",
+          kind: "agy",
+          ready: true,
+          version: "1.5.18",
+          accountEmail: "isolated@example.com",
+          tier: "Pro",
+        },
+      ],
+    };
+    const accounts: AgyAccountView[] = [
+      {
+        id: "default",
+        agentId: "agy",
+        label: "Antigravity",
+        isDefault: true,
+        authMethod: "oauth-personal",
+        hasApiKey: false,
+        ready: false,
+        status: "authentication_required",
+        error: "Sign in required",
+        modelCount: 0,
+        loginPending: false,
+        authorizationUrl: null,
+      },
+      {
+        id: "acct-iso",
+        agentId: "agy:acct-iso",
+        label: "isolated@example.com",
+        isDefault: false,
+        authMethod: "oauth-personal",
+        hasApiKey: false,
+        ready: true,
+        status: "ready",
+        version: "1.5.18",
+        accountEmail: "isolated@example.com",
+        tier: "Pro",
+        error: null,
+        modelCount: 3,
+        loginPending: false,
+        authorizationUrl: null,
+      },
+    ];
+
+    const authUrl = "https://accounts.google.com/o/oauth2/auth?response_type=code&state=s2";
+    const api = {
+      get: vi.fn(async (url: string) => {
+        if (url === "/api/runtimes") return structuredClone(snapshot);
+        if (url === "/api/runtimes/agy/accounts") return structuredClone(accounts);
+        return [];
+      }),
+      post: vi.fn(async (url: string) => {
+        if (url === "/api/runtimes/agy/accounts/default/login/start") {
+          accounts[0].loginPending = true;
+          accounts[0].authorizationUrl = authUrl;
+          return {
+            accountId: "default",
+            agentId: "agy",
+            flowId: "flow-2",
+            authorizationUrl: authUrl,
+            redirectUri: "https://antigravity.google/oauth-callback",
+            state: "s2",
+          };
+        }
+        if (url === "/api/runtimes/agy/accounts/default/login/cancel") {
+          accounts[0].loginPending = false;
+          accounts[0].authorizationUrl = null;
+          return { success: true };
+        }
+        return { success: true };
+      }),
+      patch: vi.fn(async () => ({})),
+      put: vi.fn(async () => ({})),
+      delete: vi.fn(async () => ({ success: true })),
+    };
+
+    const clipboardRead = vi.fn<() => Promise<string>>()
+      .mockResolvedValueOnce("   ")
+      .mockRejectedValueOnce(new Error("denied"));
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: vi.fn(async () => {}), readText: clipboardRead },
+    });
+
+    const replaceMock = vi.fn();
+    const focusMock = vi.fn();
+    const fakePopup: { opener: unknown; location: { replace: ReturnType<typeof vi.fn> }; focus: ReturnType<typeof vi.fn> } = {
+      opener: window,
+      location: { replace: replaceMock },
+      focus: focusMock,
+    };
+    const openSpy = vi.spyOn(window, "open").mockReturnValue(fakePopup as unknown as Window);
+
+    const wrapper = mount(ModelManager, { props: { api: api as any } });
+    await flushPromises();
+    await wrapper.get('[data-testid="runtime-settings-tab"]').trigger("click");
+    await flushPromises();
+
+    // Detected runtimes reports Ready for Antigravity via the ready isolated account without adding a duplicate row.
+    expect(wrapper.get('[data-testid="runtime-row-agy"]').text()).toContain("Ready");
+    expect(wrapper.get('[data-testid="runtime-row-agy"]').text()).toContain("isolated@example.com · agy · v1.5.18");
+    expect(wrapper.find('[data-testid="runtime-row-agy:acct-iso"]').exists()).toBe(false);
+
+    // Start login on default account.
+    await wrapper.get('[data-testid="agy-login-start-default"]').trigger("click");
+    await flushPromises();
+    expect(hasPendingAgyLoginView()).toBe(true);
+
+    const link = wrapper.get('[data-testid="agy-login-link-default"]');
+
+    // Primary click opens popup without `noopener` in features, clears opener, navigates, and prevents default.
+    const primaryClick = new MouseEvent("click", { bubbles: true, cancelable: true, button: 0 });
+    link.element.dispatchEvent(primaryClick);
+    expect(openSpy).toHaveBeenCalledWith("", "_blank", "popup=yes,width=540,height=720");
+    expect(fakePopup.opener).toBeNull();
+    expect(replaceMock).toHaveBeenCalledWith(authUrl);
+    expect(focusMock).toHaveBeenCalled();
+    expect(primaryClick.defaultPrevented).toBe(true);
+
+    // Modifier click bypasses popup interception so browser handles background tab normally.
+    openSpy.mockClear();
+    const cmdClick = new MouseEvent("click", { bubbles: true, cancelable: true, button: 0, metaKey: true });
+    link.element.dispatchEvent(cmdClick);
+    expect(openSpy).not.toHaveBeenCalled();
+    expect(cmdClick.defaultPrevented).toBe(false);
+
+    // Blocked popup (returns null) lets `<a target="_blank">` default navigation proceed.
+    openSpy.mockReturnValueOnce(null);
+    const blockedClick = new MouseEvent("click", { bubbles: true, cancelable: true, button: 0 });
+    link.element.dispatchEvent(blockedClick);
+    expect(blockedClick.defaultPrevented).toBe(false);
+
+    // Empty clipboard and denied clipboard errors surface clearly.
+    await wrapper.get('[data-testid="agy-login-paste-default"]').trigger("click");
+    await flushPromises();
+    expect(wrapper.text()).toContain("Clipboard is empty.");
+    await wrapper.get('[data-testid="agy-login-paste-default"]').trigger("click");
+    await flushPromises();
+    expect(wrapper.text()).toContain("Clipboard read permission was denied.");
+
+    // Cancel clears pending login state in localStorage.
+    await wrapper.get('[data-testid="agy-login-cancel-default"]').trigger("click");
+    await flushPromises();
+    expect(hasPendingAgyLoginView()).toBe(false);
+
+    // Verify 10-minute TTL expiry in agyPendingLogin helper.
+    const baseNow = Date.now();
+    markPendingAgyLoginView();
+    expect(hasPendingAgyLoginView(baseNow + AGY_PENDING_LOGIN_TTL_MS - 1000)).toBe(true);
+    expect(hasPendingAgyLoginView(baseNow + AGY_PENDING_LOGIN_TTL_MS + 1000)).toBe(false);
+    clearPendingAgyLoginView();
+
+    wrapper.unmount();
   });
 });

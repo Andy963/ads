@@ -159,13 +159,15 @@ const preferredReadyAgy = computed(() => {
 });
 const agyRuntimeDetail = computed(() => {
   if (!readyAgyAgents.value.length) {
-    return agyAgents.value[0]?.error || "Unavailable";
+    return agyAgents.value.find((agent) => agent.error)?.error || "Unavailable";
   }
   const active = activeAgent.value;
   if (isAgySelected.value && active && active.ready) {
-    const email = typeof active.accountEmail === "string" ? active.accountEmail.trim() : "";
-    return email
-      ? `${email} · ${readyAgyAgents.value.length}/${agyAgents.value.length} ready`
+    const label =
+      (typeof active.accountEmail === "string" ? active.accountEmail.trim() : "") ||
+      String(active.name ?? "").trim();
+    return label
+      ? `${label} · ${readyAgyAgents.value.length}/${agyAgents.value.length} ready`
       : `${readyAgyAgents.value.length} of ${agyAgents.value.length} accounts ready`;
   }
   return `${readyAgyAgents.value.length} of ${agyAgents.value.length} accounts ready`;

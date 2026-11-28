@@ -834,17 +834,18 @@ impl RuntimeRegistry {
         &self,
         input: UpsertAgyAccountInput,
     ) -> Result<AgyAccountView, RuntimeApiError> {
-        let label = input
-            .label
-            .as_deref()
-            .map(str::trim)
-            .unwrap_or_default()
-            .to_string();
-        if label.chars().count() > 80 {
-            return Err(RuntimeApiError::BadRequest(
-                "Account label must be 80 characters or fewer.".to_string(),
-            ));
-        }
+        let label_input = match input.label {
+            Some(raw) => {
+                let trimmed = raw.trim().to_string();
+                if trimmed.chars().count() > 80 {
+                    return Err(RuntimeApiError::BadRequest(
+                        "Account label must be 80 characters or fewer.".to_string(),
+                    ));
+                }
+                Some(trimmed)
+            }
+            None => None,
+        };
         let requested_id = match input.id.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
             Some(raw) => Some(validate_account_id(raw)?),
             None => None,
@@ -882,7 +883,7 @@ impl RuntimeRegistry {
             let db = self.db.clone();
             let credentials = self.credentials.clone();
             let state_dir = self.state_dir.clone();
-            let label_for_db = label.clone();
+            let label_for_db = label_input.clone();
             let gcp_project_for_db = gcp_project.clone();
             let gcp_location_for_db = gcp_location.clone();
             let submitted_for_db = submitted_api_key.clone();
@@ -892,11 +893,11 @@ impl RuntimeRegistry {
                     let account_id = match requested_id {
                         Some(id) => id,
                         None => {
-                            let id_seed = if !label_for_db.is_empty() {
-                                label_for_db.as_str()
-                            } else {
-                                gcp_project_for_db.as_deref().unwrap_or("")
-                            };
+                            let id_seed = label_for_db
+                                .as_deref()
+                                .filter(|value| !value.is_empty())
+                                .or(gcp_project_for_db.as_deref())
+                                .unwrap_or("");
                             derive_unique_account_id(&db, id_seed)?
                         }
                     };
@@ -929,9 +930,13 @@ impl RuntimeRegistry {
 
                     let now = now_unix_millis();
                     let profile_dir = resolve_agy_profile_dir(&state_dir, &account_id);
+                    let resolved_label = match label_for_db {
+                        Some(explicit) => explicit,
+                        None => existing.as_ref().map_or_else(String::new, |r| r.label.clone()),
+                    };
                     let record = AgyAccountRecord {
                         id: account_id.clone(),
-                        label: label_for_db,
+                        label: resolved_label,
                         auth_method,
                         gcp_project: gcp_project_for_db,
                         gcp_location: gcp_location_for_db,
@@ -1777,10 +1782,6 @@ fn auth_method_display_label(method: AgyAuthMethod) -> &'static str {
 }
 
 fn resolve_account_display_label(entry: &ManagedAgyRuntime) -> String {
-    let explicit = entry.label.trim();
-    if !explicit.is_empty() {
-        return explicit.to_string();
-    }
     if entry.probe.status == AgyProbeStatus::Ready
         && let Some(email) = entry
             .probe
@@ -1790,6 +1791,10 @@ fn resolve_account_display_label(entry: &ManagedAgyRuntime) -> String {
             .filter(|v| !v.is_empty())
     {
         return email.to_string();
+    }
+    let explicit = entry.label.trim();
+    if !explicit.is_empty() {
+        return explicit.to_string();
     }
     if let Some(project) = entry
         .gcp_project

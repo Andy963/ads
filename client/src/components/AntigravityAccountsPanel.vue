@@ -139,12 +139,15 @@ function accountDisplayName(account: AgyAccountView): string {
   if (account.ready && email) return email;
   const project = account.gcpProject?.trim();
   if (project) return project;
+  const explicit = account.label?.trim();
+  if (explicit && !account.isDefault) return explicit;
   return AUTH_METHOD_LABELS[account.authMethod] || "Antigravity account";
 }
 
 function accountSubtitle(account: AgyAccountView): string {
   const methodLabel = AUTH_METHOD_LABELS[account.authMethod] || account.authMethod;
-  if ((account.ready && account.accountEmail?.trim()) || account.gcpProject?.trim()) {
+  const title = accountDisplayName(account);
+  if (title !== methodLabel) {
     return `${methodLabel} · ${account.agentId}`;
   }
   return account.agentId;
@@ -293,21 +296,40 @@ async function startLogin(account: AgyAccountView): Promise<void> {
         code: "",
       },
     };
-    markPendingAgyLoginView(account.id);
+    markPendingAgyLoginView();
     notice.value = `Open the Google sign-in link for "${accountDisplayName(account)}", then paste the authorization code below.`;
   });
 }
 
 function openSignInLink(event: MouseEvent, url: string): void {
-  if (!url || (isStandalonePwa && isIosDevice)) {
+  if (
+    !url ||
+    isIosDevice ||
+    event.button !== 0 ||
+    event.metaKey ||
+    event.ctrlKey ||
+    event.shiftKey ||
+    event.altKey
+  ) {
     return;
   }
-  // On desktop (including desktop PWA), prefer a dedicated popup window so sign-in
-  // sits alongside the app rather than covering or navigating away from it.
+  // On desktop (including desktop PWA), open a dedicated popup without `noopener` in
+  // features (which forces `window.open` to return `null` per HTML spec and causes a
+  // duplicate `_blank` tab), sever `opener` while on `about:blank`, then navigate.
   if (typeof window.open === "function") {
-    const popup = window.open(url, "ads-agy-oauth", "popup=yes,width=540,height=720,noopener,noreferrer");
+    const popup = window.open("", "_blank", "popup=yes,width=540,height=720");
     if (popup) {
       event.preventDefault();
+      try {
+        popup.opener = null;
+      } catch {
+        // Ignore read-only opener in restricted environments.
+      }
+      if (typeof popup.location?.replace === "function") {
+        popup.location.replace(url);
+      } else if (popup.location) {
+        popup.location.href = url;
+      }
       popup.focus?.();
     }
   }
@@ -345,8 +367,7 @@ async function shareSignInLink(account: AgyAccountView): Promise<void> {
 }
 
 async function pasteLoginCode(accountId: string): Promise<void> {
-  const pending = activeLogins.value[accountId];
-  if (!pending) return;
+  if (!activeLogins.value[accountId]) return;
   error.value = "";
   try {
     const text = (await navigator.clipboard?.readText?.()) ?? "";
@@ -355,7 +376,10 @@ async function pasteLoginCode(accountId: string): Promise<void> {
       error.value = "Clipboard is empty. Copy the authorization code or callback URL first.";
       return;
     }
-    pending.code = trimmed;
+    const current = activeLogins.value[accountId];
+    if (current) {
+      current.code = trimmed;
+    }
   } catch {
     error.value = "Clipboard read permission was denied. Paste manually into the field.";
   }
@@ -829,9 +853,13 @@ onBeforeUnmount(() => {
   color: var(--settings-danger);
 }
 .agyCompactBtn {
-  padding: 5px 10px;
-  font-size: 12px;
+  min-height: 36px;
+  padding: 6px 12px;
+  font-size: 13px;
   background: var(--settings-surface);
+}
+.agyCodeInputRow .agyCompactBtn {
+  min-height: 40px;
 }
 .agyLoginBox {
   margin: 0 16px 14px;
@@ -877,6 +905,8 @@ onBeforeUnmount(() => {
   gap: 8px;
 }
 .agyCodeInput {
+  -webkit-appearance: none;
+  appearance: none;
   flex: 1;
   min-width: 0;
   width: 100%;

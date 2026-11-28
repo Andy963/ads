@@ -524,6 +524,7 @@ async function refreshVisibleLaneChat(lane: ChatLane): Promise<void> {
 function selectMobileDrawerSection(section: MobileDrawerSection): void {
   mobileDrawerSection.value = section;
   mobileContextMenuOpen.value = false;
+  if (section !== "settings") clearPendingAgyLoginView();
   if (section === "settings") closeMobileDrawer();
 }
 
@@ -532,6 +533,7 @@ const mobileSettingsTab = ref<"roles" | "models" | "notifications">("roles");
 function selectMobileDrawerSettings(tab: "roles" | "models" | "notifications"): void {
   if (!loggedIn.value) return;
   mobileSettingsTab.value = tab;
+  if (tab !== "models") clearPendingAgyLoginView();
   selectMobileDrawerSection("settings");
 }
 

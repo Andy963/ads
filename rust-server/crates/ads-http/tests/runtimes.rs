@@ -1890,6 +1890,49 @@ async fn agy_account_creation_allows_omitted_label_and_falls_back_to_email() {
     assert_eq!(completed["accountEmail"], json!("work.user@example.com"));
     assert_eq!(completed["label"], json!("work.user@example.com"));
 
+    // /api/runtimes descriptor `name` for the label-less isolated account also resolves to email.
+    let (status, runtimes_body) =
+        authed_request(&fixture.app, "GET", "/api/runtimes", &cookie, None).await;
+    assert_eq!(status, StatusCode::OK, "{runtimes_body}");
+    let agent_id = completed["agentId"].as_str().expect("agentId");
+    let runtime_entry = runtimes_body["agents"]
+        .as_array()
+        .expect("agents array")
+        .iter()
+        .find(|entry| entry["id"] == agent_id)
+        .expect("label-less agent in /api/runtimes");
+    assert_eq!(runtime_entry["name"], json!("work.user@example.com"));
+
+    // Logging out reverts the resolved label from email back to the auth method display label.
+    let (status, logged_out) = authed_request(
+        &fixture.app,
+        "POST",
+        &format!("/api/runtimes/agy/accounts/{account_id}/logout"),
+        &cookie,
+        Some(json!({})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{logged_out}");
+    assert_eq!(logged_out["label"], json!("Google OAuth (Personal)"));
+
+    // Whitespace-only label is treated as omitted, and oauth-business seeds ID/label from gcpProject.
+    let (status, gcp_created) = authed_request(
+        &fixture.app,
+        "POST",
+        "/api/runtimes/agy/accounts",
+        &cookie,
+        Some(json!({
+            "label": "   ",
+            "authMethod": "oauth-business",
+            "gcpProject": "Acme Prod",
+            "gcpLocation": "us-central1"
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{gcp_created}");
+    assert_eq!(gcp_created["id"], json!("acme-prod"));
+    assert_eq!(gcp_created["label"], json!("Acme Prod"));
+
     let too_long_label = "x".repeat(81);
     let (status, err_body) = authed_request(
         &fixture.app,
