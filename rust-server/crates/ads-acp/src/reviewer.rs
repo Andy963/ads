@@ -821,6 +821,22 @@ fn is_mutating_review_command_inner(command: &str, depth: usize) -> Option<&'sta
             {
                 return Some("Reviewer cannot modify files in place with perl.");
             }
+            "env" => {
+                return Some("Reviewer cannot use unsupported or split-string env options.");
+            }
+            "timeout" => {
+                return Some("Reviewer cannot use unrecognized timeout options.");
+            }
+            "find" => {
+                if let Some(reason) = inspect_mutating_find(args, depth) {
+                    return Some(reason);
+                }
+            }
+            "xargs" => {
+                if let Some(reason) = inspect_mutating_xargs(args, depth) {
+                    return Some(reason);
+                }
+            }
             "git" => {
                 if let Some((subcommand, sub_args)) = extract_git_subcommand(args) {
                     if matches!(
@@ -850,6 +866,12 @@ fn is_mutating_review_command_inner(command: &str, depth: usize) -> Option<&'sta
                             | "worktree"
                     ) {
                         return Some("Reviewer cannot execute mutating git commands.");
+                    }
+                    if subcommand == "config" && is_mutating_git_config(sub_args) {
+                        return Some("Reviewer cannot modify git configuration.");
+                    }
+                    if subcommand == "remote" && is_mutating_git_remote(sub_args) {
+                        return Some("Reviewer cannot modify git remotes.");
                     }
                     if subcommand == "branch"
                         && sub_args.iter().any(|arg| {
@@ -988,15 +1010,408 @@ fn has_unsafe_output_redirection(segment: &str) -> bool {
 }
 
 fn extract_shell_inline_script(args: &[String]) -> Option<String> {
-    for (idx, arg) in args.iter().enumerate() {
-        if matches!(arg.as_str(), "-c" | "-lc" | "-cl") {
-            let script = args[idx + 1..].join(" ");
+    let mut index = 0usize;
+    let mut saw_command_flag = false;
+    while index < args.len() {
+        let arg = args[index].as_str();
+        if matches!(arg, "--" | "-") {
+            index += 1;
+            break;
+        }
+        if let Some(script) = arg.strip_prefix("--command=") {
+            if !script.trim().is_empty() {
+                return Some(script.to_string());
+            }
+            return None;
+        }
+        if arg == "--command" {
+            saw_command_flag = true;
+            index += 1;
+            continue;
+        }
+        if matches!(arg, "-o" | "+o" | "-O" | "+O" | "--rcfile" | "--init-file") {
+            index = (index + 2).min(args.len());
+            continue;
+        }
+        if arg.starts_with("--") {
+            index += 1;
+            continue;
+        }
+        if (arg.starts_with('-') || arg.starts_with('+')) && arg.len() > 1 {
+            let is_minus = arg.starts_with('-');
+            let mut extra_args = 0usize;
+            for ch in arg[1..].chars() {
+                if is_minus && ch == 'c' {
+                    saw_command_flag = true;
+                }
+                if matches!(ch, 'o' | 'O') {
+                    extra_args += 1;
+                }
+            }
+            index = (index + 1 + extra_args).min(args.len());
+            continue;
+        }
+        if saw_command_flag {
+            let script = args[index..].join(" ");
             if !script.trim().is_empty() {
                 return Some(script);
             }
         }
+        return None;
+    }
+    if saw_command_flag && index < args.len() {
+        let script = args[index..].join(" ");
+        if !script.trim().is_empty() {
+            return Some(script);
+        }
     }
     None
+}
+
+fn find_primary_arity(arg: &str) -> usize {
+    if matches!(
+        arg,
+        "-name"
+            | "-iname"
+            | "-path"
+            | "-ipath"
+            | "-wholename"
+            | "-iwholename"
+            | "-lname"
+            | "-ilname"
+            | "-regex"
+            | "-iregex"
+            | "-regextype"
+            | "-type"
+            | "-xtype"
+            | "-maxdepth"
+            | "-mindepth"
+            | "-mtime"
+            | "-mmin"
+            | "-atime"
+            | "-amin"
+            | "-ctime"
+            | "-cmin"
+            | "-newer"
+            | "-anewer"
+            | "-cnewer"
+            | "-size"
+            | "-perm"
+            | "-user"
+            | "-uid"
+            | "-group"
+            | "-gid"
+            | "-inum"
+            | "-samefile"
+            | "-links"
+            | "-fstype"
+            | "-printf"
+            | "-context"
+            | "-used"
+            | "-files0-from"
+    ) || (arg.starts_with("-newer") && arg.len() == 8)
+    {
+        return 1;
+    }
+    0
+}
+
+fn inspect_mutating_find(args: &[String], depth: usize) -> Option<&'static str> {
+    let mut index = 0usize;
+    while index < args.len() {
+        let arg = args[index].as_str();
+        if arg == "-delete" {
+            return Some("Reviewer cannot delete files with find -delete.");
+        }
+        if matches!(arg, "-fprint" | "-fprint0" | "-fprintf" | "-fls") {
+            return Some("Reviewer cannot write files with find output actions.");
+        }
+        if matches!(arg, "-exec" | "-execdir" | "-ok" | "-okdir") {
+            let allows_plus = matches!(arg, "-exec" | "-execdir");
+            let cmd_start = index + 1;
+            let mut cmd_end = cmd_start;
+            while cmd_end < args.len() {
+                let token = args[cmd_end].as_str();
+                if token == ";" {
+                    break;
+                }
+                if allows_plus && token == "+" && cmd_end > cmd_start && args[cmd_end - 1] == "{}" {
+                    break;
+                }
+                cmd_end += 1;
+            }
+            if cmd_start < cmd_end {
+                let rebuilt = rebuild_shell_command(&args[cmd_start..cmd_end]);
+                if let Some(reason) = is_mutating_review_command_inner(&rebuilt, depth + 1) {
+                    return Some(reason);
+                }
+            }
+            index = cmd_end + 1;
+            continue;
+        }
+        let arity = find_primary_arity(arg);
+        if arity > 0 {
+            index = (index + 1 + arity).min(args.len());
+            continue;
+        }
+        index += 1;
+    }
+    None
+}
+
+fn inspect_mutating_xargs(args: &[String], depth: usize) -> Option<&'static str> {
+    let mut index = 0usize;
+    while index < args.len() {
+        let arg = args[index].as_str();
+        if arg == "--" {
+            index += 1;
+            break;
+        }
+        // GNU xargs long options that always take a separate argument (optional-arg options
+        // like --eof, --replace, --max-lines only accept values via `=` and take 1 token alone).
+        if matches!(
+            arg,
+            "--arg-file"
+                | "--delimiter"
+                | "--max-args"
+                | "--max-procs"
+                | "--max-chars"
+                | "--process-slot-var"
+        ) {
+            index = (index + 2).min(args.len());
+            continue;
+        }
+        if is_known_single_token_xargs_long_option(arg) {
+            index += 1;
+            continue;
+        }
+        if arg.starts_with("--") {
+            // Fail closed on unrecognized or abbreviated GNU getopt_long options (e.g. --max-p).
+            return Some("Reviewer cannot use unrecognized xargs options.");
+        }
+        if arg.starts_with('-') && arg.len() > 1 {
+            let mut consumed_next = false;
+            let chars: Vec<char> = arg[1..].chars().collect();
+            for (pos, ch) in chars.iter().enumerate() {
+                if matches!(ch, '0' | 'o' | 'p' | 'r' | 't' | 'x') {
+                    continue;
+                }
+                if matches!(ch, 'a' | 'd' | 'E' | 'I' | 'L' | 'n' | 'P' | 's') {
+                    // If characters follow in the same token, they are the attached value;
+                    // otherwise the value is the next argv token.
+                    if pos + 1 == chars.len() {
+                        consumed_next = true;
+                    }
+                    break;
+                }
+                // Optional-value short options (-i, -e, -l) consume the rest of the current token
+                // when attached, never the next whitespace-separated token.
+                if matches!(ch, 'i' | 'e' | 'l') {
+                    break;
+                }
+                return Some("Reviewer cannot use unrecognized xargs options.");
+            }
+            index = (index + if consumed_next { 2 } else { 1 }).min(args.len());
+            continue;
+        }
+        break;
+    }
+    if index >= args.len() {
+        return None;
+    }
+    let rebuilt = rebuild_shell_command(&args[index..]);
+    is_mutating_review_command_inner(&rebuilt, depth + 1)
+}
+
+fn is_known_single_token_xargs_long_option(arg: &str) -> bool {
+    if matches!(
+        arg,
+        "--null"
+            | "--open-tty"
+            | "--interactive"
+            | "--no-run-if-empty"
+            | "--show-limits"
+            | "--verbose"
+            | "--exit"
+            | "--help"
+            | "--version"
+            | "--eof"
+            | "--replace"
+            | "--max-lines"
+    ) {
+        return true;
+    }
+    [
+        "--arg-file=",
+        "--delimiter=",
+        "--max-args=",
+        "--max-procs=",
+        "--max-chars=",
+        "--process-slot-var=",
+        "--eof=",
+        "--replace=",
+        "--max-lines=",
+    ]
+    .iter()
+    .any(|prefix| arg.starts_with(prefix))
+}
+
+fn rebuild_shell_command(tokens: &[String]) -> String {
+    tokens
+        .iter()
+        .map(|token| {
+            if token.is_empty()
+                || token
+                    .chars()
+                    .any(|ch| ch.is_whitespace() || matches!(ch, '\'' | '"' | '\\' | ';' | '|' | '&' | '>' | '<'))
+            {
+                let escaped = token.replace('\'', "'\\''");
+                format!("'{escaped}'")
+            } else {
+                token.clone()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn is_mutating_git_config(sub_args: &[String]) -> bool {
+    let mut explicit_read_flag = false;
+    let mut positional: Vec<&str> = Vec::new();
+    let mut index = 0usize;
+    let mut after_double_dash = false;
+
+    while index < sub_args.len() {
+        let arg = sub_args[index].as_str();
+        if !after_double_dash {
+            if arg == "--" {
+                after_double_dash = true;
+                index += 1;
+                continue;
+            }
+            if matches!(
+                arg,
+                "--add"
+                    | "--unset"
+                    | "--unset-all"
+                    | "--replace-all"
+                    | "--rename-section"
+                    | "--remove-section"
+                    | "--edit"
+            ) {
+                return true;
+            }
+            if arg.starts_with('-')
+                && !arg.starts_with("--")
+                && arg[1..].chars().any(|ch| ch == 'e')
+            {
+                return true;
+            }
+            if matches!(
+                arg,
+                "--get"
+                    | "--get-all"
+                    | "--get-regexp"
+                    | "--get-urlmatch"
+                    | "--list"
+                    | "--get-color"
+                    | "--get-colorbool"
+                    | "--help"
+            ) || (arg.starts_with('-')
+                && !arg.starts_with("--")
+                && arg[1..].chars().all(|ch| matches!(ch, 'l' | 'h' | 'z'))
+                && arg[1..].chars().any(|ch| matches!(ch, 'l' | 'h')))
+            {
+                explicit_read_flag = true;
+                index += 1;
+                continue;
+            }
+            if matches!(arg, "-f" | "--file" | "--blob" | "-t" | "--type" | "--default") {
+                index = (index + 2).min(sub_args.len());
+                continue;
+            }
+            if is_known_readonly_git_config_flag(arg) {
+                index += 1;
+                continue;
+            }
+            if arg.starts_with('-') {
+                // Unknown option before any positional key: fail closed.
+                return true;
+            }
+            // git config parses options with PARSE_OPT_STOP_AT_NON_OPTION:
+            // handle git 2.46+ subcommands on the first positional token, otherwise
+            // stop option parsing so every token after <key> is treated as a value.
+            if positional.is_empty() && !explicit_read_flag {
+                if matches!(
+                    arg,
+                    "set" | "unset" | "rename-section" | "remove-section" | "edit"
+                ) {
+                    return true;
+                }
+                if matches!(arg, "list" | "get") {
+                    return false;
+                }
+            }
+            after_double_dash = true;
+        }
+        positional.push(arg);
+        index += 1;
+    }
+
+    if explicit_read_flag {
+        return false;
+    }
+    // `git config <key> <value>` (2+ positional args without read flag) writes config.
+    positional.len() >= 2
+}
+
+fn is_known_readonly_git_config_flag(arg: &str) -> bool {
+    if matches!(
+        arg,
+        "--local"
+            | "--global"
+            | "--system"
+            | "--worktree"
+            | "--includes"
+            | "--no-includes"
+            | "--show-origin"
+            | "--show-scope"
+            | "--name-only"
+            | "--null"
+            | "-z"
+            | "--bool"
+            | "--int"
+            | "--bool-or-int"
+            | "--bool-or-str"
+            | "--path"
+            | "--expiry-date"
+            | "--no-type"
+            | "--fixed-value"
+    ) {
+        return true;
+    }
+    if [
+        "--file=",
+        "--blob=",
+        "--type=",
+        "--default=",
+        "-f",
+        "-t",
+    ]
+    .iter()
+    .any(|prefix| arg.starts_with(prefix) && arg.len() > prefix.len())
+    {
+        return true;
+    }
+    false
+}
+
+fn is_mutating_git_remote(sub_args: &[String]) -> bool {
+    let first_subcommand = sub_args.iter().find(|arg| !arg.starts_with('-'));
+    match first_subcommand.map(String::as_str) {
+        None | Some("show") | Some("get-url") => false,
+        Some(_) => true,
+    }
 }
 
 pub fn is_verification_command(command: &str) -> bool {
@@ -1085,17 +1500,15 @@ fn segment_is_verification(program: &str, args: &[String]) -> bool {
 
 fn unwrap_shell_command(command: &str) -> String {
     let trimmed = command.trim();
+    if split_command_segments(trimmed).len() != 1 || has_unsafe_output_redirection(trimmed) {
+        return trimmed.to_string();
+    }
     let tokens = tokenize_segment(trimmed);
-    if tokens.len() >= 3 {
-        let exe = Path::new(&tokens[0])
-            .file_name()
-            .and_then(OsStr::to_str)
-            .unwrap_or(&tokens[0]);
-        if matches!(exe, "sh" | "bash" | "zsh" | "dash")
-            && matches!(tokens[1].as_str(), "-c" | "-lc" | "-cl")
-        {
-            return tokens[2..].join(" ");
-        }
+    if let Some((exe, args)) = extract_program_and_args(&tokens)
+        && matches!(exe.as_str(), "sh" | "bash" | "zsh" | "dash")
+        && let Some(script) = extract_shell_inline_script(args)
+    {
+        return script;
     }
     trimmed.to_string()
 }
@@ -1236,18 +1649,111 @@ fn extract_program_and_args(tokens: &[String]) -> Option<(String, &[String])> {
             .and_then(OsStr::to_str)
             .unwrap_or(token);
         if matches!(base, "env" | "command") {
+            let wrapper_idx = index;
             index += 1;
-            while index < tokens.len()
-                && (tokens[index].starts_with('-') || is_env_assignment(&tokens[index]))
-            {
-                index += 1;
+            while index < tokens.len() {
+                let current = tokens[index].as_str();
+                if current == "--" {
+                    index += 1;
+                    break;
+                }
+                if base == "env" {
+                    if current == "-" {
+                        index += 1;
+                        continue;
+                    }
+                    if matches!(current, "--unset" | "--chdir" | "--argv0") {
+                        index = (index + 2).min(tokens.len());
+                        continue;
+                    }
+                    if is_known_single_token_env_long_option(current) {
+                        index += 1;
+                        continue;
+                    }
+                    if current.starts_with("--") {
+                        // Fail closed on --split-string*, GNU getopt_long prefix abbreviations
+                        // (--uns, --chd, --split), or any unrecognized long option.
+                        return Some(("env".to_string(), &tokens[wrapper_idx + 1..]));
+                    }
+                    if current.starts_with('-') && current.len() > 1 {
+                        let chars: Vec<char> = current[1..].chars().collect();
+                        let mut consumed_next = false;
+                        for (pos, ch) in chars.iter().enumerate() {
+                            if matches!(ch, 'i' | '0' | 'v') {
+                                continue;
+                            }
+                            if matches!(ch, 'u' | 'C') {
+                                if pos + 1 == chars.len() {
+                                    consumed_next = true;
+                                }
+                                break;
+                            }
+                            // Fail closed on -S, -a, or any unrecognized short option.
+                            return Some(("env".to_string(), &tokens[wrapper_idx + 1..]));
+                        }
+                        index = (index + if consumed_next { 2 } else { 1 }).min(tokens.len());
+                        continue;
+                    }
+                } else if current.starts_with('-') && current.len() > 1 {
+                    index += 1;
+                    continue;
+                }
+                if is_env_assignment(current) {
+                    index += 1;
+                    continue;
+                }
+                break;
             }
             continue;
         }
         if base == "timeout" {
+            let wrapper_idx = index;
             index += 1;
-            while index < tokens.len() && tokens[index].starts_with('-') {
-                index += 1;
+            while index < tokens.len() {
+                let current = tokens[index].as_str();
+                if current == "--" {
+                    index += 1;
+                    break;
+                }
+                if matches!(current, "--kill-after" | "--signal") {
+                    index = (index + 2).min(tokens.len());
+                    continue;
+                }
+                if matches!(
+                    current,
+                    "--preserve-status"
+                        | "--foreground"
+                        | "--verbose"
+                        | "--help"
+                        | "--version"
+                ) || current.starts_with("--kill-after=")
+                    || current.starts_with("--signal=")
+                {
+                    index += 1;
+                    continue;
+                }
+                if current.starts_with("--") {
+                    return Some(("timeout".to_string(), &tokens[wrapper_idx + 1..]));
+                }
+                if current.starts_with('-') && current.len() > 1 {
+                    let chars: Vec<char> = current[1..].chars().collect();
+                    let mut consumed_next = false;
+                    for (pos, ch) in chars.iter().enumerate() {
+                        if *ch == 'v' {
+                            continue;
+                        }
+                        if matches!(ch, 'k' | 's') {
+                            if pos + 1 == chars.len() {
+                                consumed_next = true;
+                            }
+                            break;
+                        }
+                        return Some(("timeout".to_string(), &tokens[wrapper_idx + 1..]));
+                    }
+                    index = (index + if consumed_next { 2 } else { 1 }).min(tokens.len());
+                    continue;
+                }
+                break;
             }
             if index < tokens.len() {
                 index += 1;
@@ -1257,6 +1763,33 @@ fn extract_program_and_args(tokens: &[String]) -> Option<(String, &[String])> {
         return Some((base.to_string(), &tokens[index + 1..]));
     }
     None
+}
+
+fn is_known_single_token_env_long_option(arg: &str) -> bool {
+    if matches!(
+        arg,
+        "--ignore-environment"
+            | "--null"
+            | "--debug"
+            | "--list-signal-handling"
+            | "--help"
+            | "--version"
+            | "--block-signal"
+            | "--default-signal"
+            | "--ignore-signal"
+    ) {
+        return true;
+    }
+    [
+        "--unset=",
+        "--chdir=",
+        "--argv0=",
+        "--block-signal=",
+        "--default-signal=",
+        "--ignore-signal=",
+    ]
+    .iter()
+    .any(|prefix| arg.starts_with(prefix))
 }
 
 fn is_env_assignment(token: &str) -> bool {
@@ -1276,7 +1809,7 @@ fn extract_git_subcommand(args: &[String]) -> Option<(&str, &[String])> {
         let arg = args[index].as_str();
         if matches!(
             arg,
-            "-C" | "-c" | "--git-dir" | "--work-tree" | "--namespace"
+            "-C" | "-c" | "--git-dir" | "--work-tree" | "--namespace" | "--super-prefix"
         ) {
             index += 2;
             continue;
@@ -1331,9 +1864,94 @@ mod tests {
         assert!(is_mutating_review_command("cargo clippy --fix").is_some());
         assert!(is_mutating_review_command("apply_patch").is_some());
 
+        // Shell flag bypass variants: combined short flags (-ec, -xc, -euc), separated flags
+        // (-eu -c, -o pipefail -c), and --command.
+        assert!(is_mutating_review_command("bash -ec 'rm -rf foo'").is_some());
+        assert!(is_mutating_review_command("bash -xc 'git push origin dev'").is_some());
+        assert!(is_mutating_review_command("sh -euc 'mv a b'").is_some());
+        assert!(is_mutating_review_command("sh -eu -c 'git reset --hard'").is_some());
+        assert!(is_mutating_review_command("bash -o pipefail -c 'rm -rf foo'").is_some());
+        assert!(is_mutating_review_command("bash -oc pipefail 'rm -rf foo'").is_some());
+        assert!(is_mutating_review_command("sh -oc errexit 'rm -rf foo'").is_some());
+        assert!(is_mutating_review_command("bash -eO extglob -c 'rm -rf foo'").is_some());
+        assert!(is_mutating_review_command("bash --noprofile --norc -c 'touch x'").is_some());
+        assert!(is_mutating_review_command("sh --command 'rm -rf foo'").is_some());
+        assert!(is_mutating_review_command("sh --command='git commit -m nope'").is_some());
+        assert!(is_mutating_review_command("bash -c - 'rm -rf foo'").is_some());
+        assert!(is_mutating_review_command("sh -c - 'rm -rf foo'").is_some());
+        assert!(is_mutating_review_command("env - rm -rf foo").is_some());
+        assert!(is_mutating_review_command("env --uns PATH /bin/rm -rf foo").is_some());
+        assert!(is_mutating_review_command("env --chd /tmp /bin/rm -rf foo").is_some());
+        assert!(is_mutating_review_command("env --split 'rm -rf foo'").is_some());
+        assert!(is_mutating_review_command("env --split='rm -rf foo'").is_some());
+        assert!(is_mutating_review_command("env -a fake rm -rf foo").is_some());
+        assert!(is_mutating_review_command("timeout -s KILL 5 rm -rf foo").is_some());
+        assert!(is_mutating_review_command("timeout --sig KILL 5 rm -rf foo").is_some());
+        assert!(is_mutating_review_command("env -u FOO bash -ec 'rm -rf foo'").is_some());
+        assert!(is_mutating_review_command("env -iu FOO bash -ec 'rm -rf foo'").is_some());
+        assert!(is_mutating_review_command("env -iC /tmp rm -rf foo").is_some());
+        assert!(is_mutating_review_command("env -S 'rm -rf foo'").is_some());
+        assert!(is_mutating_review_command("env --split-string='rm -rf foo'").is_some());
+
+        // Mutating find, git config, git remote, and xargs payloads.
+        assert!(is_mutating_review_command("find . -name '*.tmp' -delete").is_some());
+        assert!(is_mutating_review_command("find . -name -exec -o -delete").is_some());
+        assert!(is_mutating_review_command("find . -exec rm -f {} +").is_some());
+        assert!(is_mutating_review_command("find . -exec env -u + rm -rf foo \\;").is_some());
+        assert!(is_mutating_review_command("find . -ok env -u + rm -rf foo \\;").is_some());
+        assert!(is_mutating_review_command("find . -okdir env -u + rm -rf foo \\;").is_some());
+        assert!(is_mutating_review_command("git config user.name evil").is_some());
+        assert!(is_mutating_review_command("git config user.name -evil").is_some());
+        assert!(is_mutating_review_command("git config core.sshCommand '-o ProxyCommand=evil'").is_some());
+        assert!(is_mutating_review_command("git config core.sshCommand '-f; echo hi'").is_some());
+        assert!(is_mutating_review_command("git config user.name --list").is_some());
+        assert!(is_mutating_review_command("git config user.name --get").is_some());
+        assert!(is_mutating_review_command("git config user.name --global").is_some());
+        assert!(is_mutating_review_command("git config user.name -v").is_some());
+        assert!(is_mutating_review_command("git config user.name --all").is_some());
+        assert!(is_mutating_review_command("git config --expiry-date gc.pruneExpire '2 weeks ago'").is_some());
+        assert!(is_mutating_review_command("git config -ze").is_some());
+        assert!(is_mutating_review_command("git config --global user.email e@x.com").is_some());
+        assert!(is_mutating_review_command("git config --unset user.name").is_some());
+        assert!(is_mutating_review_command("git config --add core.autocrlf false").is_some());
+        assert!(is_mutating_review_command("git config set user.name evil").is_some());
+        assert!(is_mutating_review_command("git remote set-url origin https://evil").is_some());
+        assert!(is_mutating_review_command("git remote add evil https://evil").is_some());
+        assert!(is_mutating_review_command("git remote remove origin").is_some());
+        assert!(is_mutating_review_command("find . -name '*.tmp' | xargs rm -f").is_some());
+        assert!(is_mutating_review_command("git ls-files | xargs -0 -P 4 -I {} sh -ec 'rm -f {}'").is_some());
+        assert!(is_mutating_review_command("git ls-files | xargs -0I {} rm -f {}").is_some());
+        assert!(is_mutating_review_command("git ls-files | xargs --replace rm -f {}").is_some());
+        assert!(is_mutating_review_command("git ls-files | xargs --eof rm -f").is_some());
+        assert!(is_mutating_review_command("git ls-files | xargs --max-lines rm -f").is_some());
+        assert!(is_mutating_review_command("git ls-files | xargs --max-p 2 rm -f").is_some());
+        assert!(is_mutating_review_command("git ls-files | xargs --max-a 1 rm -f").is_some());
+        assert!(is_mutating_review_command("git ls-files | xargs --del '\\n' rm -f").is_some());
+        assert!(is_mutating_review_command("git ls-files | xargs -l rm -f").is_some());
+        assert!(is_mutating_review_command("git ls-files | xargs -Ia rm -f a").is_some());
+        assert!(is_mutating_review_command("git ls-files | xargs -In rm -f n").is_some());
+        assert!(is_mutating_review_command("git ls-files | xargs -Eend rm -f").is_some());
+        assert!(is_verification_command("bash -eu -c 'cargo test -p ads-acp'"));
+
         // Safe read-only & verification commands (including 2>&1 and >/dev/null) remain allowed.
         assert!(is_mutating_review_command("git diff origin/dev...HEAD").is_none());
         assert!(is_mutating_review_command("git branch --show-current").is_none());
+        assert!(is_mutating_review_command("git config --get user.name").is_none());
+        assert!(is_mutating_review_command("git config -t bool core.bare").is_none());
+        assert!(is_mutating_review_command("git config --bool-or-str core.autocrlf").is_none());
+        assert!(is_mutating_review_command("git config --list").is_none());
+        assert!(is_mutating_review_command("git config -l").is_none());
+        assert!(is_mutating_review_command("git config user.name").is_none());
+        assert!(is_mutating_review_command("git config get --all user.name").is_none());
+        assert!(is_mutating_review_command("git config list --show-origin").is_none());
+        assert!(is_mutating_review_command("timeout 30 cargo test -p ads-acp").is_none());
+        assert!(is_mutating_review_command("env -i PATH=/usr/bin git status").is_none());
+        assert!(is_mutating_review_command("git remote -v").is_none());
+        assert!(is_mutating_review_command("git remote show origin").is_none());
+        assert!(is_mutating_review_command("git remote get-url origin").is_none());
+        assert!(is_mutating_review_command("find rust-server -name '*.rs'").is_none());
+        assert!(is_mutating_review_command("find rust-server -name '*.rs' | xargs -n 10 wc -l").is_none());
+        assert!(is_mutating_review_command("bash -eu -c 'cargo test -p ads-acp'").is_none());
         assert!(is_mutating_review_command("cargo fmt --check").is_none());
         assert!(is_mutating_review_command("cargo test -p ads-actions 2>&1").is_none());
         assert!(is_mutating_review_command("cargo check 2>/dev/null").is_none());
