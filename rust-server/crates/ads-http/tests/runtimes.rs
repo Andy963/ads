@@ -1949,3 +1949,52 @@ async fn agy_account_creation_allows_omitted_label_and_falls_back_to_email() {
 
     fixture.registry.shutdown_all().await;
 }
+
+#[tokio::test]
+async fn runtime_registry_config_defaults_to_native_without_env_override() {
+    let dir = TempDir::new().expect("tempdir");
+    let db = StateDb::open(dir.path().join("state.db")).expect("state db");
+    let workspace = dir.path().join("workspace");
+    fs::create_dir_all(&workspace).expect("workspace");
+    let state_dir = dir.path().join("state");
+    fs::create_dir_all(&state_dir).expect("state dir");
+    let codex_home = dir.path().join("codex-home");
+    fs::create_dir_all(&codex_home).expect("codex home");
+    fs::write(
+        codex_home.join("auth.json"),
+        r#"{"auth_mode":"chatgpt","account_email":"codex.user@example.com","tokens":{"access_token":"tok"}}"#,
+    )
+    .expect("auth.json");
+
+    let mock_codex = write_mock_codex_acp_script(dir.path());
+    let mock_agy = write_mock_agy_script(dir.path(), &state_dir.join("providers").join("agy"));
+    let native_runner = Arc::new(RecordingNativeRunner::new());
+
+    let mut reg_cfg = RuntimeRegistryConfig::new(db.clone(), state_dir, workspace);
+    assert_eq!(reg_cfg.preferred_default_agent_id, NATIVE_AGENT_ID);
+    reg_cfg.native_runner = Some(native_runner);
+    reg_cfg.codex_acp_binary = mock_codex.to_string_lossy().to_string();
+    reg_cfg.codex_home = Some(codex_home);
+    reg_cfg.codex_probe_timeout = Duration::from_secs(10);
+    reg_cfg.agy_binary = mock_agy.to_string_lossy().to_string();
+    reg_cfg.agy_probe_timeout = Duration::from_secs(10);
+
+    let registry = RuntimeRegistry::new(reg_cfg);
+    registry.probe_all().await;
+
+    assert_eq!(registry.default_active_agent_id(), NATIVE_AGENT_ID);
+    assert_eq!(
+        registry.resolve_active_agent_for_lane("user-1::proj-new::acopilot"),
+        NATIVE_AGENT_ID
+    );
+
+    registry
+        .save_lane_agent("user-1::proj-new::acopilot", CODEX_AGENT_ID)
+        .expect("save client lane agent");
+    assert_eq!(
+        registry.resolve_active_agent_for_lane("user-1::proj-new::acopilot"),
+        CODEX_AGENT_ID
+    );
+
+    registry.shutdown_all().await;
+}

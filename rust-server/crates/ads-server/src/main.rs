@@ -1,17 +1,16 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use ads_acp::{AcpDriver, AcpReviewRequest, CodexDriver, run_acp_review};
 use ads_actions::{
-    ReviewError, ReviewQueue, ReviewQueueOptions, ReviewerRunner, review_action_tools_factory,
+    ReviewQueue, ReviewQueueOptions, review_action_tools_factory,
 };
 use ads_auth::{AuthConfig, AuthService, InitAdminOutcome, ResetAdminOutcome};
 use ads_http::{
-    ActionsLaneMessage, CODEX_AGENT_ID, CookieSecureMode, NATIVE_AGENT_ID, ReviewVerdictMessage,
+    ActionsLaneMessage, CookieSecureMode, NATIVE_AGENT_ID, ReviewVerdictMessage,
     RouterConfig, RoutingPromptRunner, RuntimeRegistry, RuntimeRegistryConfig, WebSocketConfig,
     WebSocketHub, WebSocketScheduleNotifier, build_router, detect_workspace_root,
     enqueue_review_verdict_message, parse_allowed_origins, publish_actions_lane_message,
-    resolve_allowed_dirs, resolve_client_dir, resolve_initial_default_agent,
+    resolve_allowed_dirs, resolve_client_dir,
 };
 use ads_native::{
     ModelResolver, NativePromptRunner, NativePromptRunnerOptions, NativeScheduleCompiler,
@@ -44,16 +43,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let workspaces_db_path = resolve_workspaces_db_path();
     let workspace_db = Arc::new(WorkspaceDb::open(&workspaces_db_path)?);
     let websocket_hub = Arc::new(WebSocketHub::new(WebSocketConfig::from_env()));
-    let initial_default_agent =
-        resolve_initial_default_agent(std::env::var("ADS_AGENT_RUNTIME").ok().as_deref());
+    if let Ok(legacy_runtime) = std::env::var("ADS_AGENT_RUNTIME") {
+        let trimmed = legacy_runtime.trim();
+        if !trimmed.is_empty() {
+            eprintln!(
+                "[ads-rust] ignoring deprecated ADS_AGENT_RUNTIME={trimmed}; runtime selection defaults to '{NATIVE_AGENT_ID}' and is managed via client UI"
+            );
+        }
+    }
     let current_dir = std::env::current_dir()?;
     let fallback_allowed_dir = detect_workspace_root(&current_dir);
     let state_dir = resolve_ads_state_dir();
-    let review_queue = build_review_queue(
-        state_db.clone(),
-        Arc::clone(&websocket_hub),
-        initial_default_agent == CODEX_AGENT_ID,
-    );
+    let review_queue = build_review_queue(state_db.clone(), Arc::clone(&websocket_hub));
     let model_resolver = ModelResolver::new(state_db.clone());
     let mut native_options =
         NativePromptRunnerOptions::new(state_db.clone(), model_resolver.clone());
@@ -125,11 +126,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn build_review_queue(
-    db: StateDb,
-    hub: Arc<WebSocketHub>,
-    use_codex_reviewer: bool,
-) -> Arc<ReviewQueue> {
+fn build_review_queue(db: StateDb, hub: Arc<WebSocketHub>) -> Arc<ReviewQueue> {
     let messenger_db = db.clone();
     let messenger_hub = Arc::clone(&hub);
     let waker_db = db.clone();
@@ -178,35 +175,9 @@ fn build_review_queue(
             eprintln!("[ads-actions] unable to enqueue Reviewer handoff: {error}");
         }
     });
-    let reviewer: Option<ReviewerRunner> = if use_codex_reviewer {
-        let reviewer_db = db.clone();
-        let codex_driver: Arc<dyn AcpDriver> = Arc::new(CodexDriver::from_env());
-        Some(Arc::new(move |request| {
-            let db = reviewer_db.clone();
-            let driver = Arc::clone(&codex_driver);
-            Box::pin(async move {
-                run_acp_review(AcpReviewRequest {
-                    db,
-                    driver,
-                    payload: request.payload,
-                    repo_path: request.repo_path,
-                    profile_id: request.profile_id,
-                    job_id: request.job_id,
-                    timeout: std::time::Duration::from_secs(30 * 60),
-                    cancellation: request.cancellation,
-                    verification_report: request.verification_report,
-                })
-                .await
-                .map_err(ReviewError::from)
-            })
-        }))
-    } else {
-        None
-    };
     let options = ReviewQueueOptions {
         messenger: Some(messenger),
         waker: Some(waker),
-        reviewer,
         ..ReviewQueueOptions::default()
     };
     Arc::new(ReviewQueue::new(

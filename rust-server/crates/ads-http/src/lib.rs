@@ -39,7 +39,7 @@ pub use routes::{
 pub use runtimes::{
     AGY_DEFAULT_AGENT_ID, AgyAccountView, AgyLoginStartView, CODEX_AGENT_ID, NATIVE_AGENT_ID,
     RoutingPromptRunner, RuntimeAgentDescriptor, RuntimeRegistry, RuntimeRegistryConfig,
-    UpsertAgyAccountInput, resolve_initial_default_agent,
+    UpsertAgyAccountInput,
 };
 pub use skills::{
     SkillEntrypoint, SkillMetadata, SkillPaths, SkillRequiredEnv, SkillSource, SkillTriggers,
