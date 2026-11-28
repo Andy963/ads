@@ -18,7 +18,7 @@ pub use queue::{
     parse_reviewer_profile_id, resolve_issue_url, review_key, unconfigured_resolver,
 };
 pub use resolver::{default_target_resolver, extract_linked_issue_ids, parse_acceptance_criteria};
-pub use runtime::review_action_tools_factory;
+pub use runtime::{allows_review_action_for_turn, review_action_tools_factory};
 pub use types::{
     AcopilotWake, IssueCommentPublisher, IssueCommentRequest, LaneMessage, LaneMessageRole,
     LaneMessenger, LaneWaker, ResolveReviewRequest, ResolvedReview, ReviewError, ReviewQueueAck,

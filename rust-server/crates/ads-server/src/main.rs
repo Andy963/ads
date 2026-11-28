@@ -64,8 +64,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut native_options =
         NativePromptRunnerOptions::new(state_db.clone(), model_resolver.clone());
     native_options.agent_id = NATIVE_AGENT_ID.to_string();
-    let native_action_tools = review_action_tools_factory(Arc::clone(&review_queue));
-    native_options.action_tools_factory = Some(native_action_tools);
+    let action_tools_factory = review_action_tools_factory(Arc::clone(&review_queue));
+    native_options.action_tools_factory = Some(Arc::clone(&action_tools_factory));
     let native_runner = Arc::new(NativePromptRunner::new(native_options));
 
     let mut registry_config = RuntimeRegistryConfig::new(
@@ -75,6 +75,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     registry_config.native_runner = Some(native_runner.clone());
     registry_config.native_scheduler = Some(native_runner);
+    registry_config.action_tools_factory = Some(action_tools_factory);
     let runtime_registry = RuntimeRegistry::new(registry_config);
     let _ = reviewer_registry.set(Arc::downgrade(&runtime_registry));
     runtime_registry.attach_ws_hub(Arc::clone(&websocket_hub));

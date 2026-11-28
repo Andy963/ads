@@ -11,7 +11,7 @@
 ## 2. 标准工作流
 
 1. Acopilot 调查需求，并先创建英文 GitHub Issue，内容包含 Problem Description、Root Cause Analysis、Scope of Work 与 Acceptance Criteria。
-2. Acopilot 决定任务边界和改动范围。`review_action` 是常驻内置工具；服务端从已认证的会话解析项目、工作区与用户身份。
+2. Acopilot 决定任务边界和改动范围。`review_action` 是服务端宿主侧提供的跨 Agent 派审 handoff 能力（Native 通过内置工具调用，ACP 运行时 `codex` / `agy*` 通过宿主拦截的结构化 `ads-review-action` 块与有界校验修复循环执行，不经由 MCP，见 ADR 0078）；服务端始终从已认证的 `LaneTurn` 解析项目、工作区与用户身份。当用户在 Actions 泳道主动发起对话（`UserPrompt`）时，同样允许通过 `review_action` 触发 PR 评审（工作区仍保持只读）；自动化队列中的只读 Reviewer 永远不拥有 `review_action`。
 3. Acopilot 从最新 `dev` 切出语义特性分支（推荐 `<type>/<issue-id>-<short-slug>`，如 `fix/681-turn-timeout`、`feat/700-ws-reconnect`，同时兼容旧 `codex/issue-<id>`）实现、验证并准备对应 PR，并在 PR 正文中以唯一的 `Closes #<id>` 绑定对应 Issue。未经用户明确授权，不得推送、合并或部署。
 4. PR 创建后，Acopilot 调用 `review_action`。该调用只把 `pull_request_review` 任务入队并立即返回 job id，不等待评审结果；PR、Issue 条件、base/head 提交与相关 ADR 在任务到达队首时固定。
 5. Actions 队列按项目串行运行验证命令，再把完整验证报告交给只读 Reviewer，由它结合固定的 Issue/ADR 与 PR diff 评估。命令正常结束后，退出码非零不会阻止 Reviewer 运行。Actions 会话只记录命令、退出码与简短摘要，原始输出保留在任务记录和 Reviewer 输入中。

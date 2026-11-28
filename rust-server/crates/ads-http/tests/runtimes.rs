@@ -2509,3 +2509,355 @@ async fn runtime_registry_config_defaults_to_native_without_env_override() {
 
     registry.shutdown_all().await;
 }
+
+#[tokio::test]
+async fn runtime_registry_wires_review_action_handoff_to_codex_and_agy_acp_runners() {
+    use std::process::Command as StdCommand;
+    use ads_actions::{ReviewQueue, ReviewQueueOptions, canonical_project_id, review_action_tools_factory};
+    use ads_state::{
+        UpsertWebProject, WEB_ACOPILOT_NAMESPACE, ensure_web_project_tables, list_action_jobs,
+        upsert_web_project,
+    };
+
+    let dir = TempDir::new().expect("tempdir");
+    let repo = dir.path().join("repo");
+    fs::create_dir_all(&repo).expect("repo");
+    for args in [
+        &["init", "-q"][..],
+        &["config", "user.email", "acopilot@example.com"],
+        &["config", "user.name", "Acopilot"],
+    ] {
+        let out = StdCommand::new("git")
+            .args(args)
+            .current_dir(&repo)
+            .output()
+            .expect("git init");
+        assert!(out.status.success());
+    }
+    fs::write(repo.join("README.md"), "# 758\n").expect("readme");
+    for args in [
+        &["add", "."][..],
+        &["commit", "-q", "-m", "initial"],
+        &["branch", "-m", "feat/758-acp-review-action-handoff"],
+    ] {
+        let out = StdCommand::new("git")
+            .args(args)
+            .current_dir(&repo)
+            .output()
+            .expect("git commit");
+        assert!(out.status.success());
+    }
+
+    let state_dir = dir.path().join("state");
+    fs::create_dir_all(&state_dir).expect("state dir");
+    let db = StateDb::open(state_dir.join("state.db")).expect("state db");
+    let project_id = canonical_project_id("proj-758", Some(&repo));
+    {
+        let conn = db.connect().expect("conn");
+        conn.execute(
+            "INSERT INTO web_users (id, username, password_hash, created_at, updated_at)
+             VALUES ('user-1', 'admin', 'hash', 1, 1)",
+            [],
+        )
+        .expect("user");
+        ensure_web_project_tables(&conn).expect("web project tables");
+        upsert_web_project(
+            &conn,
+            UpsertWebProject {
+                user_id: "user-1",
+                project_id: &project_id,
+                workspace_root: &repo.to_string_lossy(),
+                name: "ADS 758",
+                chat_session_id: Some("main"),
+            },
+            1_000,
+        )
+        .expect("upsert project");
+    }
+
+    let codex_home = dir.path().join("codex-home");
+    fs::create_dir_all(&codex_home).expect("codex home");
+    fs::write(
+        codex_home.join("auth.json"),
+        r#"{"auth_mode":"chatgpt","account_email":"codex@example.com","tokens":{"access_token":"tok"}}"#,
+    )
+    .expect("codex auth");
+
+    // Mock ACP binary serving both `codex-acp` and `agy acp --stdio`
+    let mock_acp = dir.path().join("mock-acp-758.py");
+    let script = r#"#!/usr/bin/env python3
+import json, sys
+
+if "--version" in sys.argv:
+    print("mock-acp 1.0.0")
+    sys.exit(0)
+
+session_num = 0
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    msg = json.loads(line)
+    method = msg.get("method")
+    req_id = msg.get("id")
+    params = msg.get("params") or {}
+    if method == "initialize":
+        resp = {
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "result": {
+                "protocolVersion": 1,
+                "agentCapabilities": {"loadSession": False, "sessionCapabilities": {}},
+                "agentInfo": {"name": "mock-acp-758", "version": "1.0.0"},
+                "authMethods": [],
+            },
+        }
+    elif method == "session/new":
+        session_num += 1
+        resp = {
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "result": {
+                "sessionId": f"s-{session_num}",
+                "modes": {"currentModeId": "default", "availableModes": [{"id": "default", "name": "Default"}, {"id": "acceptEdits", "name": "Accept Edits"}, {"id": "plan", "name": "Plan"}]},
+                "configOptions": [{"id": "model", "name": "Model", "category": "model", "type": "select", "currentValue": "mock-model", "options": [{"value": "mock-model", "name": "Mock Model"}]}],
+            },
+        }
+    elif method in ("session/set_mode", "session/set_config_option"):
+        resp = {"jsonrpc": "2.0", "id": req_id, "result": {}}
+    elif method == "session/prompt":
+        sid = params.get("sessionId", "s-1")
+        reply = "Enqueuing PR review now.\n\n```ads-review-action\n{}\n```"
+        sys.stdout.write(json.dumps({
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": {
+                "sessionId": sid,
+                "update": {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": reply}},
+            },
+        }) + "\n")
+        resp = {"jsonrpc": "2.0", "id": req_id, "result": {"stopReason": "end_turn"}}
+    else:
+        continue
+    sys.stdout.write(json.dumps(resp) + "\n")
+    sys.stdout.flush()
+"#;
+    fs::write(&mock_acp, script).expect("write mock acp");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(&mock_acp).expect("meta").permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&mock_acp, perms).expect("chmod");
+    }
+
+    let review_queue = Arc::new(ReviewQueue::new(
+        db.clone(),
+        "worker-758",
+        ReviewQueueOptions::default(),
+    ));
+    let factory = review_action_tools_factory(Arc::clone(&review_queue));
+
+    let mut reg_cfg = RuntimeRegistryConfig::new(db.clone(), state_dir, repo.clone());
+    reg_cfg.action_tools_factory = Some(factory);
+    reg_cfg.codex_acp_binary = mock_acp.to_string_lossy().to_string();
+    reg_cfg.codex_home = Some(codex_home);
+    reg_cfg.codex_probe_timeout = Duration::from_secs(10);
+    reg_cfg.agy_binary = mock_acp.to_string_lossy().to_string();
+    reg_cfg.agy_probe_timeout = Duration::from_secs(10);
+
+    let registry = RuntimeRegistry::new(reg_cfg);
+    registry.probe_all().await;
+    let routing = RoutingPromptRunner::new(Arc::clone(&registry));
+
+    // 1. Acopilot on `codex` ACP dispatches a real ReviewQueue job in StateDb.
+    let mut codex_payload = serde_json::Map::new();
+    codex_payload.insert("agentId".to_string(), json!(CODEX_AGENT_ID));
+    codex_payload.insert("text".to_string(), json!("Dispatch PR review"));
+    let codex_events = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let codex_events_h = Arc::clone(&codex_events);
+    let outcome = routing
+        .run_lane_turn(
+            LaneTurn {
+                kind: LaneTurnKind::UserPrompt,
+                key: LaneTurnKey::PromptQueue(101),
+                client_message_id: "cm-codex-758".to_string(),
+                auth_user_id: "user-1".to_string(),
+                user_id: 1,
+                session_id: project_id.clone(),
+                chat_session_id: "acopilot".to_string(),
+                history_key: format!("user-1::{project_id}::acopilot"),
+                logical_history_key: format!("user-1::{project_id}::acopilot"),
+                lane_namespace: WEB_ACOPILOT_NAMESPACE.to_string(),
+                lane_generation: 1,
+                workspace_root: repo.to_string_lossy().to_string(),
+                payload: codex_payload,
+                history_display_text: None,
+                created_at: 2_000,
+            },
+            PromptRunContext::new(Arc::new(move |ev| {
+                codex_events_h.lock().expect("evs").push(ev);
+            })),
+        )
+        .await
+        .expect("codex turn");
+    assert!(outcome.ok);
+    assert!(
+        codex_events.lock().expect("evs").iter().any(|ev| {
+            ev["type"] == "review_action_handoff"
+                && ev["ok"] == json!(true)
+                && ev["branch"] == json!("feat/758-acp-review-action-handoff")
+        }),
+        "codex ACP review_action_handoff must include real branch from ReviewQueueAck"
+    );
+
+    let jobs = {
+        let conn = db.connect().expect("conn");
+        list_action_jobs(&conn, &project_id, None, Some("user-1")).expect("list jobs")
+    };
+    assert_eq!(jobs.len(), 1, "codex ACP handoff must enqueue 1 ReviewQueue job");
+    assert_eq!(jobs[0].issue_id, Some(758));
+    assert_eq!(
+        jobs[0].branch.as_deref(),
+        Some("feat/758-acp-review-action-handoff")
+    );
+
+    // 2. Human-initiated Actions lane UserPrompt on `agy` ACP can also invoke review_action.
+    let mut agy_actions_payload = serde_json::Map::new();
+    agy_actions_payload.insert("agentId".to_string(), json!(AGY_DEFAULT_AGENT_ID));
+    agy_actions_payload.insert("text".to_string(), json!("Trigger review from Actions lane"));
+    let agy_events = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let agy_events_h = Arc::clone(&agy_events);
+    let agy_outcome = routing
+        .run_lane_turn(
+            LaneTurn {
+                kind: LaneTurnKind::UserPrompt,
+                key: LaneTurnKey::PromptQueue(102),
+                client_message_id: "cm-agy-actions-758".to_string(),
+                auth_user_id: "user-1".to_string(),
+                user_id: 1,
+                session_id: project_id.clone(),
+                chat_session_id: "main".to_string(),
+                history_key: format!("user-1::{project_id}::main"),
+                logical_history_key: format!("user-1::{project_id}::main"),
+                lane_namespace: WEB_ACTIONS_NAMESPACE.to_string(),
+                lane_generation: 1,
+                workspace_root: repo.to_string_lossy().to_string(),
+                payload: agy_actions_payload,
+                history_display_text: None,
+                created_at: 3_000,
+            },
+            PromptRunContext::new(Arc::new(move |ev| {
+                agy_events_h.lock().expect("evs").push(ev);
+            })),
+        )
+        .await
+        .expect("agy actions user turn");
+    assert!(agy_outcome.ok);
+    assert!(
+        agy_events
+            .lock()
+            .expect("evs")
+            .iter()
+            .any(|ev| ev["type"] == "review_action_handoff" && ev["ok"] == json!(true)),
+        "agy ACP user-initiated Actions lane turn must succeed"
+    );
+
+    // 3. Non-user-initiated Actions lane AgentHandoff on `agy` ACP must NOT execute review_action.
+    registry
+        .save_lane_agent(&format!("user-1::{project_id}::main"), AGY_DEFAULT_AGENT_ID)
+        .expect("save agy lane pref");
+    let mut forbidden_payload = serde_json::Map::new();
+    forbidden_payload.insert("text".to_string(), json!("Automated actions handoff"));
+    let forbidden_events = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let forbidden_events_h = Arc::clone(&forbidden_events);
+    let forbidden_outcome = routing
+        .run_lane_turn(
+            LaneTurn {
+                kind: LaneTurnKind::AgentHandoff,
+                key: LaneTurnKey::AgentHandoff("758-auto".to_string()),
+                client_message_id: "cm-agy-actions-auto-758".to_string(),
+                auth_user_id: "user-1".to_string(),
+                user_id: 1,
+                session_id: project_id.clone(),
+                chat_session_id: "main".to_string(),
+                history_key: format!("user-1::{project_id}::main"),
+                logical_history_key: format!("user-1::{project_id}::main"),
+                lane_namespace: WEB_ACTIONS_NAMESPACE.to_string(),
+                lane_generation: 1,
+                workspace_root: repo.to_string_lossy().to_string(),
+                payload: forbidden_payload,
+                history_display_text: None,
+                created_at: 4_000,
+            },
+            PromptRunContext::new(Arc::new(move |ev| {
+                forbidden_events_h.lock().expect("evs").push(ev);
+            })),
+        )
+        .await
+        .expect("agy actions handoff turn");
+    assert!(forbidden_outcome.ok);
+    assert!(
+        !forbidden_events
+            .lock()
+            .expect("evs")
+            .iter()
+            .any(|ev| ev["type"] == "review_action_handoff"),
+        "non-user-initiated Actions lane turn must not invoke review_action"
+    );
+
+    // 4. Dynamically created isolated `agy:<account_id>` runner also receives action_tools_factory.
+    let isolated = registry
+        .create_or_update_agy_account(ads_http::UpsertAgyAccountInput {
+            id: Some("iso-758".to_string()),
+            label: Some("Isolated 758".to_string()),
+            auth_method: ads_acp::AgyAuthMethod::GeminiApiKey,
+            api_key: Some("test-api-key".to_string()),
+            gcp_project: None,
+            gcp_location: None,
+        })
+        .await
+        .expect("create isolated agy account");
+    registry.probe_all().await;
+    let mut iso_payload = serde_json::Map::new();
+    iso_payload.insert("agentId".to_string(), json!(isolated.agent_id));
+    iso_payload.insert("text".to_string(), json!("Dispatch from isolated agy"));
+    let iso_events = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let iso_events_h = Arc::clone(&iso_events);
+    let iso_outcome = routing
+        .run_lane_turn(
+            LaneTurn {
+                kind: LaneTurnKind::UserPrompt,
+                key: LaneTurnKey::PromptQueue(103),
+                client_message_id: "cm-agy-iso-758".to_string(),
+                auth_user_id: "user-1".to_string(),
+                user_id: 1,
+                session_id: project_id.clone(),
+                chat_session_id: "acopilot".to_string(),
+                history_key: format!("user-1::{project_id}::acopilot"),
+                logical_history_key: format!("user-1::{project_id}::acopilot"),
+                lane_namespace: WEB_ACOPILOT_NAMESPACE.to_string(),
+                lane_generation: 1,
+                workspace_root: repo.to_string_lossy().to_string(),
+                payload: iso_payload,
+                history_display_text: None,
+                created_at: 5_000,
+            },
+            PromptRunContext::new(Arc::new(move |ev| {
+                iso_events_h.lock().expect("evs").push(ev);
+            })),
+        )
+        .await
+        .expect("isolated agy turn");
+    assert!(iso_outcome.ok);
+    assert!(
+        iso_events.lock().expect("evs").iter().any(|ev| {
+            ev["type"] == "review_action_handoff"
+                && ev["ok"] == json!(true)
+                && ev["branch"] == json!("feat/758-acp-review-action-handoff")
+        }),
+        "dynamically created isolated agy runner must execute review_action handoff"
+    );
+
+    registry.shutdown_all().await;
+}

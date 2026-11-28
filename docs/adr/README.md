@@ -86,4 +86,5 @@
 - 0075 - [ADR 0075: Unify Codex and Antigravity on ACP and Scope ADS Providers to Native Runtime](0075-unify-codex-and-antigravity-on-acp-and-scope-providers-to-native.md)
 - 0076 - [ADR 0076: Unified Bounded Transient Retry Policy for Native and ACP Runtimes](0076-unified-bounded-transient-retry-for-native-and-acp.md)
 - 0077 - [ADR 0077: Activity-Aware Liveness Watchdogs and Resilient Transport Timeouts Across Native and ACP Runtimes](0077-activity-aware-liveness-and-resilient-timeouts.md)
+- 0078 - [ADR 0078: Host-Owned `review_action` Agent Handoff for ACP Runtimes and User-Initiated Actions Turns](0078-host-owned-review-action-handoff-for-acp.md)
 <!-- ADS:ADR_INDEX_END -->

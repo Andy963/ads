@@ -21,36 +21,143 @@ pub struct ToolDirective {
     pub raw: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SpannedToolDirective {
+    start_byte: usize,
+    end_byte: usize,
+    directive: ToolDirective,
+}
+
 pub fn extract_tool_directives(text: &str) -> Vec<ToolDirective> {
+    extract_spanned_tool_directives(text)
+        .into_iter()
+        .map(|item| item.directive)
+        .collect()
+}
+
+pub fn strip_tool_directives(text: &str) -> String {
+    let matches = extract_spanned_tool_directives(text);
+    if matches.is_empty() {
+        return text.trim().to_string();
+    }
+    let mut output = String::with_capacity(text.len());
+    let mut cursor = 0usize;
+    for item in matches {
+        if item.start_byte >= cursor && item.end_byte <= text.len() {
+            output.push_str(&text[cursor..item.start_byte]);
+            cursor = item.end_byte;
+        }
+    }
+    if cursor < text.len() {
+        output.push_str(&text[cursor..]);
+    }
+    output.trim().to_string()
+}
+
+fn extract_spanned_tool_directives(text: &str) -> Vec<SpannedToolDirective> {
     static PATTERN: OnceLock<Regex> = OnceLock::new();
     let pattern = PATTERN.get_or_init(|| {
         Regex::new(r"(?is)<<<tool\.([a-z0-9_.-]+)([^>]*)>>>\s*(.*?)\s*>>>")
             .expect("tool directive regex")
     });
-    pattern
-        .captures_iter(text)
-        .filter_map(|captures| {
-            let raw = captures.get(0)?.as_str().to_string();
-            Some(ToolDirective {
-                name: captures.get(1)?.as_str().trim().to_ascii_lowercase(),
-                attrs: parse_attrs(captures.get(2).map_or("", |value| value.as_str())),
-                body: captures
-                    .get(3)
-                    .map_or("", |value| value.as_str())
-                    .trim()
-                    .to_string(),
-                raw,
-            })
-        })
-        .collect()
+    let mut out = Vec::new();
+    for (seg_start, seg_end) in non_fenced_byte_ranges(text) {
+        let slice = &text[seg_start..seg_end];
+        for captures in pattern.captures_iter(slice) {
+            let Some(full) = captures.get(0) else {
+                continue;
+            };
+            let Some(name_match) = captures.get(1) else {
+                continue;
+            };
+            out.push(SpannedToolDirective {
+                start_byte: seg_start + full.start(),
+                end_byte: seg_start + full.end(),
+                directive: ToolDirective {
+                    name: name_match.as_str().trim().to_ascii_lowercase(),
+                    attrs: parse_attrs(captures.get(2).map_or("", |value| value.as_str())),
+                    body: captures
+                        .get(3)
+                        .map_or("", |value| value.as_str())
+                        .trim()
+                        .to_string(),
+                    raw: full.as_str().to_string(),
+                },
+            });
+        }
+    }
+    out
 }
 
-pub fn strip_tool_directives(text: &str) -> String {
-    let mut output = text.to_string();
-    for directive in extract_tool_directives(text) {
-        output = output.replace(&directive.raw, "");
+fn non_fenced_byte_ranges(text: &str) -> Vec<(usize, usize)> {
+    let mut ranges = Vec::new();
+    let mut outer_fence: Option<(u8, usize)> = None;
+    let mut plain_start: Option<usize> = None;
+    let mut offset = 0usize;
+
+    for chunk in text.split_inclusive('\n') {
+        let len = chunk.len();
+        let line = chunk.trim_end_matches(['\r', '\n']);
+        let trimmed_start = line.trim_start();
+        if let Some((fence_char, min_len)) = outer_fence {
+            if is_closing_code_fence(trimmed_start, fence_char, min_len) {
+                outer_fence = None;
+            }
+        } else if let Some((fence_char, fence_len)) = parse_opening_code_fence(trimmed_start) {
+            if let Some(start) = plain_start.take()
+                && start < offset
+            {
+                ranges.push((start, offset));
+            }
+            outer_fence = Some((fence_char, fence_len));
+        } else if plain_start.is_none() {
+            plain_start = Some(offset);
+        }
+        offset += len;
     }
-    output.trim().to_string()
+    if offset < text.len() {
+        let line = &text[offset..];
+        let trimmed_start = line.trim_start();
+        if outer_fence.is_none()
+            && parse_opening_code_fence(trimmed_start).is_none()
+            && plain_start.is_none()
+        {
+            plain_start = Some(offset);
+        }
+    }
+    if let Some(start) = plain_start
+        && start < text.len()
+    {
+        ranges.push((start, text.len()));
+    }
+    ranges
+}
+
+fn parse_opening_code_fence(trimmed_start: &str) -> Option<(u8, usize)> {
+    let first = *trimmed_start.as_bytes().first()?;
+    if first != b'`' && first != b'~' {
+        return None;
+    }
+    let count = trimmed_start
+        .bytes()
+        .take_while(|byte| *byte == first)
+        .count();
+    if count < 3 {
+        return None;
+    }
+    let info = trimmed_start[count..].trim();
+    if first == b'`' && info.contains('`') {
+        return None;
+    }
+    Some((first, count))
+}
+
+fn is_closing_code_fence(trimmed_start: &str, fence_char: u8, min_len: usize) -> bool {
+    let count = trimmed_start
+        .bytes()
+        .take_while(|byte| *byte == fence_char)
+        .count();
+    count >= min_len && trimmed_start[count..].trim().is_empty()
 }
 
 pub fn execute_tool_directives(text: &str, workspace_root: &str) -> Vec<String> {
@@ -295,6 +402,29 @@ mod tests {
         );
         assert_eq!(directives[0].body, "remember this");
         assert_eq!(strip_tool_directives(text), "before\n\nafter");
+    }
+
+    #[test]
+    fn ignores_directives_quoted_inside_markdown_code_fences() {
+        let text = concat!(
+            "Example:\n",
+            "```rust\n",
+            "let s = \"<<<tool.review_action>>>{}>>>\";\n",
+            "```\n\n",
+            "~~~text\n",
+            "<<<tool.memory.update op=\"add\">>>quoted>>>\n",
+            "~~~\n\n",
+            "Live:\n",
+            "<<<tool.memory.update op=\"add\">>>real>>>\n"
+        );
+        let directives = extract_tool_directives(text);
+        assert_eq!(directives.len(), 1);
+        assert_eq!(directives[0].name, "memory.update");
+        assert_eq!(directives[0].body, "real");
+        let stripped = strip_tool_directives(text);
+        assert!(stripped.contains("<<<tool.review_action>>>{}>>>"));
+        assert!(stripped.contains("<<<tool.memory.update op=\"add\">>>quoted>>>"));
+        assert!(!stripped.contains(">>>real>>>"));
     }
 
     #[test]

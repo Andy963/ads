@@ -2,8 +2,8 @@ use std::path::{Path, PathBuf};
 
 use ads_state::{
     ActionJobIssueSnapshot, ActionJobKind, ActionJobRecord, ActionJobStatus, ActionJobStatusUpdate,
-    CreateActionJob, StateDb, WEB_ACTIONS_NAMESPACE, create_action_job, get_lane_generation,
-    list_action_jobs, logical_history_key, update_action_job_status,
+    CreateActionJob, StateDb, WEB_ACOPILOT_NAMESPACE, WEB_ACTIONS_NAMESPACE, create_action_job,
+    get_lane_generation, list_action_jobs, logical_history_key, update_action_job_status,
 };
 use rusqlite::{Connection, OptionalExtension, params};
 use uuid::Uuid;
@@ -407,12 +407,31 @@ pub(crate) fn resolve_actions_lane(
     Ok(Some((chat_session_id, generation)))
 }
 
+pub(crate) fn resolve_acopilot_lane_generation(
+    db: &StateDb,
+    project_id: &str,
+    repo_path: &Path,
+    auth_user_id: &str,
+    now: i64,
+) -> Result<i64, ReviewError> {
+    let mut connection = db.connect()?;
+    let canonical = canonical_project_id(project_id, Some(repo_path));
+    let logical_key = logical_history_key(auth_user_id.trim(), &canonical, "acopilot");
+    let generation =
+        get_lane_generation(&mut connection, WEB_ACOPILOT_NAMESPACE, &logical_key, now.max(1))?;
+    Ok(generation.max(1))
+}
+
 fn review_queue_ack(job: ActionJobRecord) -> ReviewQueueAck {
     ReviewQueueAck {
         ok: true,
         job_id: job.id.clone(),
         status: job.status,
         issue_id: job.issue_id.filter(|issue_id| *issue_id > 0),
+        branch: job
+            .branch
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty()),
         note: REVIEW_QUEUE_NOTE.to_string(),
     }
 }
