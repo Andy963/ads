@@ -587,3 +587,323 @@ fn drivers_do_not_misclassify_transient_32000_rpc_errors_as_auth_required() {
         );
     }
 }
+
+#[tokio::test]
+async fn first_turn_timeout_or_cancellation_does_not_persist_session_id_and_preserves_bootstrap() {
+    let temp = TempDir::new().expect("temp dir");
+    let workspace = temp.path().join("ws");
+    fs::create_dir_all(&workspace).expect("ws");
+    let workspace_str = workspace.to_string_lossy().to_string();
+
+    let script_path = temp.path().join("mock_cancel_persist.py");
+    let prompt_log = temp.path().join("prompts.jsonl");
+    let script = r#"#!/usr/bin/env python3
+import json
+import os
+import sys
+import threading
+import time
+
+log_path = os.environ["MOCK_PROMPT_LOG"]
+session_num = 0
+cancel_events = {}
+
+def send(obj):
+    sys.stdout.write(json.dumps(obj) + "\n")
+    sys.stdout.flush()
+
+def log_prompt(session_id, text):
+    with open(log_path, "a", encoding="utf-8") as fh:
+        fh.write(json.dumps({"sessionId": session_id, "text": text}) + "\n")
+
+def handle_prompt(req_id, session_id, prompt_text):
+    log_prompt(session_id, prompt_text)
+    lines = [line.strip() for line in prompt_text.splitlines() if line.strip()]
+    active_line = lines[-1] if lines else ""
+    if active_line in ("wait_cancel", "wait_timeout"):
+        cancel_ev = cancel_events.setdefault(session_id, threading.Event())
+        cancel_ev.clear()
+        if active_line == "wait_cancel":
+            send({
+                "jsonrpc": "2.0",
+                "method": "session/update",
+                "params": {
+                    "sessionId": session_id,
+                    "update": {
+                        "sessionUpdate": "agent_message_chunk",
+                        "content": {"type": "text", "text": "waiting-for-cancel"},
+                    },
+                },
+            })
+        cancel_ev.wait(timeout=10.0)
+        send({"jsonrpc": "2.0", "id": req_id, "result": {"stopReason": "cancelled"}})
+        return
+
+    send({
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+            "sessionId": session_id,
+            "update": {
+                "sessionUpdate": "agent_message_chunk",
+                "content": {"type": "text", "text": "OK:" + session_id},
+            },
+        },
+    })
+    send({"jsonrpc": "2.0", "id": req_id, "result": {"stopReason": "end_turn"}})
+
+for raw in sys.stdin:
+    raw = raw.strip()
+    if not raw:
+        continue
+    msg = json.loads(raw)
+    method = msg.get("method")
+    req_id = msg.get("id")
+    params = msg.get("params") or {}
+    if method == "initialize":
+        send({
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "result": {
+                "protocolVersion": 1,
+                "agentInfo": {"name": "mock-cancel-persist", "version": "1.0.0"},
+                "agentCapabilities": {"loadSession": True, "sessionCapabilities": {"resume": {}}},
+                "authMethods": [],
+            },
+        })
+    elif method == "session/new":
+        session_num += 1
+        sid = f"sess-{os.getpid()}-{session_num}"
+        send({
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "result": {
+                "sessionId": sid,
+                "modes": {"currentModeId": "default", "availableModes": [{"id": "default", "name": "Default"}, {"id": "acceptEdits", "name": "Accept Edits"}]},
+                "configOptions": [],
+            },
+        })
+    elif method in ("session/resume", "session/load"):
+        send({
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "result": {
+                "sessionId": params.get("sessionId"),
+                "modes": {"currentModeId": "default", "availableModes": []},
+                "configOptions": [],
+            },
+        })
+    elif method == "session/set_mode":
+        send({"jsonrpc": "2.0", "id": req_id, "result": {}})
+    elif method == "session/cancel":
+        sid = params.get("sessionId")
+        ev = cancel_events.get(sid)
+        if ev is not None:
+            ev.set()
+    elif method == "session/prompt":
+        sid = params.get("sessionId")
+        blocks = params.get("prompt") or []
+        text = "\n".join(b.get("text", "") for b in blocks if b.get("type") == "text")
+        threading.Thread(target=handle_prompt, args=(req_id, sid, text), daemon=True).start()
+"#;
+    fs::write(&script_path, script).expect("write mock script");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(&script_path).expect("meta").permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&script_path, perms).expect("chmod");
+    }
+
+    let db = StateDb::open(temp.path().join("state.db")).expect("state db");
+    {
+        let conn = db.connect().expect("conn");
+        conn.execute(
+            "UPDATE role_profiles SET system_prompt = 'ISSUE_754_ROLE_INSTRUCTIONS' WHERE role = 'acopilot'",
+            [],
+        )
+        .expect("set acopilot system prompt");
+    }
+
+    let driver: Arc<dyn AcpDriver> = Arc::new(
+        GenericAcpDriver::new(
+            "mock-cancel-persist",
+            script_path.to_string_lossy().to_string(),
+        )
+        .with_env("MOCK_PROMPT_LOG", prompt_log.to_string_lossy().to_string()),
+    );
+    let runner = Arc::new(AcpPromptRunner::new(
+        db.clone(),
+        AcpPromptRunnerConfig::new(driver)
+            .with_idle_timeout(Some(Duration::from_millis(250)))
+            .with_supervisor_config(AcpSupervisorConfig {
+                session: AcpSessionConfig {
+                    cancel_drain_timeout: Duration::from_secs(2),
+                    ..AcpSessionConfig::default()
+                },
+                ..AcpSupervisorConfig::default()
+            }),
+    ));
+
+    let load_saved_session = |history_key: &str| -> Option<String> {
+        let conn = db.connect().expect("conn");
+        let storage_key =
+            format!("{history_key}::{workspace_str}::mock-cancel-persist::default::acopilot");
+        conn.query_row(
+            "SELECT value FROM kv_state WHERE namespace = ?1 AND key = ?2",
+            params![ACP_THREAD_NAMESPACE, storage_key],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .expect("query kv_state")
+    };
+
+    let read_prompts = || -> Vec<Value> {
+        fs::read_to_string(&prompt_log)
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+            .collect()
+    };
+
+    // 1. First turn cancelled via abort_lane_turn (agent returns Ok(StopReason::Cancelled)):
+    // must NOT persist session_id in kv_state; next turn must still inject bootstrap role + history.
+    let cancel_key = "user-1::proj-754::cancel-first";
+    let cancel_turn = lane_turn(1, "cm-cancel-1", cancel_key, &workspace_str, "wait_cancel");
+    let cancel_turn_for_abort = cancel_turn.clone();
+    let runner_for_abort = Arc::clone(&runner);
+    let aborted_once = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let cancel_out = runner
+        .run_lane_turn(
+            cancel_turn,
+            PromptRunContext::new(Arc::new(move |ev| {
+                if ev["type"] == "delta"
+                    && !aborted_once.swap(true, std::sync::atomic::Ordering::AcqRel)
+                {
+                    runner_for_abort.abort_lane_turn(&cancel_turn_for_abort);
+                }
+            })),
+        )
+        .await
+        .expect("run cancelled first turn");
+    assert!(!cancel_out.ok, "cancelled first turn must fail");
+    assert_eq!(
+        load_saved_session(cancel_key),
+        None,
+        "cancelled first turn must not persist session_id under ACP_THREAD_NAMESPACE"
+    );
+
+    let after_cancel_out = runner
+        .run_lane_turn(
+            lane_turn(
+                2,
+                "cm-cancel-2",
+                cancel_key,
+                &workspace_str,
+                "hello after cancel",
+            ),
+            PromptRunContext::new(Arc::new(|_| {})),
+        )
+        .await
+        .expect("run second turn after cancel");
+    assert!(after_cancel_out.ok);
+    let persisted_after_cancel =
+        load_saved_session(cancel_key).expect("completed turn must persist session_id in kv_state");
+    let prompts_after_cancel = read_prompts();
+    let second_prompt_text = prompts_after_cancel
+        .last()
+        .and_then(|v| v["text"].as_str())
+        .unwrap_or("");
+    assert!(
+        second_prompt_text.contains("[Role Instructions]\nISSUE_754_ROLE_INSTRUCTIONS"),
+        "turn following cancelled first turn must still inject [Role Instructions]: {second_prompt_text}"
+    );
+    assert!(
+        second_prompt_text.contains("[Recent Conversation History]")
+            && second_prompt_text.contains("User: wait_cancel"),
+        "turn following cancelled first turn must still inject [Recent Conversation History]: {second_prompt_text}"
+    );
+
+    // 2. Subsequent turn cancelled on an established session must preserve existing kv_state value.
+    let cancel_turn_3 = lane_turn(3, "cm-cancel-3", cancel_key, &workspace_str, "wait_cancel");
+    let cancel_turn_3_abort = cancel_turn_3.clone();
+    let runner_for_abort_3 = Arc::clone(&runner);
+    let aborted_3 = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let cancel_out_3 = runner
+        .run_lane_turn(
+            cancel_turn_3,
+            PromptRunContext::new(Arc::new(move |ev| {
+                if ev["type"] == "delta"
+                    && !aborted_3.swap(true, std::sync::atomic::Ordering::AcqRel)
+                {
+                    runner_for_abort_3.abort_lane_turn(&cancel_turn_3_abort);
+                }
+            })),
+        )
+        .await
+        .expect("run cancelled third turn");
+    assert!(!cancel_out_3.ok);
+    assert_eq!(
+        load_saved_session(cancel_key).as_deref(),
+        Some(persisted_after_cancel.as_str()),
+        "cancelled turn on established session must not overwrite existing persisted session_id"
+    );
+
+    // 3. First turn timed out by inactivity watchdog (agent responds cleanly with StopReason::Cancelled):
+    // must NOT persist session_id in kv_state; next turn must still inject bootstrap role + history.
+    let timeout_key = "user-1::proj-754::timeout-first";
+    let timeout_out = runner
+        .run_lane_turn(
+            lane_turn(
+                4,
+                "cm-timeout-1",
+                timeout_key,
+                &workspace_str,
+                "wait_timeout",
+            ),
+            PromptRunContext::new(Arc::new(|_| {})),
+        )
+        .await
+        .expect("run timed-out first turn");
+    assert!(!timeout_out.ok, "timed-out first turn must fail");
+    assert_eq!(
+        load_saved_session(timeout_key),
+        None,
+        "timed-out first turn must not persist session_id under ACP_THREAD_NAMESPACE"
+    );
+
+    let after_timeout_out = runner
+        .run_lane_turn(
+            lane_turn(
+                5,
+                "cm-timeout-2",
+                timeout_key,
+                &workspace_str,
+                "hello after timeout",
+            ),
+            PromptRunContext::new(Arc::new(|_| {})),
+        )
+        .await
+        .expect("run second turn after timeout");
+    assert!(after_timeout_out.ok);
+    assert!(
+        load_saved_session(timeout_key).is_some(),
+        "completed turn after timeout must persist session_id"
+    );
+    let prompts_after_timeout = read_prompts();
+    let recovery_prompt_text = prompts_after_timeout
+        .last()
+        .and_then(|v| v["text"].as_str())
+        .unwrap_or("");
+    assert!(
+        recovery_prompt_text.contains("[Role Instructions]\nISSUE_754_ROLE_INSTRUCTIONS"),
+        "turn following timed-out first turn must still inject [Role Instructions]: {recovery_prompt_text}"
+    );
+    assert!(
+        recovery_prompt_text.contains("[Recent Conversation History]")
+            && recovery_prompt_text.contains("User: wait_timeout"),
+        "turn following timed-out first turn must still inject [Recent Conversation History]: {recovery_prompt_text}"
+    );
+
+    runner.shutdown().await;
+}
