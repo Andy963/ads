@@ -687,4 +687,96 @@ describe("AntigravityAccountsPanel inside ModelManager Runtimes tab", () => {
 
     wrapper.unmount();
   });
+
+  it("renders structured account header rows, grouped badges, and adjacent add-account divider anchor", async () => {
+    const snapshot: RuntimesSnapshot = {
+      activeAgentId: "native",
+      agents: [
+        { id: "native", name: "Native", kind: "native", ready: true },
+        {
+          id: "agy",
+          name: "Antigravity",
+          kind: "agy",
+          ready: true,
+          version: "1.5.18",
+          accountEmail: "host@example.com",
+          tier: "Plus",
+        },
+      ],
+    };
+    const accounts: AgyAccountView[] = [
+      {
+        id: "default",
+        agentId: "agy",
+        label: "Antigravity",
+        isDefault: true,
+        authMethod: "oauth-personal",
+        hasApiKey: false,
+        ready: true,
+        status: "ready",
+        version: "1.5.18",
+        accountEmail: "host@example.com",
+        tier: "Plus",
+        error: null,
+        modelCount: 5,
+        loginPending: false,
+        authorizationUrl: null,
+      },
+      {
+        id: "api-key-acct",
+        agentId: "agy:api-key-acct",
+        label: "Gemini API Key",
+        isDefault: false,
+        authMethod: "gemini-api-key",
+        hasApiKey: true,
+        ready: true,
+        status: "ready",
+        version: "1.5.18",
+        accountEmail: null,
+        tier: null,
+        error: null,
+        modelCount: 1,
+        loginPending: false,
+        authorizationUrl: null,
+      },
+    ];
+
+    const api = {
+      get: vi.fn(async (url: string) => {
+        if (url === "/api/runtimes") return structuredClone(snapshot);
+        if (url === "/api/runtimes/agy/accounts") return structuredClone(accounts);
+        return [];
+      }),
+      post: vi.fn(async () => ({})),
+      patch: vi.fn(async () => ({})),
+      put: vi.fn(async () => ({})),
+      delete: vi.fn(async () => ({})),
+    };
+
+    const wrapper = mount(ModelManager, { props: { api: api as any } });
+    await flushPromises();
+    await wrapper.get('[data-testid="runtime-settings-tab"]').trigger("click");
+    await flushPromises();
+
+    const defaultCard = wrapper.get('[data-testid="agy-account-row-default"]');
+    expect(defaultCard.get(".agyAccountHeader .agyAccountTitle .agyAccountEmail").text()).toBe("host@example.com");
+    expect(defaultCard.get(".agyAccountHeader .agyAccountBadges .accountTag").text()).toBe("Host default");
+    expect(defaultCard.get(".agyAccountHeader .agyAccountBadges .tierBadge").text()).toBe("Plus");
+    expect(defaultCard.get(".agyAccountHeader .agyAccountStatus").text()).toBe("Ready · 5 models");
+    expect(defaultCard.get(".agyAccountHeader .agyAccountDetails .settingsDetail").text()).toContain(
+      "Google OAuth (Personal) · agy",
+    );
+    expect(defaultCard.findAll(".agyAccountActions .agyActionBtn")).toHaveLength(2);
+
+    const apiKeyCard = wrapper.get('[data-testid="agy-account-row-api-key-acct"]');
+    expect(apiKeyCard.get(".agyAccountHeader .agyAccountTitle .agyAccountName").text()).toBe("Gemini API Key");
+    expect(apiKeyCard.find(".agyAccountHeader .agyAccountBadges").exists()).toBe(false);
+    expect(apiKeyCard.get(".agyAccountHeader .agyAccountStatus").text()).toBe("Ready · 1 model");
+
+    const addButton = wrapper.get('[data-testid="agy-account-add"]');
+    expect(addButton.classes()).toContain("settingsRow");
+    expect(addButton.element.previousElementSibling).toBe(apiKeyCard.element);
+
+    wrapper.unmount();
+  });
 });

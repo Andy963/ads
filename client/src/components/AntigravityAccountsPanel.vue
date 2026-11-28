@@ -483,8 +483,8 @@ onBeforeUnmount(() => {
           :data-testid="`runtime-row-${runtime.id}`"
         >
           <span class="settingsRowContent">
-            <span>
-              {{ runtime.name }}
+            <span class="runtimeNameRow">
+              <span>{{ runtime.name }}</span>
               <small
                 v-if="runtime.ready && runtime.tier"
                 class="tierBadge"
@@ -521,27 +521,32 @@ onBeforeUnmount(() => {
           :data-testid="`agy-account-row-${account.id}`"
         >
           <div class="settingsRow agyAccountHeader">
-            <span class="settingsRowContent">
-              <span>
-                <span
-                  v-if="account.ready && account.accountEmail"
-                  class="agyAccountEmail"
-                  :data-testid="`agy-account-email-${account.id}`"
-                >{{ account.accountEmail }}</span>
-                <span v-else>{{ accountDisplayName(account) }}</span>
-                <small v-if="account.isDefault" class="accountTag">Host default</small>
-                <small
-                  v-if="account.ready && account.tier"
-                  class="tierBadge"
-                  :data-testid="`agy-account-tier-${account.id}`"
-                >{{ account.tier }}</small>
-              </span>
+            <span class="agyAccountTitle">
+              <span
+                v-if="account.ready && account.accountEmail"
+                class="agyAccountEmail"
+                :data-testid="`agy-account-email-${account.id}`"
+              >{{ account.accountEmail }}</span>
+              <span v-else class="agyAccountName">{{ accountDisplayName(account) }}</span>
+            </span>
+            <span
+              v-if="account.isDefault || (account.ready && account.tier)"
+              class="agyAccountBadges"
+            >
+              <small v-if="account.isDefault" class="accountTag">Host default</small>
+              <small
+                v-if="account.ready && account.tier"
+                class="tierBadge"
+                :data-testid="`agy-account-tier-${account.id}`"
+              >{{ account.tier }}</small>
+            </span>
+            <span class="runtimeBadge agyAccountStatus" :class="{ ready: account.ready }">{{ statusLabel(account) }}</span>
+            <span class="agyAccountDetails">
               <small class="settingsDetail">
                 {{ accountSubtitle(account) }}
               </small>
               <small v-if="account.error && !account.ready" class="settingsDetail">{{ account.error }}</small>
             </span>
-            <span class="runtimeBadge" :class="{ ready: account.ready }">{{ statusLabel(account) }}</span>
           </div>
 
           <div class="agyAccountActions">
@@ -789,8 +794,15 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+.settingsRowContent > .runtimeNameRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
 .runtimeBadge {
   flex: 0 0 auto;
+  white-space: nowrap;
   font-size: 12px;
   font-weight: 500;
   color: var(--settings-secondary);
@@ -798,33 +810,63 @@ onBeforeUnmount(() => {
 .runtimeBadge.ready {
   color: #248a3d;
 }
-.accountTag {
-  margin-left: 6px;
-  padding: 1px 6px;
+.accountTag,
+.tierBadge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 7px;
   border-radius: 6px;
   font-size: 11px;
+  line-height: 1.3;
+  white-space: nowrap;
+}
+.accountTag {
   font-weight: 500;
   background: rgba(15, 23, 42, 0.06);
   color: var(--settings-secondary);
 }
 .tierBadge {
-  margin-left: 6px;
-  padding: 1px 6px;
-  border-radius: 6px;
-  font-size: 11px;
   font-weight: 600;
   background: rgba(0, 122, 255, 0.12);
   color: var(--settings-tint);
 }
-.agyAccountEmail {
+.agyAccountTitle {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.agyAccountEmail,
+.agyAccountName {
   color: var(--settings-text);
   font-weight: 500;
 }
-.agyAccountCard + .agyAccountCard {
+.agyAccountBadges {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+.agyAccountStatus {
+  margin-left: auto;
+}
+.agyAccountDetails {
+  flex: 1 0 100%;
+  min-width: 0;
+}
+.agyAccountDetails .settingsDetail:first-child {
+  margin-top: 0;
+}
+.agyAccountCard + .agyAccountCard,
+.agyAccountCard + .settingsRow {
   border-top: 0.5px solid var(--settings-separator);
 }
-.agyAccountHeader {
-  padding-bottom: 6px;
+.agyAccountCard .settingsRow.agyAccountHeader {
+  flex-wrap: wrap;
+  align-items: center;
+  column-gap: 8px;
+  row-gap: 4px;
+  padding: 12px 16px 8px;
 }
 .agyAccountActions {
   display: flex;
@@ -836,6 +878,7 @@ onBeforeUnmount(() => {
   padding: 4px 0 0;
 }
 .agyActionBtn {
+  min-height: 32px;
   padding: 6px 12px;
   border: 1px solid var(--settings-separator);
   border-radius: 8px;
@@ -843,6 +886,7 @@ onBeforeUnmount(() => {
   color: var(--settings-text);
   font-size: 13px;
   font-weight: 500;
+  line-height: 1.25;
 }
 .agyActionBtn.primary {
   border-color: var(--settings-tint);
@@ -928,5 +972,49 @@ onBeforeUnmount(() => {
   outline: none;
   border-color: var(--settings-tint);
   box-shadow: 0 0 0 2px rgba(0, 122, 255, 0.14);
+}
+@media (max-width: 900px) {
+  .agyAccountCard .settingsRow.agyAccountHeader {
+    padding: 12px 12px 8px;
+    row-gap: 6px;
+  }
+  .agyAccountTitle {
+    flex: 1 0 100%;
+  }
+  .agyAccountStatus {
+    margin-left: 0;
+  }
+  .agyAccountBadges + .agyAccountStatus {
+    margin-left: auto;
+  }
+  .agyAccountActions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+    padding: 0 12px 12px;
+  }
+  .agyAccountActions .agyActionBtn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 0;
+    min-height: 38px;
+    padding: 8px 10px;
+    text-align: center;
+  }
+  .agyAccountActions > .agyActionBtn:only-child,
+  .agyAccountActions > .agyActionBtn.primary:first-child:nth-last-child(3) {
+    grid-column: 1 / -1;
+  }
+  .agyAccountActions.agyLoginActions {
+    padding: 4px 0 0;
+  }
+  .agyLoginBox {
+    margin: 0 12px 12px;
+  }
+  .agyOAuthLink {
+    flex: 1 0 100%;
+    margin-right: 0;
+  }
 }
 </style>
