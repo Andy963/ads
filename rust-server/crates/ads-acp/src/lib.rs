@@ -31,10 +31,6 @@ pub use drivers::{
 };
 pub use error::{AcpError, AcpResult, DriverErrorDetails, RpcErrorDetails};
 pub use prompt_runner::{ACP_THREAD_NAMESPACE, AcpPromptRunner, AcpPromptRunnerConfig};
-pub use reviewer::{
-    AcpReviewRequest, ReviewVerificationPermissionHandler, augment_path_with_cargo_bin,
-    is_mutating_review_command, is_verification_command, run_acp_review,
-};
 pub use protocol::{
     ACP_PROTOCOL_VERSION, AgentCapabilities, AuthMethod, AvailableCommand, ClientCapabilities,
     CompactionUpdateInfo, ConfigOption, ConfigOptionChoice, ConfigOptionGroup, ConfigOptionValue,
@@ -47,6 +43,10 @@ pub use protocol::{
     SessionResumeRequest, SessionResumeResponse, SessionSetConfigOptionRequest,
     SessionSetConfigOptionResponse, SessionSetModeRequest, SessionSetModeResponse, SessionUpdate,
     SessionUpdateNotification, StopReason, ToolCallInfo, ToolCallLocation, UsageUpdateInfo,
+};
+pub use reviewer::{
+    AcpReviewRequest, ReviewVerificationPermissionHandler, augment_path_with_cargo_bin,
+    is_mutating_review_command, is_verification_command, run_acp_review, run_acp_review_with_retry,
 };
 pub use session::{
     AcpPromptRequest, AcpSession, AcpSessionConfig, AcpSessionLifecycle, AcpTurnResult,
