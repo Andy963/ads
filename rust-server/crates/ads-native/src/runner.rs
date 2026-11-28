@@ -382,7 +382,10 @@ impl NativePromptRunner {
             }
         };
         let mut tools = native_tool_definitions();
-        if entry.lane_namespace == ads_state::WEB_ACTIONS_NAMESPACE {
+        let hide_review_action = (entry.lane_namespace == ads_state::WEB_ACTIONS_NAMESPACE
+            && entry.kind != ads_runtime::LaneTurnKind::UserPrompt)
+            || entry.lane_namespace == "scheduler";
+        if hide_review_action {
             tools.retain(|tool| tool.function.name != "review_action");
         }
         let mut response_text = String::new();

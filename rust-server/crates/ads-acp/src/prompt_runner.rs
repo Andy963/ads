@@ -29,14 +29,21 @@ use tokio::sync::watch;
 use crate::bridge::{AcpStreamEvent, AutoApprovePermissionHandler, AutoDenyPermissionHandler};
 use crate::driver::AcpDriver;
 use crate::protocol::{ConfigOptionsState, ContentBlock, SessionMode, StopReason};
+use crate::review_handoff::{
+    MAX_REVIEW_HANDOFF_REPAIR_ROUNDS, build_review_action_handoff_instructions,
+    build_review_action_repair_prompt, extract_review_action_directives, format_review_action_ack,
+    format_review_action_failure, parse_review_action_arguments, strip_review_action_directives,
+};
 use crate::session::{
     AcpPromptRequest, AcpTurnLiveness, DesiredConfigAlignment, spawn_inactivity_watchdog,
 };
 use crate::supervisor::{
     AcpSessionSupervisor, AcpSupervisorConfig, SessionAttachMode, SupervisedSessionRequest,
+    SupervisedTurnResult,
 };
 
 pub const ACP_THREAD_NAMESPACE: &str = "web_acp_thread";
+const ACP_REVIEW_PROTOCOL_NAMESPACE: &str = "web_acp_review_protocol";
 
 pub const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 const DEFAULT_MAX_IMAGE_BYTES: usize = 25 * 1024 * 1024;
@@ -57,6 +64,7 @@ pub struct AcpPromptRunnerConfig {
     pub retry_backoff_ms: Option<Vec<u64>>,
     pub max_history_entries_per_session: usize,
     pub max_history_text_length: usize,
+    pub action_tools_factory: Option<ads_native::ActionToolsFactory>,
 }
 
 impl AcpPromptRunnerConfig {
@@ -74,6 +82,7 @@ impl AcpPromptRunnerConfig {
             retry_backoff_ms: None,
             max_history_entries_per_session: DEFAULT_HISTORY_MAX_ENTRIES_PER_SESSION,
             max_history_text_length: DEFAULT_HISTORY_MAX_TEXT_LENGTH,
+            action_tools_factory: None,
         }
     }
 
@@ -117,6 +126,14 @@ impl AcpPromptRunnerConfig {
 
     pub fn with_supervisor_config(mut self, config: AcpSupervisorConfig) -> Self {
         self.supervisor_config = config;
+        self
+    }
+
+    pub fn with_action_tools_factory(
+        mut self,
+        factory: ads_native::ActionToolsFactory,
+    ) -> Self {
+        self.action_tools_factory = Some(factory);
         self
     }
 }
@@ -381,6 +398,11 @@ impl AcpPromptRunner {
 
         context.emit(json!({ "type": "in_flight", "inFlight": true }));
 
+        let action_tools = self
+            .config
+            .action_tools_factory
+            .as_ref()
+            .and_then(|factory| factory(&entry));
         let storage_key = session_storage_key(
             &entry,
             self.config.driver.id(),
@@ -388,18 +410,28 @@ impl AcpPromptRunner {
             role,
         );
         let saved_acp_session_id = load_acp_session_id(&self.db, &storage_key)?;
+        let review_protocol_bootstrapped =
+            load_review_protocol_bootstrapped(&self.db, &storage_key)?;
+        let include_review_protocol = action_tools.is_some()
+            && (saved_acp_session_id.is_none()
+                || !review_protocol_bootstrapped
+                || entry.kind == LaneTurnKind::AgentHandoff);
+        let review_protocol_instructions = include_review_protocol.then(|| {
+            build_review_action_handoff_instructions(entry.lane_namespace == WEB_ACTIONS_NAMESPACE)
+        });
 
         let prompt_text_for_acp = compose_acp_prompt_text(
             &user_text,
             saved_acp_session_id.is_none(),
             role_instructions.as_deref(),
+            review_protocol_instructions.as_deref(),
             &prior_entries,
             &entry.client_message_id,
         );
 
-        let mut content_blocks = images;
-        if !prompt_text_for_acp.is_empty() || content_blocks.is_empty() {
-            content_blocks.push(ContentBlock::text(prompt_text_for_acp));
+        let mut current_blocks = images;
+        if !prompt_text_for_acp.is_empty() || current_blocks.is_empty() {
+            current_blocks.push(ContentBlock::text(prompt_text_for_acp));
         }
 
         let desired_mode = if is_readonly {
@@ -421,213 +453,185 @@ impl AcpPromptRunner {
         } else {
             &self.workspace_supervisor
         };
-        let attempts = ads_native::max_attempts(self.config.upstream_retry_count);
-        let turn_cancel_rx = cancel_rx.clone();
-        let timeout_message = || {
-            let idle_label = self
-                .config
-                .idle_timeout
-                .map(format_idle_duration)
-                .unwrap_or_else(|| "the configured inactivity window".to_string());
-            format!(
-                "ACP agent sent no activity for {idle_label}; stopped the turn and restarted the agent process."
-            )
-        };
 
-        let mut completed_turn = None;
-        for attempt in 1..=attempts {
-            if *turn_cancel_rx.borrow() {
-                return self.fail_after_user_persisted(
+        let mut final_supervised: Option<SupervisedTurnResult> = None;
+        let mut first_attach_mode: Option<SessionAttachMode> = None;
+        let mut final_output = String::new();
+        let mut any_directive_rewrites = false;
+        let mut final_extra_results: Vec<String> = Vec::new();
+
+        for handoff_round in 0..=MAX_REVIEW_HANDOFF_REPAIR_ROUNDS {
+            let supervised = match self
+                .execute_supervised_turn(
+                    supervisor,
+                    &storage_key,
                     &entry,
                     &context,
-                    "已中断，输出可能不完整".to_string(),
-                    "turn_cancelled",
-                    false,
-                    false,
-                );
+                    &session_req,
+                    &current_blocks,
+                    &desired_mode,
+                    requested_model.as_deref(),
+                    requested_thought.as_deref(),
+                    &cancel_tx,
+                    &cancel_rx,
+                )
+                .await?
+            {
+                Ok(supervised) => supervised,
+                Err(outcome) => return Ok(outcome),
+            };
+
+            if first_attach_mode.is_none() {
+                first_attach_mode = Some(supervised.attach_mode);
+            }
+            if !supervised.turn.session_id.trim().is_empty() {
+                save_acp_session_id(&self.db, &storage_key, &supervised.turn.session_id)?;
+                session_req = session_req.with_preferred_session_id(&supervised.turn.session_id);
+            }
+            if include_review_protocol {
+                mark_review_protocol_bootstrapped(&self.db, &storage_key)?;
             }
 
-            let liveness = AcpTurnLiveness::new();
-            let timed_out = Arc::new(AtomicBool::new(false));
-            let unsafe_to_retry = Arc::new(AtomicBool::new(false));
-            let activity_context = wrap_context_with_activity(&context, Arc::clone(&liveness));
+            let raw_output = supervised.turn.response_text.trim().to_string();
+            let review_directives = extract_review_action_directives(&raw_output);
+            let had_review_directives = !review_directives.is_empty();
+            let without_review_directives = if had_review_directives {
+                strip_review_action_directives(&raw_output)
+            } else {
+                raw_output.clone()
+            };
+            let directive_results = ads_native::execute_tool_directives_in(
+                state_dir,
+                &entry.workspace_root,
+                &without_review_directives,
+            );
+            let cleaned_prose = ads_native::strip_tool_directives(&without_review_directives);
+            let mut extra_results = directive_results;
 
-            let prompt_req = AcpPromptRequest::with_blocks(
-                entry.client_message_id.clone(),
-                content_blocks.clone(),
-            )
-            .with_alignment(DesiredConfigAlignment {
-                mode: Some(desired_mode.clone()),
-                model: requested_model.clone(),
-                thought_level: requested_thought.clone(),
-                extra_options: Vec::new(),
-            })
-            .with_context(activity_context)
-            .with_cancel(cancel_rx.clone())
-            .with_liveness(Arc::clone(&liveness))
-            .with_retry_fence(Arc::clone(&unsafe_to_retry));
-
-            let (watchdog_stop_tx, watchdog_stop_rx) = watch::channel(false);
-            let watchdog_handle = self
-                .config
-                .idle_timeout
-                .filter(|timeout| !timeout.is_zero())
-                .map(|timeout| {
-                    spawn_inactivity_watchdog(
-                        timeout,
-                        Arc::clone(&liveness),
-                        Arc::clone(&timed_out),
-                        cancel_tx.clone(),
-                        watchdog_stop_rx,
-                    )
-                });
-
-            let turn_res = supervisor.run_turn(session_req.clone(), prompt_req).await;
-            let _ = watchdog_stop_tx.send(true);
-            if let Some(handle) = watchdog_handle {
-                handle.abort();
-            }
-
-            let is_timed_out = timed_out.load(Ordering::Acquire);
-            let is_signal_cancelled = !is_timed_out && *turn_cancel_rx.borrow();
-
-            if is_timed_out {
-                // Recycle the stalled subprocess and forget its in-memory session ID (matching
-                // T3 Code's inactivity recovery) so the next turn starts cleanly without resuming
-                // a wedged session.
-                supervisor.discard_session(&storage_key).await;
-            }
-
-            match turn_res {
-                Ok(supervised) => {
-                    completed_turn = Some((supervised, is_timed_out, is_signal_cancelled));
-                    break;
-                }
-                Err(error) => {
-                    let can_retry = attempt < attempts
-                        && !is_timed_out
-                        && !is_signal_cancelled
-                        && !unsafe_to_retry.load(Ordering::Acquire)
-                        && error.is_retryable();
-                    if can_retry {
-                        let message = error.to_string();
-                        let delay_ms = ads_native::resolve_transient_retry_delay_ms(
-                            &message,
-                            attempt,
-                            self.config.retry_backoff_ms.as_deref(),
-                            now_unix_millis(),
-                        );
-                        context.emit(json!({
-                            "type": "retry",
-                            "clientMessageId": entry.client_message_id,
-                            "message": message,
-                            "retryCount": attempt,
-                            "nextAttempt": attempt + 1,
-                            "maxAttempts": attempts,
-                            "delayMs": delay_ms,
-                            "ts": now_unix_millis(),
-                        }));
-                        if delay_ms > 0 {
-                            let mut wait_cancel_rx = turn_cancel_rx.clone();
-                            tokio::select! {
-                                biased;
-                                _ = wait_until_cancelled(&mut wait_cancel_rx) => {
-                                    return self.fail_after_user_persisted(
-                                        &entry,
-                                        &context,
-                                        "已中断，输出可能不完整".to_string(),
-                                        "turn_cancelled",
-                                        false,
-                                        false,
-                                    );
-                                }
-                                _ = tokio::time::sleep(Duration::from_millis(delay_ms)) => {}
-                            }
-                        }
-                        continue;
-                    }
-
-                    let is_cancelled =
-                        !is_timed_out && (error.is_cancelled() || is_signal_cancelled);
-                    let message = if is_timed_out {
-                        timeout_message()
-                    } else if is_cancelled {
-                        "已中断，输出可能不完整".to_string()
-                    } else {
-                        error.to_string()
-                    };
-                    let code = if is_timed_out {
-                        "acp_timeout"
-                    } else if is_cancelled {
-                        "turn_cancelled"
-                    } else if error.is_auth_required() {
-                        "acp_auth_required"
-                    } else if error.is_timeout() {
-                        "acp_timeout"
-                    } else {
-                        "acp_runtime_error"
-                    };
-                    let retryable = !is_timed_out && !is_cancelled && error.is_retryable();
-                    return self.fail_after_user_persisted(
-                        &entry,
-                        &context,
-                        message,
-                        code,
-                        error.is_auth_required(),
-                        retryable,
+            let mut handoff_error: Option<String> = None;
+            if had_review_directives && let Some(tools) = action_tools.as_ref() {
+                for (directive_idx, directive) in review_directives.iter().enumerate() {
+                    let command_id = format!(
+                        "{}:review_action:{}:{}",
+                        entry.client_message_id,
+                        handoff_round + 1,
+                        directive_idx + 1
                     );
+                    context.emit(json!({
+                        "type": "command",
+                        "clientMessageId": entry.client_message_id,
+                        "command": {
+                            "id": command_id,
+                            "command": "review_action",
+                            "status": "in_progress",
+                        },
+                        "ts": now_unix_millis(),
+                    }));
+                    let dispatch_result = match parse_review_action_arguments(&directive.body) {
+                        Ok(arguments) => tools
+                            .review_action_with_arguments(arguments)
+                            .await
+                            .map_err(|error| error.to_string()),
+                        Err(error) => Err(error),
+                    };
+                    match dispatch_result {
+                        Ok(ack) => {
+                            let formatted = format_review_action_ack(&ack);
+                            context.emit(json!({
+                                "type": "command",
+                                "clientMessageId": entry.client_message_id,
+                                "command": {
+                                    "id": command_id,
+                                    "command": "review_action",
+                                    "status": "completed",
+                                    "exit_code": 0,
+                                    "aggregated_output": formatted,
+                                },
+                                "ts": now_unix_millis(),
+                            }));
+                            context.emit(json!({
+                                "type": "review_action_handoff",
+                                "clientMessageId": entry.client_message_id,
+                                "ok": true,
+                                "attempt": handoff_round + 1,
+                                "jobId": ack.get("jobId").cloned().unwrap_or(Value::Null),
+                                "status": ack.get("status").cloned().unwrap_or(Value::Null),
+                                "issueId": ack.get("issueId").cloned().unwrap_or(Value::Null),
+                                "branch": ack.get("branch").cloned().unwrap_or(Value::Null),
+                                "ack": ack,
+                                "ts": now_unix_millis(),
+                            }));
+                            extra_results.push(formatted);
+                        }
+                        Err(error) => {
+                            let formatted_err = format_review_action_failure(&error);
+                            let will_retry = handoff_round < MAX_REVIEW_HANDOFF_REPAIR_ROUNDS
+                                && !*cancel_rx.borrow();
+                            context.emit(json!({
+                                "type": "command",
+                                "clientMessageId": entry.client_message_id,
+                                "command": {
+                                    "id": command_id,
+                                    "command": "review_action",
+                                    "status": "failed",
+                                    "exit_code": 1,
+                                    "aggregated_output": formatted_err,
+                                },
+                                "ts": now_unix_millis(),
+                            }));
+                            context.emit(json!({
+                                "type": "review_action_handoff",
+                                "clientMessageId": entry.client_message_id,
+                                "ok": false,
+                                "attempt": handoff_round + 1,
+                                "error": error,
+                                "retrying": will_retry,
+                                "ts": now_unix_millis(),
+                            }));
+                            handoff_error = Some(error);
+                            break;
+                        }
+                    }
                 }
             }
+
+            if let Some(error) = handoff_error {
+                if handoff_round < MAX_REVIEW_HANDOFF_REPAIR_ROUNDS && !*cancel_rx.borrow() {
+                    current_blocks = vec![ContentBlock::text(build_review_action_repair_prompt(
+                        &error,
+                    ))];
+                    continue;
+                }
+                extra_results.push(format_review_action_failure(&error));
+            }
+
+            any_directive_rewrites = had_review_directives || !extra_results.is_empty();
+            final_output = if extra_results.is_empty() {
+                cleaned_prose
+            } else if cleaned_prose.is_empty() {
+                extra_results.join("\n")
+            } else {
+                [cleaned_prose.as_str(), "", &extra_results.join("\n")]
+                    .join("\n")
+                    .trim()
+                    .to_string()
+            };
+            final_extra_results = extra_results;
+            final_supervised = Some(supervised);
+            break;
         }
 
-        let Some((supervised, is_timed_out, is_signal_cancelled)) = completed_turn else {
+        let Some(supervised) = final_supervised else {
             return self.fail_after_user_persisted(
                 &entry,
                 &context,
-                "ACP retry loop exhausted".to_string(),
+                "ACP review_action handoff loop exhausted".to_string(),
                 "acp_runtime_error",
                 false,
-                true,
+                false,
             );
         };
-
-        if is_timed_out {
-            return self.fail_after_user_persisted(
-                &entry,
-                &context,
-                timeout_message(),
-                "acp_timeout",
-                false,
-                false,
-            );
-        }
-        if is_signal_cancelled || supervised.turn.stop_reason == StopReason::Cancelled {
-            return self.fail_after_user_persisted(
-                &entry,
-                &context,
-                "已中断，输出可能不完整".to_string(),
-                "turn_cancelled",
-                false,
-                false,
-            );
-        }
-
-        if !supervised.turn.session_id.trim().is_empty() {
-            save_acp_session_id(&self.db, &storage_key, &supervised.turn.session_id)?;
-        }
-
-        let raw_output = supervised.turn.response_text.trim().to_string();
-        let directive_results =
-            ads_native::execute_tool_directives_in(state_dir, &entry.workspace_root, &raw_output);
-        let cleaned_output = ads_native::strip_tool_directives(&raw_output);
-        let output = if directive_results.is_empty() {
-            cleaned_output
-        } else {
-            [cleaned_output.as_str(), "", &directive_results.join("\n")]
-                .join("\n")
-                .trim()
-                .to_string()
-        };
+        let output = final_output;
 
         let cfg_state = ConfigOptionsState::from_vec(supervised.turn.config_options.clone());
         let effective_model = cfg_state
@@ -671,7 +675,8 @@ impl AcpPromptRunner {
             &supervised.turn.events,
             &entry.client_message_id,
             &output,
-            !directive_results.is_empty(),
+            any_directive_rewrites,
+            &final_extra_results,
         );
         let ts = now_unix_millis();
         for (item_id, item_text) in &assistant_phases {
@@ -692,7 +697,7 @@ impl AcpPromptRunner {
             .into_iter()
             .map(|(id, text)| json!({ "id": id, "text": text }))
             .collect();
-        let context_mode = match supervised.attach_mode {
+        let context_mode = match first_attach_mode.unwrap_or(supervised.attach_mode) {
             SessionAttachMode::ReusedLive | SessionAttachMode::Resumed => "resumed",
             SessionAttachMode::Loaded => "loaded",
             SessionAttachMode::CreatedNew | SessionAttachMode::CreatedAfterResumeFallback => {
@@ -713,6 +718,215 @@ impl AcpPromptRunner {
             "stopReason": supervised.turn.stop_reason.as_wire_str(),
         }));
         Ok(PromptQueueRunOutcome::success())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn execute_supervised_turn(
+        &self,
+        supervisor: &AcpSessionSupervisor,
+        storage_key: &str,
+        entry: &LaneTurn,
+        context: &PromptRunContext,
+        session_req: &SupervisedSessionRequest,
+        content_blocks: &[ContentBlock],
+        desired_mode: &SessionMode,
+        requested_model: Option<&str>,
+        requested_thought: Option<&str>,
+        cancel_tx: &watch::Sender<bool>,
+        cancel_rx: &watch::Receiver<bool>,
+    ) -> StateResult<Result<SupervisedTurnResult, PromptQueueRunOutcome>> {
+        let attempts = ads_native::max_attempts(self.config.upstream_retry_count);
+        let turn_cancel_rx = cancel_rx.clone();
+        let timeout_message = || {
+            let idle_label = self
+                .config
+                .idle_timeout
+                .map(format_idle_duration)
+                .unwrap_or_else(|| "the configured inactivity window".to_string());
+            format!(
+                "ACP agent sent no activity for {idle_label}; stopped the turn and restarted the agent process."
+            )
+        };
+
+        let mut completed_turn = None;
+        for attempt in 1..=attempts {
+            if *turn_cancel_rx.borrow() {
+                return Ok(Err(self.fail_after_user_persisted(
+                    entry,
+                    context,
+                    "已中断，输出可能不完整".to_string(),
+                    "turn_cancelled",
+                    false,
+                    false,
+                )?));
+            }
+
+            let liveness = AcpTurnLiveness::new();
+            let timed_out = Arc::new(AtomicBool::new(false));
+            let unsafe_to_retry = Arc::new(AtomicBool::new(false));
+            let activity_context = wrap_context_with_activity(context, Arc::clone(&liveness));
+
+            let prompt_req = AcpPromptRequest::with_blocks(
+                entry.client_message_id.clone(),
+                content_blocks.to_vec(),
+            )
+            .with_alignment(DesiredConfigAlignment {
+                mode: Some(desired_mode.clone()),
+                model: requested_model.map(str::to_string),
+                thought_level: requested_thought.map(str::to_string),
+                extra_options: Vec::new(),
+            })
+            .with_context(activity_context)
+            .with_cancel(cancel_rx.clone())
+            .with_liveness(Arc::clone(&liveness))
+            .with_retry_fence(Arc::clone(&unsafe_to_retry));
+
+            let (watchdog_stop_tx, watchdog_stop_rx) = watch::channel(false);
+            let watchdog_handle = self
+                .config
+                .idle_timeout
+                .filter(|timeout| !timeout.is_zero())
+                .map(|timeout| {
+                    spawn_inactivity_watchdog(
+                        timeout,
+                        Arc::clone(&liveness),
+                        Arc::clone(&timed_out),
+                        cancel_tx.clone(),
+                        watchdog_stop_rx,
+                    )
+                });
+
+            let turn_res = supervisor.run_turn(session_req.clone(), prompt_req).await;
+            let _ = watchdog_stop_tx.send(true);
+            if let Some(handle) = watchdog_handle {
+                handle.abort();
+            }
+
+            let is_timed_out = timed_out.load(Ordering::Acquire);
+            let is_signal_cancelled = !is_timed_out && *turn_cancel_rx.borrow();
+
+            if is_timed_out {
+                // Recycle the stalled subprocess and forget its in-memory session ID (matching
+                // T3 Code's inactivity recovery) so the next turn starts cleanly without resuming
+                // a wedged session.
+                supervisor.discard_session(storage_key).await;
+            }
+
+            match turn_res {
+                Ok(supervised) => {
+                    completed_turn = Some((supervised, is_timed_out, is_signal_cancelled));
+                    break;
+                }
+                Err(error) => {
+                    let can_retry = attempt < attempts
+                        && !is_timed_out
+                        && !is_signal_cancelled
+                        && !unsafe_to_retry.load(Ordering::Acquire)
+                        && error.is_retryable();
+                    if can_retry {
+                        let message = error.to_string();
+                        let delay_ms = ads_native::resolve_transient_retry_delay_ms(
+                            &message,
+                            attempt,
+                            self.config.retry_backoff_ms.as_deref(),
+                            now_unix_millis(),
+                        );
+                        context.emit(json!({
+                            "type": "retry",
+                            "clientMessageId": entry.client_message_id,
+                            "message": message,
+                            "retryCount": attempt,
+                            "nextAttempt": attempt + 1,
+                            "maxAttempts": attempts,
+                            "delayMs": delay_ms,
+                            "ts": now_unix_millis(),
+                        }));
+                        if delay_ms > 0 {
+                            let mut wait_cancel_rx = turn_cancel_rx.clone();
+                            tokio::select! {
+                                biased;
+                                _ = wait_until_cancelled(&mut wait_cancel_rx) => {
+                                    return Ok(Err(self.fail_after_user_persisted(
+                                        entry,
+                                        context,
+                                        "已中断，输出可能不完整".to_string(),
+                                        "turn_cancelled",
+                                        false,
+                                        false,
+                                    )?));
+                                }
+                                _ = tokio::time::sleep(Duration::from_millis(delay_ms)) => {}
+                            }
+                        }
+                        continue;
+                    }
+
+                    let is_cancelled =
+                        !is_timed_out && (error.is_cancelled() || is_signal_cancelled);
+                    let message = if is_timed_out {
+                        timeout_message()
+                    } else if is_cancelled {
+                        "已中断，输出可能不完整".to_string()
+                    } else {
+                        error.to_string()
+                    };
+                    let code = if is_timed_out {
+                        "acp_timeout"
+                    } else if is_cancelled {
+                        "turn_cancelled"
+                    } else if error.is_auth_required() {
+                        "acp_auth_required"
+                    } else if error.is_timeout() {
+                        "acp_timeout"
+                    } else {
+                        "acp_runtime_error"
+                    };
+                    let retryable = !is_timed_out && !is_cancelled && error.is_retryable();
+                    return Ok(Err(self.fail_after_user_persisted(
+                        entry,
+                        context,
+                        message,
+                        code,
+                        error.is_auth_required(),
+                        retryable,
+                    )?));
+                }
+            }
+        }
+
+        let Some((supervised, is_timed_out, is_signal_cancelled)) = completed_turn else {
+            return Ok(Err(self.fail_after_user_persisted(
+                entry,
+                context,
+                "ACP retry loop exhausted".to_string(),
+                "acp_runtime_error",
+                false,
+                true,
+            )?));
+        };
+
+        if is_timed_out {
+            return Ok(Err(self.fail_after_user_persisted(
+                entry,
+                context,
+                timeout_message(),
+                "acp_timeout",
+                false,
+                false,
+            )?));
+        }
+        if is_signal_cancelled || supervised.turn.stop_reason == StopReason::Cancelled {
+            return Ok(Err(self.fail_after_user_persisted(
+                entry,
+                context,
+                "已中断，输出可能不完整".to_string(),
+                "turn_cancelled",
+                false,
+                false,
+            )?));
+        }
+
+        Ok(Ok(supervised))
     }
 
     pub async fn run_schedule_prompt(
@@ -882,6 +1096,7 @@ fn collect_assistant_phases(
     client_message_id: &str,
     final_output: &str,
     has_directive_rewrites: bool,
+    extra_results: &[String],
 ) -> Vec<(String, String)> {
     let mut phases: Vec<(String, String)> = Vec::new();
     for event in events {
@@ -906,8 +1121,31 @@ fn collect_assistant_phases(
             final_output.to_string(),
         )];
     }
-    if phases.len() == 1 && has_directive_rewrites {
-        phases[0].1 = final_output.to_string();
+    if has_directive_rewrites {
+        if phases.len() == 1 {
+            phases[0].1 = final_output.to_string();
+        } else {
+            for (_, text) in &mut phases {
+                let stripped =
+                    ads_native::strip_tool_directives(&strip_review_action_directives(text));
+                *text = stripped;
+            }
+            phases.retain(|(_, text)| !text.is_empty());
+            if !extra_results.is_empty() {
+                let summary = extra_results.join("\n");
+                if let Some((_, last_text)) = phases.last_mut() {
+                    *last_text = format!("{last_text}\n\n{summary}").trim().to_string();
+                } else {
+                    phases.push((format!("{client_message_id}-assistant-1"), summary));
+                }
+            }
+            if phases.is_empty() {
+                phases.push((
+                    format!("{client_message_id}-assistant-1"),
+                    final_output.to_string(),
+                ));
+            }
+        }
     }
     phases
 }
@@ -1021,6 +1259,32 @@ fn save_acp_session_id(db: &StateDb, key: &str, session_id: &str) -> StateResult
     Ok(())
 }
 
+fn load_review_protocol_bootstrapped(db: &StateDb, key: &str) -> StateResult<bool> {
+    let connection = db.connect()?;
+    let value = connection
+        .query_row(
+            "SELECT value FROM kv_state WHERE namespace = ?1 AND key = ?2",
+            params![ACP_REVIEW_PROTOCOL_NAMESPACE, key],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(StateError::from)?;
+    Ok(value.as_deref() == Some("v1"))
+}
+
+fn mark_review_protocol_bootstrapped(db: &StateDb, key: &str) -> StateResult<()> {
+    let connection = db.connect()?;
+    connection.execute(
+        "INSERT INTO kv_state (namespace, key, value, updated_at)
+         VALUES (?1, ?2, 'v1', ?3)
+         ON CONFLICT(namespace, key) DO UPDATE SET
+           value = excluded.value,
+           updated_at = excluded.updated_at",
+        params![ACP_REVIEW_PROTOCOL_NAMESPACE, key, now_unix_millis()],
+    )?;
+    Ok(())
+}
+
 fn resolve_acp_idle_timeout() -> Option<Duration> {
     ["ADS_ACP_IDLE_TIMEOUT_MS", "ADS_AGENT_IDLE_TIMEOUT_MS"]
         .iter()
@@ -1041,21 +1305,28 @@ fn compose_acp_prompt_text(
     user_text: &str,
     include_bootstrap: bool,
     role_instructions: Option<&str>,
+    review_protocol_instructions: Option<&str>,
     prior_entries: &[HistoryEntry],
     current_client_message_id: &str,
 ) -> String {
-    if !include_bootstrap {
-        return user_text.to_string();
-    }
     let mut sections = Vec::new();
-    if let Some(instructions) = role_instructions
+    if include_bootstrap {
+        if let Some(instructions) = role_instructions
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            sections.push(format!("[Role Instructions]\n{instructions}"));
+        }
+        if let Some(history_block) = format_prior_history(prior_entries, current_client_message_id)
+        {
+            sections.push(format!("[Recent Conversation History]\n{history_block}"));
+        }
+    }
+    if let Some(protocol) = review_protocol_instructions
         .map(str::trim)
         .filter(|value| !value.is_empty())
     {
-        sections.push(format!("[Role Instructions]\n{instructions}"));
-    }
-    if let Some(history_block) = format_prior_history(prior_entries, current_client_message_id) {
-        sections.push(format!("[Recent Conversation History]\n{history_block}"));
+        sections.push(format!("[Review Action Handoff Protocol]\n{protocol}"));
     }
     if sections.is_empty() {
         return user_text.to_string();

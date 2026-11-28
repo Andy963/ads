@@ -947,7 +947,7 @@ async fn handoff_lane_turn_persists_display_summary_while_sending_model_prompt()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn injects_lane_scoped_role_system_prompt_and_hides_review_action_in_actions_lane() {
+async fn injects_lane_scoped_role_system_prompt_and_scopes_review_action_by_lane_and_turn_kind() {
     let requests = Arc::new(Mutex::new(Vec::new()));
     let harness = Harness::start_with_wire(
         chat_stream_router_captured(Arc::clone(&requests)),
@@ -980,28 +980,50 @@ async fn injects_lane_scoped_role_system_prompt_and_hides_review_action_in_actio
         .expect("acopilot turn");
     assert_eq!(outcome, PromptQueueRunOutcome::success());
 
-    let mut actions_turn = LaneTurn::from(harness.enqueue("cm-actions-role", "hello actions"));
-    actions_turn.lane_namespace = ads_state::WEB_ACTIONS_NAMESPACE.to_string();
+    let mut actions_user_turn =
+        LaneTurn::from(harness.enqueue("cm-actions-role", "hello actions user"));
+    actions_user_turn.lane_namespace = ads_state::WEB_ACTIONS_NAMESPACE.to_string();
     let outcome = harness
         .runner
-        .run_lane_turn(actions_turn, harness.context())
+        .run_lane_turn(actions_user_turn, harness.context())
         .await
-        .expect("actions turn");
+        .expect("actions user turn");
+    assert_eq!(outcome, PromptQueueRunOutcome::success());
+
+    let mut actions_handoff_turn =
+        LaneTurn::from(harness.enqueue("cm-actions-handoff", "automated actions handoff"));
+    actions_handoff_turn.lane_namespace = ads_state::WEB_ACTIONS_NAMESPACE.to_string();
+    actions_handoff_turn.kind = ads_runtime::LaneTurnKind::AgentHandoff;
+    let outcome = harness
+        .runner
+        .run_lane_turn(actions_handoff_turn, harness.context())
+        .await
+        .expect("actions handoff turn");
     assert_eq!(outcome, PromptQueueRunOutcome::success());
 
     let captured = {
         let guard = requests.lock().expect("requests");
         guard.clone()
     };
-    assert_eq!(captured.len(), 2);
+    assert_eq!(captured.len(), 3);
     let acopilot_body = serde_json::to_string(&captured[0]).expect("serialize acopilot");
-    let actions_body = serde_json::to_string(&captured[1]).expect("serialize actions");
+    let actions_user_body = serde_json::to_string(&captured[1]).expect("serialize actions user");
+    let actions_handoff_body =
+        serde_json::to_string(&captured[2]).expect("serialize actions handoff");
     assert!(acopilot_body.contains("NATIVE_ACOPILOT_SYSTEM"));
     assert!(!acopilot_body.contains("NATIVE_REVIEWER_SYSTEM"));
     assert!(acopilot_body.contains("review_action"));
-    assert!(actions_body.contains("NATIVE_REVIEWER_SYSTEM"));
-    assert!(!actions_body.contains("NATIVE_ACOPILOT_SYSTEM"));
-    assert!(!actions_body.contains("review_action"));
+    assert!(actions_user_body.contains("NATIVE_REVIEWER_SYSTEM"));
+    assert!(!actions_user_body.contains("NATIVE_ACOPILOT_SYSTEM"));
+    assert!(
+        actions_user_body.contains("review_action"),
+        "user-initiated Actions lane turns must expose review_action"
+    );
+    assert!(actions_handoff_body.contains("NATIVE_REVIEWER_SYSTEM"));
+    assert!(
+        !actions_handoff_body.contains("review_action"),
+        "non-user-initiated Actions lane turns must hide review_action"
+    );
     harness.drain().await;
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

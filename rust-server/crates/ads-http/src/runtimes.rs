@@ -206,6 +206,7 @@ pub struct RuntimeRegistryConfig {
     pub preferred_default_agent_id: String,
     pub native_runner: Option<Arc<dyn PromptQueueRunner>>,
     pub native_scheduler: Option<Arc<dyn ScheduleExecutor>>,
+    pub action_tools_factory: Option<ads_acp::ActionToolsFactory>,
     pub codex_acp_binary: String,
     pub codex_home: Option<PathBuf>,
     pub codex_probe_timeout: Duration,
@@ -239,6 +240,7 @@ impl RuntimeRegistryConfig {
             preferred_default_agent_id,
             native_runner: None,
             native_scheduler: None,
+            action_tools_factory: None,
             codex_acp_binary,
             codex_home,
             codex_probe_timeout: probe_timeout,
@@ -256,6 +258,7 @@ pub struct RuntimeRegistry {
     preferred_default_agent_id: String,
     native_runner: Option<Arc<dyn PromptQueueRunner>>,
     native_scheduler: Option<Arc<dyn ScheduleExecutor>>,
+    action_tools_factory: Option<ads_acp::ActionToolsFactory>,
     codex_driver_config: CodexDriverConfig,
     codex_runner: Arc<AcpPromptRunner>,
     codex_probe: RwLock<CodexProbeResult>,
@@ -281,7 +284,11 @@ impl RuntimeRegistry {
             codex_cfg = codex_cfg.with_codex_home(codex_home);
         }
         let codex_initial = initial_codex_probe_state(&codex_cfg);
-        let codex_runner = build_codex_runner(config.db.clone(), codex_cfg.clone());
+        let codex_runner = build_codex_runner(
+            config.db.clone(),
+            codex_cfg.clone(),
+            config.action_tools_factory.clone(),
+        );
         let mut agy_entries = BTreeMap::new();
         let mut generation_seq: u64 = 1;
 
@@ -295,6 +302,7 @@ impl RuntimeRegistry {
             default_cfg.clone(),
             AGY_DEFAULT_AGENT_ID,
             None,
+            config.action_tools_factory.clone(),
         );
         let default_gen = generation_seq;
         generation_seq += 1;
@@ -334,6 +342,7 @@ impl RuntimeRegistry {
                     driver_cfg.clone(),
                     &agent_id,
                     Some(&record.id),
+                    config.action_tools_factory.clone(),
                 );
                 let entry_gen = generation_seq;
                 generation_seq += 1;
@@ -365,6 +374,7 @@ impl RuntimeRegistry {
             preferred_default_agent_id: config.preferred_default_agent_id,
             native_runner: config.native_runner,
             native_scheduler: config.native_scheduler,
+            action_tools_factory: config.action_tools_factory,
             codex_driver_config: codex_cfg,
             codex_runner,
             codex_probe: RwLock::new(codex_initial),
@@ -1008,6 +1018,7 @@ impl RuntimeRegistry {
                 driver_config.clone(),
                 &agent_id,
                 Some(&account_id),
+                self.action_tools_factory.clone(),
             );
             let mut initial = initial_agy_probe_state(&driver_config, false);
             if auth_method.uses_browser() && initial.status != AgyProbeStatus::BinaryNotFound {
@@ -2015,9 +2026,16 @@ fn initial_codex_probe_state(config: &CodexDriverConfig) -> CodexProbeResult {
     }
 }
 
-fn build_codex_runner(db: StateDb, driver_config: CodexDriverConfig) -> Arc<AcpPromptRunner> {
+fn build_codex_runner(
+    db: StateDb,
+    driver_config: CodexDriverConfig,
+    action_tools_factory: Option<ads_acp::ActionToolsFactory>,
+) -> Arc<AcpPromptRunner> {
     let driver: Arc<dyn AcpDriver> = Arc::new(CodexDriver::new(driver_config));
-    let runner_cfg = AcpPromptRunnerConfig::new(driver).with_agent_id(CODEX_AGENT_ID);
+    let mut runner_cfg = AcpPromptRunnerConfig::new(driver).with_agent_id(CODEX_AGENT_ID);
+    if let Some(factory) = action_tools_factory {
+        runner_cfg = runner_cfg.with_action_tools_factory(factory);
+    }
     Arc::new(AcpPromptRunner::new(db, runner_cfg))
 }
 
@@ -2102,11 +2120,15 @@ fn build_agy_runner(
     driver_config: AgyDriverConfig,
     agent_id: &str,
     account_id: Option<&str>,
+    action_tools_factory: Option<ads_acp::ActionToolsFactory>,
 ) -> Arc<AcpPromptRunner> {
     let driver: Arc<dyn AcpDriver> = Arc::new(AgyDriver::new(driver_config));
     let mut runner_cfg = AcpPromptRunnerConfig::new(driver).with_agent_id(agent_id);
     if let Some(account_id) = account_id {
         runner_cfg = runner_cfg.with_account_id(account_id);
+    }
+    if let Some(factory) = action_tools_factory {
+        runner_cfg = runner_cfg.with_action_tools_factory(factory);
     }
     Arc::new(AcpPromptRunner::new(db, runner_cfg))
 }

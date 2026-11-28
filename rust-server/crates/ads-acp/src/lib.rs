@@ -4,10 +4,13 @@ pub mod drivers;
 pub mod error;
 pub mod prompt_runner;
 pub mod protocol;
+pub mod review_handoff;
 pub mod reviewer;
 pub mod session;
 pub mod supervisor;
 pub mod transport;
+
+pub use ads_native::{ActionTools, ActionToolsFactory};
 
 pub use bridge::{
     AcpEventBridge, AcpStreamEvent, AutoApprovePermissionHandler, AutoDenyPermissionHandler,
@@ -46,6 +49,12 @@ pub use protocol::{
     SessionResumeRequest, SessionResumeResponse, SessionSetConfigOptionRequest,
     SessionSetConfigOptionResponse, SessionSetModeRequest, SessionSetModeResponse, SessionUpdate,
     SessionUpdateNotification, StopReason, ToolCallInfo, ToolCallLocation, UsageUpdateInfo,
+};
+pub use review_handoff::{
+    MAX_REVIEW_HANDOFF_REPAIR_ROUNDS, REVIEW_ACTION_FENCE_TAG, ReviewActionDirective,
+    build_review_action_handoff_instructions, build_review_action_repair_prompt,
+    extract_review_action_directives, format_review_action_ack, format_review_action_failure,
+    parse_review_action_arguments, strip_review_action_directives,
 };
 pub use reviewer::{
     AcpReviewRequest, DEFAULT_REVIEWER_IDLE_TIMEOUT, REVIEWER_IDLE_TIMEOUT_ENV,

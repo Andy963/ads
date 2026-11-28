@@ -4,8 +4,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use ads_native::{ActionTools, ActionToolsFactory, NativeError};
-use ads_runtime::LaneTurn;
-use ads_state::WEB_ACOPILOT_NAMESPACE;
+use ads_runtime::{LaneTurn, LaneTurnKind};
+use ads_state::{WEB_ACOPILOT_NAMESPACE, WEB_ACTIONS_NAMESPACE};
 use tokio::process::Command;
 
 use crate::dispatch::{ReviewDispatchRequest, canonical_project_id};
@@ -13,9 +13,30 @@ use crate::queue::ReviewQueue;
 
 const GIT_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// Returns whether a `LaneTurn` is allowed to invoke `review_action`.
+///
+/// Allowed:
+/// - `WEB_ACOPILOT_NAMESPACE` user prompts and post-verdict `AgentHandoff` turns.
+/// - `WEB_ACTIONS_NAMESPACE` human-initiated `UserPrompt` turns.
+///
+/// Forbidden:
+/// - Non-user-initiated turns in `WEB_ACTIONS_NAMESPACE` (automated queue Reviewers run
+///   outside `PromptQueueRunner` and never receive `ActionTools`).
+/// - Scheduler or any other namespace.
+pub fn allows_review_action_for_turn(entry: &LaneTurn) -> bool {
+    match entry.lane_namespace.as_str() {
+        WEB_ACOPILOT_NAMESPACE => matches!(
+            entry.kind,
+            LaneTurnKind::UserPrompt | LaneTurnKind::AgentHandoff
+        ),
+        WEB_ACTIONS_NAMESPACE => entry.kind == LaneTurnKind::UserPrompt,
+        _ => false,
+    }
+}
+
 pub fn review_action_tools_factory(queue: Arc<ReviewQueue>) -> ActionToolsFactory {
     Arc::new(move |entry: &LaneTurn| {
-        if entry.lane_namespace != WEB_ACOPILOT_NAMESPACE {
+        if !allows_review_action_for_turn(entry) {
             return None;
         }
         let queue = Arc::clone(&queue);
@@ -137,7 +158,7 @@ mod tests {
     }
 
     #[test]
-    fn exposes_review_action_only_for_the_acopilot_lane() {
+    fn exposes_review_action_for_acopilot_and_user_initiated_actions_turns() {
         let directory = tempdir().expect("temp dir");
         let db = StateDb::open(directory.path().join("state.db")).expect("state db");
         let queue = Arc::new(ReviewQueue::new(
@@ -147,8 +168,29 @@ mod tests {
         ));
         let factory = review_action_tools_factory(queue);
 
-        assert!(factory(&entry(WEB_ACOPILOT_NAMESPACE)).is_some());
-        assert!(factory(&entry(ads_state::WEB_ACTIONS_NAMESPACE)).is_none());
+        let acopilot_user = entry(WEB_ACOPILOT_NAMESPACE);
+        assert!(factory(&acopilot_user).is_some());
+
+        let mut acopilot_handoff = entry(WEB_ACOPILOT_NAMESPACE);
+        acopilot_handoff.kind = LaneTurnKind::AgentHandoff;
+        assert!(factory(&acopilot_handoff).is_some());
+
+        let actions_user = entry(ads_state::WEB_ACTIONS_NAMESPACE);
+        assert!(
+            factory(&actions_user).is_some(),
+            "human-initiated Actions lane UserPrompt must have review_action"
+        );
+
+        let mut actions_handoff = entry(ads_state::WEB_ACTIONS_NAMESPACE);
+        actions_handoff.kind = LaneTurnKind::AgentHandoff;
+        assert!(
+            factory(&actions_handoff).is_none(),
+            "non-user-initiated Actions lane turn must not receive review_action"
+        );
+
+        let mut scheduler_turn = entry("scheduler");
+        scheduler_turn.kind = LaneTurnKind::Scheduler;
+        assert!(factory(&scheduler_turn).is_none());
     }
 
     #[tokio::test]
