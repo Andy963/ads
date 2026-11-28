@@ -501,34 +501,52 @@ impl AcpPromptRunner {
                 }
             }
 
-            let raw_output = supervised.turn.response_text.trim().to_string();
-            let review_directives = extract_review_action_directives(&raw_output);
-            let had_review_directives = !review_directives.is_empty();
-            let without_review_directives = if had_review_directives {
-                strip_review_action_directives(&raw_output)
-            } else {
-                raw_output.clone()
-            };
-            let directive_results = ads_native::execute_tool_directives_in(
-                state_dir,
-                &entry.workspace_root,
-                &without_review_directives,
-            );
-            let cleaned_prose = ads_native::strip_tool_directives(&without_review_directives);
-            let round_had_rewrites = had_review_directives || !directive_results.is_empty();
-
             let mut round_phases = collect_raw_assistant_phases(&supervised.turn.events);
             phase_index_offset += round_phases.len();
-            if round_had_rewrites {
-                for (_, text) in &mut round_phases {
-                    *text =
-                        ads_native::strip_tool_directives(&strip_review_action_directives(text));
+            let mut review_directives = Vec::new();
+            let mut directive_results = Vec::new();
+
+            if round_phases.is_empty() {
+                let raw_output = supervised.turn.response_text.trim().to_string();
+                let extracted = extract_review_action_directives(&raw_output);
+                let without_review = if extracted.is_empty() {
+                    raw_output
+                } else {
+                    strip_review_action_directives(&raw_output)
+                };
+                review_directives.extend(extracted);
+                directive_results.extend(ads_native::execute_tool_directives_in(
+                    state_dir,
+                    &entry.workspace_root,
+                    &without_review,
+                ));
+                let cleaned = ads_native::strip_tool_directives(&without_review);
+                if !cleaned.is_empty() {
+                    accumulated_prose.push(cleaned);
                 }
+            } else {
+                for (_, phase_text) in &mut round_phases {
+                    let extracted = extract_review_action_directives(phase_text);
+                    let without_review = if extracted.is_empty() {
+                        phase_text.clone()
+                    } else {
+                        strip_review_action_directives(phase_text)
+                    };
+                    review_directives.extend(extracted);
+                    directive_results.extend(ads_native::execute_tool_directives_in(
+                        state_dir,
+                        &entry.workspace_root,
+                        &without_review,
+                    ));
+                    let cleaned = ads_native::strip_tool_directives(&without_review);
+                    *phase_text = cleaned.clone();
+                    if !cleaned.is_empty() {
+                        accumulated_prose.push(cleaned);
+                    }
+                }
+                accumulated_phases.extend(round_phases);
             }
-            accumulated_phases.extend(round_phases);
-            if !cleaned_prose.is_empty() {
-                accumulated_prose.push(cleaned_prose);
-            }
+            let had_review_directives = !review_directives.is_empty();
             accumulated_extra_results.extend(directive_results);
 
             let mut handoff_error: Option<String> = None;

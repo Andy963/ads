@@ -121,8 +121,56 @@ for line in sys.stdin:
                 "```ads-review-action\n"
                 "{}\n"
                 "```\n"
-                "````\n"
+                "````\n\n"
+                "~~~rust\n"
+                "let example = \"<<<tool.review_action>>>{}>>>\";\n"
+                "~~~\n"
             )
+        elif "multi_phase_tool_then_handoff" in prompt_text:
+            # Phase 1 ends WITHOUT a trailing newline, followed by a ToolCall, then Phase 2
+            # begins directly with a top-level ```ads-review-action block.
+            send({
+                "jsonrpc": "2.0",
+                "method": "session/update",
+                "params": {
+                    "sessionId": session_id,
+                    "update": {
+                        "sessionUpdate": "agent_message_chunk",
+                        "content": {"type": "text", "text": "Opened PR #760."},
+                    },
+                },
+            })
+            send({
+                "jsonrpc": "2.0",
+                "method": "session/update",
+                "params": {
+                    "sessionId": session_id,
+                    "update": {
+                        "sessionUpdate": "tool_call",
+                        "toolCallId": "tc-push-1",
+                        "title": "git status",
+                        "kind": "execute",
+                        "status": "completed",
+                    },
+                },
+            })
+            send({
+                "jsonrpc": "2.0",
+                "method": "session/update",
+                "params": {
+                    "sessionId": session_id,
+                    "update": {
+                        "sessionUpdate": "agent_message_chunk",
+                        "content": {"type": "text", "text": "```ads-review-action\n{}\n```"},
+                    },
+                },
+            })
+            send({
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "result": {"stopReason": "end_turn"},
+            })
+            continue
         elif "trigger_rework_repair" in prompt_text:
             reply = "Attempting redispatch.\n\n```ads-review-action\n{}\n```"
         elif "trigger_initial_review" in prompt_text or "trigger_actions_review" in prompt_text or "trigger_forbidden_review" in prompt_text:
@@ -532,12 +580,63 @@ async fn acp_prompt_runner_dispatches_initial_and_repaired_rework_handoffs_witho
         .find(|ev| ev["type"] == "result")
         .cloned()
         .expect("quoted result");
+    let quoted_output = quoted_result["output"].as_str().unwrap_or("");
     assert!(
-        quoted_result["output"]
-            .as_str()
-            .unwrap_or("")
-            .contains("````markdown\n```ads-review-action\n{}\n```\n````"),
+        quoted_output.contains("````markdown\n```ads-review-action\n{}\n```\n````"),
         "quoted markdown example must remain uncorrupted: {quoted_result}"
+    );
+    assert!(
+        quoted_output.contains("<<<tool.review_action>>>{}>>>"),
+        "quoted inline directive inside tilde fence must remain uncorrupted: {quoted_result}"
+    );
+    assert!(
+        !quoted_output.contains("tool.unknown"),
+        "quoted inline directive inside code fence must not trigger tool.unknown rejection: {quoted_result}"
+    );
+
+    // 6. Multi-phase turn where Phase 1 lacks a trailing newline, followed by ToolCall,
+    // followed by Phase 2 starting directly with ```ads-review-action must still dispatch.
+    let count_before_multiphase = dispatched.lock().expect("dispatched").len();
+    let events_multi = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let events_multi_h = Arc::clone(&events_multi);
+    let multi_outcome = runner
+        .run_lane_turn(
+            make_turn(
+                &workspace,
+                WEB_ACOPILOT_NAMESPACE,
+                LaneTurnKind::UserPrompt,
+                "cm-multiphase",
+                "user-1::proj-758::acopilot",
+                "multi_phase_tool_then_handoff",
+            ),
+            PromptRunContext::new(Arc::new(move |ev| {
+                events_multi_h.lock().expect("evs").push(ev);
+            })),
+        )
+        .await
+        .expect("multi-phase turn");
+    assert!(multi_outcome.ok);
+    assert_eq!(
+        dispatched.lock().expect("dispatched").len(),
+        count_before_multiphase + 1,
+        "multi-phase handoff after unterminated Phase 1 + ToolCall must dispatch"
+    );
+    let recorded_multi = events_multi.lock().expect("evs").clone();
+    assert!(
+        recorded_multi
+            .iter()
+            .any(|ev| ev["type"] == "review_action_handoff" && ev["ok"] == json!(true))
+    );
+    let multi_result = recorded_multi
+        .iter()
+        .find(|ev| ev["type"] == "result")
+        .expect("multi result");
+    let multi_output = multi_result["output"].as_str().unwrap_or("");
+    assert!(multi_output.contains("Opened PR #760."));
+    assert!(multi_output.contains("Actions job: job-init-1."));
+    assert!(
+        !multi_output.contains("ads-review-action"),
+        "raw handoff block in Phase 2 must be stripped: {multi_output}"
     );
 
     runner.shutdown().await;
