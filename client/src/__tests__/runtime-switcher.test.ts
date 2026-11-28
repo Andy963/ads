@@ -150,6 +150,11 @@ describe("MainChatModelSelectors runtime switcher", () => {
     await flushPromises();
 
     expect(wrapper.get('[data-testid="agent-picker-section"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="agent-picker-section"] [data-testid="agent-picker-item-agy:api-key"]').exists()).toBe(false);
+    expect(wrapper.get('[data-testid="agent-picker-runtime-agy"]').text()).toContain("Antigravity");
+    expect(wrapper.get('[data-testid="agent-picker-runtime-agy"]').text()).toContain("2 of 2 accounts ready");
+    expect(wrapper.get('[data-testid="agy-account-picker-section"]').exists()).toBe(true);
+
     const codexBtn = wrapper.get('[data-testid="agent-picker-item-codex"]');
     expect(codexBtn.attributes("disabled")).toBeDefined();
     expect(codexBtn.text()).toContain("codex CLI not found");
@@ -164,6 +169,10 @@ describe("MainChatModelSelectors runtime switcher", () => {
 
     await agyBtn.trigger("click");
     expect(wrapper.emitted("switchAgent")).toEqual([["agy"]]);
+
+    await wrapper.setProps({ activeAgentId: "agy:api-key" });
+    await flushPromises();
+    expect(wrapper.get('[data-testid="chat-capsule-agent"]').text()).toBe("Antigravity");
 
     wrapper.unmount();
   });
@@ -217,7 +226,7 @@ describe("AntigravityAccountsPanel inside ModelManager Runtimes tab", () => {
     sessionStorage.clear();
   });
 
-  it("creates an isolated account, completes OAuth code flow, logs out, and deletes cleanly", async () => {
+  it("creates an isolated account without label, keeps Detected runtimes collapsed, completes OAuth flow, logs out, and deletes cleanly", async () => {
     const snapshot: RuntimesSnapshot = {
       activeAgentId: "native",
       agents: [
@@ -230,6 +239,13 @@ describe("AntigravityAccountsPanel inside ModelManager Runtimes tab", () => {
           version: "1.5.18",
           accountEmail: "host@example.com",
           tier: "Ultra",
+        },
+        {
+          id: "agy:api-key-acct",
+          name: "Gemini API Key",
+          kind: "agy",
+          ready: true,
+          version: "1.5.18",
         },
       ],
     };
@@ -254,7 +270,7 @@ describe("AntigravityAccountsPanel inside ModelManager Runtimes tab", () => {
       {
         id: "api-key-acct",
         agentId: "agy:api-key-acct",
-        label: "API Key Account",
+        label: "Gemini API Key",
         isDefault: false,
         authMethod: "gemini-api-key",
         hasApiKey: true,
@@ -279,9 +295,9 @@ describe("AntigravityAccountsPanel inside ModelManager Runtimes tab", () => {
       post: vi.fn(async (url: string, body?: Record<string, unknown>) => {
         if (url === "/api/runtimes/agy/accounts") {
           const created: AgyAccountView = {
-            id: "work-google",
-            agentId: "agy:work-google",
-            label: String(body?.label ?? "Work Google"),
+            id: "acct-work1234",
+            agentId: "agy:acct-work1234",
+            label: String(body?.label ?? "Google OAuth (Personal)"),
             isDefault: false,
             authMethod: (body?.authMethod as AgyAccountView["authMethod"]) ?? "oauth-personal",
             hasApiKey: false,
@@ -293,23 +309,30 @@ describe("AntigravityAccountsPanel inside ModelManager Runtimes tab", () => {
             authorizationUrl: null,
           };
           accounts.push(created);
+          snapshot.agents.push({
+            id: "agy:acct-work1234",
+            name: created.label,
+            kind: "agy",
+            ready: false,
+            error: created.error,
+          });
           return structuredClone(created);
         }
-        if (url === "/api/runtimes/agy/accounts/work-google/login/start") {
-          const acc = accounts.find((a) => a.id === "work-google")!;
+        if (url === "/api/runtimes/agy/accounts/acct-work1234/login/start") {
+          const acc = accounts.find((a) => a.id === "acct-work1234")!;
           acc.loginPending = true;
           acc.authorizationUrl = "https://accounts.google.com/o/oauth2/auth?response_type=code&state=s1";
           return {
-            accountId: "work-google",
-            agentId: "agy:work-google",
+            accountId: "acct-work1234",
+            agentId: "agy:acct-work1234",
             flowId: "flow-1",
             authorizationUrl: acc.authorizationUrl,
             redirectUri: "https://antigravity.google/oauth-callback",
             state: "s1",
           };
         }
-        if (url === "/api/runtimes/agy/accounts/work-google/login/complete") {
-          const acc = accounts.find((a) => a.id === "work-google")!;
+        if (url === "/api/runtimes/agy/accounts/acct-work1234/login/complete") {
+          const acc = accounts.find((a) => a.id === "acct-work1234")!;
           acc.ready = true;
           acc.status = "ready";
           acc.accountEmail = "work@example.com";
@@ -318,10 +341,15 @@ describe("AntigravityAccountsPanel inside ModelManager Runtimes tab", () => {
           acc.modelCount = 2;
           acc.loginPending = false;
           acc.authorizationUrl = null;
+          const rt = snapshot.agents.find((r) => r.id === "agy:acct-work1234")!;
+          rt.ready = true;
+          rt.accountEmail = "work@example.com";
+          rt.tier = "Pro";
+          rt.error = null;
           return structuredClone(acc);
         }
-        if (url === "/api/runtimes/agy/accounts/work-google/logout") {
-          const acc = accounts.find((a) => a.id === "work-google")!;
+        if (url === "/api/runtimes/agy/accounts/acct-work1234/logout") {
+          const acc = accounts.find((a) => a.id === "acct-work1234")!;
           acc.ready = false;
           acc.status = "authentication_required";
           acc.accountEmail = null;
@@ -340,13 +368,22 @@ describe("AntigravityAccountsPanel inside ModelManager Runtimes tab", () => {
       patch: vi.fn(async () => ({})),
       put: vi.fn(async () => ({})),
       delete: vi.fn(async (url: string) => {
-        if (url === "/api/runtimes/agy/accounts/work-google") {
-          const idx = accounts.findIndex((a) => a.id === "work-google");
+        if (url === "/api/runtimes/agy/accounts/acct-work1234") {
+          const idx = accounts.findIndex((a) => a.id === "acct-work1234");
           if (idx >= 0) accounts.splice(idx, 1);
+          const rtIdx = snapshot.agents.findIndex((r) => r.id === "agy:acct-work1234");
+          if (rtIdx >= 0) snapshot.agents.splice(rtIdx, 1);
         }
         return { success: true };
       }),
     };
+
+    const clipboardWrite = vi.fn(async () => {});
+    const clipboardRead = vi.fn(async () => "ok-code");
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: clipboardWrite, readText: clipboardRead },
+    });
 
     const wrapper = mount(ModelManager, { props: { api: api as any } });
     await flushPromises();
@@ -361,9 +398,10 @@ describe("AntigravityAccountsPanel inside ModelManager Runtimes tab", () => {
     await wrapper.get('[data-testid="runtime-settings-tab"]').trigger("click");
     await flushPromises();
     expect(wrapper.get('[data-testid="settings-runtimes-panel"]').exists()).toBe(true);
+    // Detected runtimes collapses all agy* accounts into the single Antigravity runtime row.
     expect(wrapper.get('[data-testid="runtime-row-agy"]').text()).toContain("Ready");
-    expect(wrapper.get('[data-testid="runtime-tier-agy"]').text()).toBe("Ultra");
-    expect(wrapper.get('[data-testid="runtime-row-agy"]').text()).toContain("host@example.com · agy · v1.5.18");
+    expect(wrapper.get('[data-testid="runtime-row-agy"]').text()).toContain("2 accounts ready · agy · v1.5.18");
+    expect(wrapper.find('[data-testid="runtime-row-agy:api-key-acct"]').exists()).toBe(false);
 
     // Host default card displays email & concise tier badge; API-key card omits them cleanly.
     expect(wrapper.get('[data-testid="agy-account-email-default"]').text()).toBe("host@example.com");
@@ -372,54 +410,69 @@ describe("AntigravityAccountsPanel inside ModelManager Runtimes tab", () => {
     expect(wrapper.find('[data-testid="agy-account-tier-api-key-acct"]').exists()).toBe(false);
     expect(wrapper.get('[data-testid="agy-account-row-api-key-acct"]').text()).not.toContain("·  ·");
 
-    // Add isolated OAuth account.
+    // Add isolated OAuth account without any label input.
     await wrapper.get('[data-testid="agy-account-add"]').trigger("click");
     await flushPromises();
-    await wrapper.get('[data-testid="agy-account-label"]').setValue("Work Google");
+    expect(wrapper.find('[data-testid="agy-account-label"]').exists()).toBe(false);
     await wrapper.get('[data-testid="agy-account-form"]').trigger("submit");
     await flushPromises();
     expect(api.post).toHaveBeenCalledWith(
       "/api/runtimes/agy/accounts",
-      expect.objectContaining({ label: "Work Google", authMethod: "oauth-personal" }),
+      { authMethod: "oauth-personal" },
     );
-    expect(wrapper.get('[data-testid="agy-account-row-work-google"]').text()).toContain("Sign in required for this Antigravity account.");
+    expect(wrapper.get('[data-testid="agy-account-row-acct-work1234"]').text()).toContain("Sign in required for this Antigravity account.");
+    // Adding an account must NOT add a new row under Detected runtimes.
+    expect(wrapper.find('[data-testid="runtime-row-agy:acct-work1234"]').exists()).toBe(false);
 
-    // Start OAuth flow and verify reopening the tab restores loginPending / authorizationUrl.
-    await wrapper.get('[data-testid="agy-login-start-work-google"]').trigger("click");
+    // Start OAuth flow, copy link, and verify reopening ModelManager restores Runtimes + login flow.
+    await wrapper.get('[data-testid="agy-login-start-acct-work1234"]').trigger("click");
     await flushPromises();
-    await wrapper.get('[data-testid="provider-settings-tab"]').trigger("click");
+    await wrapper.get('[data-testid="agy-login-copy-acct-work1234"]').trigger("click");
     await flushPromises();
-    await wrapper.get('[data-testid="runtime-settings-tab"]').trigger("click");
+    expect(clipboardWrite).toHaveBeenCalledWith(
+      "https://accounts.google.com/o/oauth2/auth?response_type=code&state=s1",
+    );
+
+    expect((wrapper.emitted("changed") ?? []).length).toBeGreaterThanOrEqual(1);
+    wrapper.unmount();
+    const restoredWrapper = mount(ModelManager, { props: { api: api as any, initialTab: "models" } });
     await flushPromises();
-    expect(wrapper.get('[data-testid="agy-login-link-work-google"]').attributes("href")).toContain(
+    expect(restoredWrapper.get('[data-testid="settings-runtimes-panel"]').exists()).toBe(true);
+    expect(restoredWrapper.get('[data-testid="agy-login-link-acct-work1234"]').attributes("href")).toContain(
       "https://accounts.google.com/o/oauth2/auth",
     );
-    await wrapper.get('[data-testid="agy-login-code-work-google"]').setValue("ok-code");
-    await wrapper.get('[data-testid="agy-login-complete-work-google"]').trigger("click");
+    const codeInput = restoredWrapper.get('[data-testid="agy-login-code-acct-work1234"]');
+    expect(codeInput.element.closest(".settingsField")).toBeNull();
+
+    // Paste code via 1-tap Paste button and complete sign-in.
+    await restoredWrapper.get('[data-testid="agy-login-paste-acct-work1234"]').trigger("click");
+    await flushPromises();
+    await restoredWrapper.get('[data-testid="agy-login-complete-acct-work1234"]').trigger("click");
     await flushPromises();
     expect(api.post).toHaveBeenCalledWith(
-      "/api/runtimes/agy/accounts/work-google/login/complete",
+      "/api/runtimes/agy/accounts/acct-work1234/login/complete",
       { code: "ok-code" },
     );
-    expect(wrapper.get('[data-testid="agy-account-row-work-google"]').text()).toContain("Ready · 2 models");
-    expect(wrapper.get('[data-testid="agy-account-email-work-google"]').text()).toBe("work@example.com");
-    expect(wrapper.get('[data-testid="agy-account-tier-work-google"]').text()).toBe("Pro");
+    expect(restoredWrapper.get('[data-testid="agy-account-row-acct-work1234"]').text()).toContain("Ready · 2 models");
+    expect(restoredWrapper.get('[data-testid="agy-account-email-acct-work1234"]').text()).toBe("work@example.com");
+    expect(restoredWrapper.get('[data-testid="agy-account-tier-acct-work1234"]').text()).toBe("Pro");
+    expect(restoredWrapper.find('[data-testid="runtime-row-agy:acct-work1234"]').exists()).toBe(false);
 
     // Sign out and delete account.
-    await wrapper.get('[data-testid="agy-logout-work-google"]').trigger("click");
+    await restoredWrapper.get('[data-testid="agy-logout-acct-work1234"]').trigger("click");
     await flushPromises();
-    expect(wrapper.get('[data-testid="agy-account-row-work-google"]').text()).toContain("Sign in required");
-    expect(wrapper.find('[data-testid="agy-account-email-work-google"]').exists()).toBe(false);
-    expect(wrapper.find('[data-testid="agy-account-tier-work-google"]').exists()).toBe(false);
+    expect(restoredWrapper.get('[data-testid="agy-account-row-acct-work1234"]').text()).toContain("Sign in required");
+    expect(restoredWrapper.find('[data-testid="agy-account-email-acct-work1234"]').exists()).toBe(false);
+    expect(restoredWrapper.find('[data-testid="agy-account-tier-acct-work1234"]').exists()).toBe(false);
 
-    await wrapper.get('[data-testid="agy-delete-work-google"]').trigger("click");
+    await restoredWrapper.get('[data-testid="agy-delete-acct-work1234"]').trigger("click");
     await flushPromises();
-    await wrapper.get('[data-testid="agy-account-delete-confirm"] [data-testid="sheet-done"]').trigger("click");
+    await restoredWrapper.get('[data-testid="agy-account-delete-confirm"] [data-testid="sheet-done"]').trigger("click");
     await flushPromises();
-    expect(api.delete).toHaveBeenCalledWith("/api/runtimes/agy/accounts/work-google");
-    expect(wrapper.find('[data-testid="agy-account-row-work-google"]').exists()).toBe(false);
-    expect((wrapper.emitted("changed") ?? []).length).toBeGreaterThanOrEqual(4);
+    expect(api.delete).toHaveBeenCalledWith("/api/runtimes/agy/accounts/acct-work1234");
+    expect(restoredWrapper.find('[data-testid="agy-account-row-acct-work1234"]').exists()).toBe(false);
+    expect((restoredWrapper.emitted("changed") ?? []).length).toBeGreaterThanOrEqual(3);
 
-    wrapper.unmount();
+    restoredWrapper.unmount();
   });
 });

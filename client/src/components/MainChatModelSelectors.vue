@@ -127,9 +127,54 @@ function formatModelLabel(model: ModelConfig): string {
   return String(model.displayName ?? "").trim() || String(model.modelId ?? "").trim() || "Model";
 }
 
+function isAgyAgentId(agentId: string): boolean {
+  return agentId === "agy" || agentId.startsWith("agy:");
+}
+
+function runtimeBadgeLabel(agent: AgentOption | null): string {
+  if (!agent) return "";
+  return isAgyAgentId(agent.id) ? "Antigravity" : agent.name;
+}
+
+function agyAccountTitle(agent: AgentOption): string {
+  const email = typeof agent.accountEmail === "string" ? agent.accountEmail.trim() : "";
+  if (email) return email;
+  if (agent.id === "agy") return "Host default";
+  return agent.name || "Antigravity account";
+}
+
 function formatReadyAgentDetail(agent: AgentOption): string {
   const email = typeof agent.accountEmail === "string" ? agent.accountEmail.trim() : "";
   return email ? `${email} · ${agent.id}` : agent.id;
+}
+
+const agyAgents = computed(() => agentOptions.value.filter((agent) => isAgyAgentId(agent.id)));
+const nonAgyAgents = computed(() => agentOptions.value.filter((agent) => !isAgyAgentId(agent.id)));
+const hasMultipleAgyAccounts = computed(() => agyAgents.value.length > 1);
+const readyAgyAgents = computed(() => agyAgents.value.filter((agent) => Boolean(agent.ready)));
+const isAgySelected = computed(() => isAgyAgentId(selectedAgentId.value));
+const preferredReadyAgy = computed(() => {
+  const active = agyAgents.value.find((agent) => agent.id === selectedAgentId.value && agent.ready);
+  return active ?? readyAgyAgents.value[0] ?? null;
+});
+const agyRuntimeDetail = computed(() => {
+  if (!readyAgyAgents.value.length) {
+    return agyAgents.value[0]?.error || "Unavailable";
+  }
+  const active = activeAgent.value;
+  if (isAgySelected.value && active && active.ready) {
+    const email = typeof active.accountEmail === "string" ? active.accountEmail.trim() : "";
+    return email
+      ? `${email} · ${readyAgyAgents.value.length}/${agyAgents.value.length} ready`
+      : `${readyAgyAgents.value.length} of ${agyAgents.value.length} accounts ready`;
+  }
+  return `${readyAgyAgents.value.length} of ${agyAgents.value.length} accounts ready`;
+});
+
+function selectAgyRuntime(): void {
+  if (!canChange.value || isAgySelected.value) return;
+  const target = preferredReadyAgy.value;
+  if (target) selectAgent(target.id);
 }
 
 function preferredModel(options: readonly ModelConfig[]): ModelConfig | null {
@@ -228,7 +273,7 @@ const canOpenPicker = computed(() =>
 );
 
 const capsuleLabel = computed(() => {
-  const agentPrefix = hasMultipleAgents.value && activeAgent.value ? `${activeAgent.value.name} · ` : "";
+  const agentPrefix = hasMultipleAgents.value && activeAgent.value ? `${runtimeBadgeLabel(activeAgent.value)} · ` : "";
   if (!compatibleModelOptions.value.length) return `${agentPrefix}No models`;
   const name = selectedModelLabel.value;
   if (!reasoningEffortOptions.value.length || (reasoningEffortOptions.value.length === 1 && (reasoningEffortOptions.value[0] === "none" || reasoningEffortOptions.value[0] === "off"))) {
@@ -300,7 +345,7 @@ defineExpose({
       :title="capsuleLabel"
       @click="togglePicker"
     >
-      <span v-if="hasMultipleAgents && activeAgent" class="modelCapsuleAgent" data-testid="chat-capsule-agent">{{ activeAgent.name }}</span>
+      <span v-if="hasMultipleAgents && activeAgent" class="modelCapsuleAgent" data-testid="chat-capsule-agent">{{ runtimeBadgeLabel(activeAgent) }}</span>
       <span class="modelCapsuleText" data-testid="chat-capsule-text">{{ compatibleModelOptions.length ? selectedModelLabel : "No models" }}</span>
       <span v-if="compatibleModelOptions.length" class="modelCapsuleEffort" data-testid="chat-capsule-effort">{{ REASONING_EFFORT_SHORT_LABELS[reasoningEffortValue] || reasoningEffortValue }}</span>
       <span class="modelCapsuleChevron" aria-hidden="true">▾</span>
@@ -373,7 +418,7 @@ defineExpose({
         <h2 class="settingsBlockTitle">Runtime</h2>
         <div class="settingsList">
           <button
-            v-for="agent in agentOptions"
+            v-for="agent in nonAgyAgents"
             :key="agent.id"
             type="button"
             class="settingsRow"
@@ -385,6 +430,80 @@ defineExpose({
             <span class="settingsRowContent">
               <span>
                 {{ agent.name }}
+                <small
+                  v-if="agent.ready && agent.tier"
+                  class="agentTierBadge"
+                  :data-testid="`agent-picker-tier-${agent.id}`"
+                >{{ agent.tier }}</small>
+              </span>
+              <small v-if="!agent.ready" class="settingsDetail">{{ agent.error || 'Unavailable' }}</small>
+              <small v-else class="settingsDetail" :data-testid="`agent-picker-detail-${agent.id}`">{{ formatReadyAgentDetail(agent) }}</small>
+            </span>
+            <span class="settingsCheckmark" aria-hidden="true">{{ agent.id === selectedAgentId ? '✓' : '' }}</span>
+          </button>
+          <button
+            v-if="agyAgents.length === 1"
+            type="button"
+            class="settingsRow"
+            :aria-pressed="agyAgents[0].id === selectedAgentId"
+            :disabled="!canChange || !agyAgents[0].ready"
+            :data-testid="`agent-picker-item-${agyAgents[0].id}`"
+            @click="selectAgent(agyAgents[0].id)"
+          >
+            <span class="settingsRowContent">
+              <span>
+                Antigravity
+                <small
+                  v-if="agyAgents[0].ready && agyAgents[0].tier"
+                  class="agentTierBadge"
+                  :data-testid="`agent-picker-tier-${agyAgents[0].id}`"
+                >{{ agyAgents[0].tier }}</small>
+              </span>
+              <small v-if="!agyAgents[0].ready" class="settingsDetail">{{ agyAgents[0].error || 'Unavailable' }}</small>
+              <small v-else class="settingsDetail" :data-testid="`agent-picker-detail-${agyAgents[0].id}`">{{ formatReadyAgentDetail(agyAgents[0]) }}</small>
+            </span>
+            <span class="settingsCheckmark" aria-hidden="true">{{ agyAgents[0].id === selectedAgentId ? '✓' : '' }}</span>
+          </button>
+          <button
+            v-else-if="hasMultipleAgyAccounts"
+            type="button"
+            class="settingsRow"
+            :aria-pressed="isAgySelected"
+            :disabled="!canChange || !readyAgyAgents.length"
+            data-testid="agent-picker-runtime-agy"
+            @click="selectAgyRuntime"
+          >
+            <span class="settingsRowContent">
+              <span>
+                Antigravity
+                <small
+                  v-if="isAgySelected && activeAgent?.ready && activeAgent?.tier"
+                  class="agentTierBadge"
+                >{{ activeAgent.tier }}</small>
+              </span>
+              <small class="settingsDetail">{{ agyRuntimeDetail }}</small>
+            </span>
+            <span class="settingsCheckmark" aria-hidden="true">{{ isAgySelected ? '✓' : '' }}</span>
+          </button>
+        </div>
+      </div>
+      <div v-if="hasMultipleAgyAccounts" class="settingsBlock" data-testid="agy-account-picker-section">
+        <h2 class="settingsBlockTitle">Antigravity account</h2>
+        <div class="settingsList">
+          <button
+            v-for="agent in agyAgents"
+            :key="agent.id"
+            type="button"
+            class="settingsRow"
+            :aria-pressed="agent.id === selectedAgentId"
+            :disabled="!canChange || !agent.ready"
+            :data-testid="`agent-picker-item-${agent.id}`"
+            @click="selectAgent(agent.id)"
+          >
+            <span class="settingsRowContent">
+              <span>
+                {{ agyAccountTitle(agent) }}
+                <small v-if="agent.id === 'agy' && agent.accountEmail" class="accountTag">Host default</small>
                 <small
                   v-if="agent.ready && agent.tier"
                   class="agentTierBadge"
@@ -468,6 +587,16 @@ defineExpose({
   border-radius: 6px;
   background: rgba(15, 23, 42, 0.07);
   color: var(--text);
+}
+
+.accountTag {
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 500;
+  background: rgba(15, 23, 42, 0.06);
+  color: var(--settings-secondary, #64748b);
 }
 
 .agentTierBadge {

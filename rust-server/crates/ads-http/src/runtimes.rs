@@ -67,6 +67,7 @@ pub struct RuntimeAgentDescriptor {
 #[serde(rename_all = "camelCase")]
 pub struct AgyAccountRecord {
     pub id: String,
+    #[serde(default)]
     pub label: String,
     pub auth_method: AgyAuthMethod,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -123,7 +124,8 @@ pub struct AgyLoginStartView {
 pub struct UpsertAgyAccountInput {
     #[serde(default)]
     pub id: Option<String>,
-    pub label: String,
+    #[serde(default)]
+    pub label: Option<String>,
     #[serde(default)]
     pub auth_method: AgyAuthMethod,
     #[serde(default)]
@@ -832,10 +834,15 @@ impl RuntimeRegistry {
         &self,
         input: UpsertAgyAccountInput,
     ) -> Result<AgyAccountView, RuntimeApiError> {
-        let label = input.label.trim().to_string();
-        if label.is_empty() || label.chars().count() > 80 {
+        let label = input
+            .label
+            .as_deref()
+            .map(str::trim)
+            .unwrap_or_default()
+            .to_string();
+        if label.chars().count() > 80 {
             return Err(RuntimeApiError::BadRequest(
-                "Account label must be between 1 and 80 characters.".to_string(),
+                "Account label must be 80 characters or fewer.".to_string(),
             ));
         }
         let requested_id = match input.id.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
@@ -884,7 +891,14 @@ impl RuntimeRegistry {
                 tokio::task::spawn_blocking(move || -> Result<_, RuntimeApiError> {
                     let account_id = match requested_id {
                         Some(id) => id,
-                        None => derive_unique_account_id(&db, &label_for_db)?,
+                        None => {
+                            let id_seed = if !label_for_db.is_empty() {
+                                label_for_db.as_str()
+                            } else {
+                                gcp_project_for_db.as_deref().unwrap_or("")
+                            };
+                            derive_unique_account_id(&db, id_seed)?
+                        }
                     };
                     let existing_records = load_agy_account_records(&db)?;
                     let existing = existing_records
@@ -1753,11 +1767,51 @@ fn describe_agy_probe_error(probe: &AgyProbeResult) -> Option<String> {
     }
 }
 
+fn auth_method_display_label(method: AgyAuthMethod) -> &'static str {
+    match method {
+        AgyAuthMethod::OAuthPersonal => "Google OAuth (Personal)",
+        AgyAuthMethod::OAuthBusiness => "Gemini Enterprise (GCP)",
+        AgyAuthMethod::GeminiApiKey => "Gemini API Key",
+        AgyAuthMethod::AgentPlatform => "Agent Platform",
+    }
+}
+
+fn resolve_account_display_label(entry: &ManagedAgyRuntime) -> String {
+    let explicit = entry.label.trim();
+    if !explicit.is_empty() {
+        return explicit.to_string();
+    }
+    if entry.probe.status == AgyProbeStatus::Ready
+        && let Some(email) = entry
+            .probe
+            .account_email
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+    {
+        return email.to_string();
+    }
+    if let Some(project) = entry
+        .gcp_project
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+    {
+        return project.to_string();
+    }
+    auth_method_display_label(entry.auth_method).to_string()
+}
+
 fn entry_to_descriptor(entry: &ManagedAgyRuntime) -> RuntimeAgentDescriptor {
     let ready = entry.probe.status == AgyProbeStatus::Ready;
+    let name = if entry.is_default {
+        "Antigravity".to_string()
+    } else {
+        resolve_account_display_label(entry)
+    };
     RuntimeAgentDescriptor {
         id: entry.agent_id.clone(),
-        name: entry.label.clone(),
+        name,
         kind: "agy".to_string(),
         ready,
         error: describe_agy_probe_error(&entry.probe),
@@ -1777,7 +1831,7 @@ fn entry_to_account_view(
     AgyAccountView {
         id: entry.account_id.clone(),
         agent_id: entry.agent_id.clone(),
-        label: entry.label.clone(),
+        label: resolve_account_display_label(entry),
         is_default: entry.is_default,
         auth_method: entry.auth_method,
         gcp_project: entry.gcp_project.clone(),

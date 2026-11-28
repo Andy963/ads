@@ -12,6 +12,7 @@ import {
   normalizeModelTokenLimit,
   readModelTokenLimit,
 } from "../shared/modelTokenBudget";
+import { clearPendingAgyLoginView, hasPendingAgyLoginView } from "../lib/agyPendingLogin";
 import AntigravityAccountsPanel from "./AntigravityAccountsPanel.vue";
 import ModelServicePicker from "./ModelServicePicker.vue";
 import RoleSettings from "./RoleSettings.vue";
@@ -21,10 +22,12 @@ import SettingsSheet from "./SettingsSheet.vue";
 import "./modelSettings.css";
 
 type SettingsTab = "roles" | "models" | "notifications";
-const props = withDefaults(defineProps<{ api: ApiClient; agent?: string | null; showHeader?: boolean; showTabs?: boolean; initialTab?: SettingsTab }>(), { showHeader: true, showTabs: true, initialTab: "models" });
+const props = withDefaults(defineProps<{ api: ApiClient; agent?: string | null; showHeader?: boolean; showTabs?: boolean; initialTab?: SettingsTab; initialSection?: string }>(), { showHeader: true, showTabs: true, initialTab: "models" });
 const emit = defineEmits<{ (e: "close"): void; (e: "changed"): void }>();
 const activeTab = ref<SettingsTab>(props.initialTab);
-const section = ref("providers");
+const section = ref(
+  props.initialSection || (props.initialTab === "models" && hasPendingAgyLoginView() ? "runtimes" : "providers"),
+);
 const sections = [
   { id: "providers", label: "Providers", title: "Providers", icon: "M4 7h16M4 17h16M7 4v6m10 4v6" },
   { id: "runtimes", label: "Runtimes", title: "Runtimes", icon: "M12 2v4m0 12v4M4.93 4.93l2.83 2.83m8.48 8.48 2.83 2.83M2 12h4m12 0h4M4.93 19.07l2.83-2.83m8.48-8.48 2.83-2.83" },
@@ -38,7 +41,15 @@ const models = ref<ModelConfig[]>([]);
 const busy = ref(false);
 const error = ref("");
 const notice = ref("");
-watch([section, activeTab], () => { error.value = ""; notice.value = ""; closeModelSwipe(); clearSuppressedModelRowClick(); });
+watch([section, activeTab], () => {
+  error.value = "";
+  notice.value = "";
+  closeModelSwipe();
+  clearSuppressedModelRowClick();
+  if (activeTab.value !== "models" || section.value !== "runtimes") {
+    clearPendingAgyLoginView();
+  }
+});
 const providerDialog = ref(false);
 const modelDialog = ref(false);
 const providerBaseline = ref("");

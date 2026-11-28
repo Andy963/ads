@@ -1844,3 +1844,65 @@ async fn codex_acp_probing_three_way_runtime_switching_and_persistent_auth_reuse
     );
     unauth_registry.shutdown_all().await;
 }
+
+#[tokio::test]
+async fn agy_account_creation_allows_omitted_label_and_falls_back_to_email() {
+    let fixture = build_runtime_fixture();
+    fixture.registry.probe_all().await;
+    let cookie = login_cookie(&fixture.app).await;
+
+    let (status, created) = authed_request(
+        &fixture.app,
+        "POST",
+        "/api/runtimes/agy/accounts",
+        &cookie,
+        Some(json!({
+            "authMethod": "oauth-personal"
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{created}");
+    let account_id = created["id"].as_str().expect("account id").to_string();
+    assert!(account_id.starts_with("acct-"));
+    assert_eq!(created["label"], json!("Google OAuth (Personal)"));
+    assert_eq!(created["ready"], json!(false));
+
+    let (status, _) = authed_request(
+        &fixture.app,
+        "POST",
+        &format!("/api/runtimes/agy/accounts/{account_id}/login/start"),
+        &cookie,
+        Some(json!({})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, completed) = authed_request(
+        &fixture.app,
+        "POST",
+        &format!("/api/runtimes/agy/accounts/{account_id}/login/complete"),
+        &cookie,
+        Some(json!({ "code": "ok-code" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{completed}");
+    assert_eq!(completed["ready"], json!(true));
+    assert_eq!(completed["accountEmail"], json!("work.user@example.com"));
+    assert_eq!(completed["label"], json!("work.user@example.com"));
+
+    let too_long_label = "x".repeat(81);
+    let (status, err_body) = authed_request(
+        &fixture.app,
+        "POST",
+        "/api/runtimes/agy/accounts",
+        &cookie,
+        Some(json!({
+            "label": too_long_label,
+            "authMethod": "oauth-personal"
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{err_body}");
+
+    fixture.registry.shutdown_all().await;
+}
