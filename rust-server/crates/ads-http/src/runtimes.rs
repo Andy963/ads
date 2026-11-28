@@ -206,8 +206,7 @@ pub struct RuntimeRegistryConfig {
 
 impl RuntimeRegistryConfig {
     pub fn new(db: StateDb, state_dir: PathBuf, default_workspace_root: PathBuf) -> Self {
-        let preferred_default_agent_id =
-            resolve_initial_default_agent(std::env::var("ADS_AGENT_RUNTIME").ok().as_deref());
+        let preferred_default_agent_id = NATIVE_AGENT_ID.to_string();
         let codex_acp_binary = std::env::var(CODEX_ACP_BINARY_ENV)
             .ok()
             .map(|value| value.trim().to_string())
@@ -236,19 +235,6 @@ impl RuntimeRegistryConfig {
             agy_binary,
             agy_probe_timeout: Duration::from_secs(20),
         }
-    }
-}
-
-/// Maps `ADS_AGENT_RUNTIME` (if configured) to an initial default agent ID for backwards
-/// compatibility, without hiding or disabling other probed runtimes.
-pub fn resolve_initial_default_agent(raw: Option<&str>) -> String {
-    let value = raw.unwrap_or_default().trim().to_ascii_lowercase();
-    match value.as_str() {
-        "" | "native" | "in-process" => NATIVE_AGENT_ID.to_string(),
-        "codex" | "codex-acp" | "codex-app-server" | "cli" => CODEX_AGENT_ID.to_string(),
-        "agy" | "antigravity" => AGY_DEFAULT_AGENT_ID.to_string(),
-        other if other.starts_with("agy:") => other.to_string(),
-        _ => CODEX_AGENT_ID.to_string(),
     }
 }
 
