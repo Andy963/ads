@@ -8,6 +8,8 @@ import type {
   RuntimeAgentDescriptor,
   RuntimesSnapshot,
 } from "../api/types";
+import { clearPendingAgyLoginView, markPendingAgyLoginView } from "../lib/agyPendingLogin";
+import { copyTextToClipboard } from "../lib/clipboard";
 import SettingsSheet from "./SettingsSheet.vue";
 
 const props = defineProps<{ api: ApiClient }>();
@@ -25,19 +27,19 @@ const accounts = ref<AgyAccountView[]>([]);
 const busy = ref(false);
 const error = ref("");
 const notice = ref("");
+const copiedAccountId = ref<string | null>(null);
+let copiedTimer: ReturnType<typeof setTimeout> | null = null;
 
 const accountDialog = ref(false);
 const accountEditor = ref<HTMLFormElement | null>(null);
 const deleteTarget = ref<AgyAccountView | null>(null);
 
 const accountForm = reactive<{
-  label: string;
   authMethod: AgyAuthMethod;
   apiKey: string;
   gcpProject: string;
   gcpLocation: string;
 }>({
-  label: "",
   authMethod: "oauth-personal",
   apiKey: "",
   gcpProject: "",
@@ -46,6 +48,24 @@ const accountForm = reactive<{
 
 const activeLogins = ref<Record<string, { authorizationUrl: string; code: string }>>({});
 
+const isStandalonePwa =
+  (typeof window !== "undefined" &&
+    typeof window.matchMedia === "function" &&
+    window.matchMedia("(display-mode: standalone)").matches) ||
+  (typeof navigator !== "undefined" &&
+    (navigator as Navigator & { standalone?: boolean }).standalone === true);
+
+const isIosDevice =
+  typeof navigator !== "undefined" &&
+  (/iPad|iPhone|iPod/.test(navigator.userAgent) ||
+    (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1));
+
+const canShare =
+  typeof navigator !== "undefined" && typeof navigator.share === "function";
+
+const canReadClipboard =
+  typeof navigator !== "undefined" && typeof navigator.clipboard?.readText === "function";
+
 const needsApiKey = computed(
   () => accountForm.authMethod === "gemini-api-key" || accountForm.authMethod === "agent-platform",
 );
@@ -53,11 +73,93 @@ const needsGcp = computed(
   () => accountForm.authMethod === "oauth-business" || accountForm.authMethod === "agent-platform",
 );
 
+const readyAgyCount = computed(
+  () => runtimes.value.filter((runtime) => (runtime.id === "agy" || runtime.id.startsWith("agy:")) && runtime.ready).length,
+);
+
+/** Collapse all Antigravity account routes (`agy`, `agy:*`) into a single Detected Runtime entry. */
+const detectedRuntimes = computed<RuntimeAgentDescriptor[]>(() => {
+  const nonAgy: RuntimeAgentDescriptor[] = [];
+  const agyEntries: RuntimeAgentDescriptor[] = [];
+  for (const runtime of runtimes.value) {
+    if (runtime.id === "agy" || runtime.id.startsWith("agy:")) {
+      agyEntries.push(runtime);
+    } else {
+      nonAgy.push(runtime);
+    }
+  }
+  if (agyEntries.length === 0) {
+    return nonAgy;
+  }
+  const defaultEntry = agyEntries.find((entry) => entry.id === "agy") ?? agyEntries[0];
+  const readyEntries = agyEntries.filter((entry) => entry.ready);
+  if (readyEntries.length === 0) {
+    return [
+      ...nonAgy,
+      {
+        ...defaultEntry,
+        id: "agy",
+        name: "Antigravity",
+      },
+    ];
+  }
+  if (readyEntries.length === 1 && readyEntries[0].id === "agy") {
+    return [...nonAgy, readyEntries[0]];
+  }
+  const version = readyEntries.find((entry) => entry.version)?.version ?? defaultEntry.version ?? null;
+  if (readyEntries.length === 1) {
+    const single = readyEntries[0];
+    return [
+      ...nonAgy,
+      {
+        ...single,
+        id: "agy",
+        name: "Antigravity",
+        version,
+      },
+    ];
+  }
+  return [
+    ...nonAgy,
+    {
+      id: "agy",
+      name: "Antigravity",
+      kind: "agy",
+      ready: true,
+      version,
+      accountEmail: null,
+      tier: null,
+      error: null,
+    },
+  ];
+});
+
+function accountDisplayName(account: AgyAccountView): string {
+  const email = account.accountEmail?.trim();
+  if (account.ready && email) return email;
+  const project = account.gcpProject?.trim();
+  if (project) return project;
+  const explicit = account.label?.trim();
+  if (explicit && !account.isDefault) return explicit;
+  return AUTH_METHOD_LABELS[account.authMethod] || "Antigravity account";
+}
+
+function accountSubtitle(account: AgyAccountView): string {
+  const methodLabel = AUTH_METHOD_LABELS[account.authMethod] || account.authMethod;
+  const title = accountDisplayName(account);
+  if (title !== methodLabel) {
+    return `${methodLabel} · ${account.agentId}`;
+  }
+  return account.agentId;
+}
+
 function syncPendingLogins(list: AgyAccountView[]): void {
   const next: Record<string, { authorizationUrl: string; code: string }> = {};
+  let hasAnyPending = false;
   for (const account of list) {
     const pendingUrl = account.loginPending ? account.authorizationUrl?.trim() : "";
     if (pendingUrl) {
+      hasAnyPending = true;
       next[account.id] = {
         authorizationUrl: pendingUrl,
         code: activeLogins.value[account.id]?.code ?? "",
@@ -65,6 +167,9 @@ function syncPendingLogins(list: AgyAccountView[]): void {
     }
   }
   activeLogins.value = next;
+  if (!hasAnyPending) {
+    clearPendingAgyLoginView();
+  }
 }
 
 async function load(): Promise<void> {
@@ -95,8 +200,12 @@ function formatRuntimeDetail(runtime: RuntimeAgentDescriptor): string {
   if (!runtime.ready) {
     return runtime.error || "Unavailable";
   }
+  const summary =
+    runtime.id === "agy" && !runtime.accountEmail?.trim() && readyAgyCount.value > 1
+      ? `${readyAgyCount.value} accounts ready`
+      : runtime.accountEmail?.trim() || "";
   const parts = [
-    runtime.accountEmail?.trim() || "",
+    summary,
     runtime.id,
     runtime.version ? `v${runtime.version}` : "",
   ].filter(Boolean);
@@ -115,7 +224,6 @@ function statusLabel(account: AgyAccountView): string {
 
 function openCreateAccount(): void {
   Object.assign(accountForm, {
-    label: "",
     authMethod: "oauth-personal" as AgyAuthMethod,
     apiKey: "",
     gcpProject: "",
@@ -134,7 +242,6 @@ async function saveAccount(): Promise<void> {
   if (accountEditor.value && !accountEditor.value.reportValidity()) return;
   await perform(async () => {
     const payload: Record<string, unknown> = {
-      label: accountForm.label.trim(),
       authMethod: accountForm.authMethod,
     };
     if (needsApiKey.value && accountForm.apiKey.trim()) {
@@ -148,9 +255,10 @@ async function saveAccount(): Promise<void> {
     closeCreateAccount();
     await load();
     emit("changed");
+    const name = accountDisplayName(created);
     notice.value = created.ready
-      ? `Account "${created.label}" is ready.`
-      : `Account "${created.label}" created. Click Sign in to authenticate.`;
+      ? `Account "${name}" is ready.`
+      : `Account "${name}" added. Click Sign in to authenticate.`;
   });
 }
 
@@ -171,7 +279,7 @@ async function refreshAccount(account: AgyAccountView): Promise<void> {
     );
     await load();
     emit("changed");
-    notice.value = `Refreshed "${account.label}".`;
+    notice.value = `Refreshed "${accountDisplayName(account)}".`;
   });
 }
 
@@ -188,8 +296,93 @@ async function startLogin(account: AgyAccountView): Promise<void> {
         code: "",
       },
     };
-    notice.value = `Open the Google sign-in link for "${account.label}", then paste the authorization code below.`;
+    markPendingAgyLoginView();
+    notice.value = `Open the Google sign-in link for "${accountDisplayName(account)}", then paste the authorization code below.`;
   });
+}
+
+function openSignInLink(event: MouseEvent, url: string): void {
+  if (
+    !url ||
+    isIosDevice ||
+    event.button !== 0 ||
+    event.metaKey ||
+    event.ctrlKey ||
+    event.shiftKey ||
+    event.altKey
+  ) {
+    return;
+  }
+  // On desktop (including desktop PWA), open a dedicated popup without `noopener` in
+  // features (which forces `window.open` to return `null` per HTML spec and causes a
+  // duplicate `_blank` tab), sever `opener` while on `about:blank`, then navigate.
+  if (typeof window.open === "function") {
+    const popup = window.open("", "_blank", "popup=yes,width=540,height=720");
+    if (popup) {
+      event.preventDefault();
+      try {
+        popup.opener = null;
+      } catch {
+        // Ignore read-only opener in restricted environments.
+      }
+      if (typeof popup.location?.replace === "function") {
+        popup.location.replace(url);
+      } else if (popup.location) {
+        popup.location.href = url;
+      }
+      popup.focus?.();
+    }
+  }
+}
+
+async function copySignInLink(accountId: string): Promise<void> {
+  const url = activeLogins.value[accountId]?.authorizationUrl?.trim();
+  if (!url) return;
+  const ok = await copyTextToClipboard(url);
+  if (!ok) {
+    error.value = "Unable to copy sign-in link.";
+    return;
+  }
+  copiedAccountId.value = accountId;
+  if (copiedTimer !== null) clearTimeout(copiedTimer);
+  copiedTimer = setTimeout(() => {
+    copiedAccountId.value = null;
+    copiedTimer = null;
+  }, 2000);
+  notice.value = "Sign-in link copied. Open it in Safari or another browser, then paste the code below.";
+}
+
+async function shareSignInLink(account: AgyAccountView): Promise<void> {
+  const url = activeLogins.value[account.id]?.authorizationUrl?.trim();
+  if (!url || !canShare) return;
+  try {
+    await navigator.share({
+      title: "Antigravity Google Sign-In",
+      url,
+    });
+  } catch (err) {
+    if (err instanceof Error && err.name === "AbortError") return;
+    error.value = "Unable to share sign-in link.";
+  }
+}
+
+async function pasteLoginCode(accountId: string): Promise<void> {
+  if (!activeLogins.value[accountId]) return;
+  error.value = "";
+  try {
+    const text = (await navigator.clipboard?.readText?.()) ?? "";
+    const trimmed = text.trim();
+    if (!trimmed) {
+      error.value = "Clipboard is empty. Copy the authorization code or callback URL first.";
+      return;
+    }
+    const current = activeLogins.value[accountId];
+    if (current) {
+      current.code = trimmed;
+    }
+  } catch {
+    error.value = "Clipboard read permission was denied. Paste manually into the field.";
+  }
 }
 
 async function completeLogin(account: AgyAccountView): Promise<void> {
@@ -212,9 +405,13 @@ async function completeLogin(account: AgyAccountView): Promise<void> {
     const next = { ...activeLogins.value };
     delete next[account.id];
     activeLogins.value = next;
+    if (Object.keys(next).length === 0) {
+      clearPendingAgyLoginView();
+    }
     await load();
     emit("changed");
-    notice.value = `Signed in to "${account.label}".`;
+    const updated = accounts.value.find((item) => item.id === account.id) ?? account;
+    notice.value = `Signed in to "${accountDisplayName(updated)}".`;
   });
 }
 
@@ -227,7 +424,10 @@ async function cancelLogin(account: AgyAccountView): Promise<void> {
     const next = { ...activeLogins.value };
     delete next[account.id];
     activeLogins.value = next;
-    notice.value = `Cancelled sign-in for "${account.label}".`;
+    if (Object.keys(next).length === 0) {
+      clearPendingAgyLoginView();
+    }
+    notice.value = `Cancelled sign-in for "${accountDisplayName(account)}".`;
   });
 }
 
@@ -239,7 +439,7 @@ async function logoutAccount(account: AgyAccountView): Promise<void> {
     );
     await load();
     emit("changed");
-    notice.value = `Signed out "${account.label}".`;
+    notice.value = `Signed out "${accountDisplayName(account)}".`;
   });
 }
 
@@ -251,13 +451,17 @@ async function confirmDeleteAccount(): Promise<void> {
     deleteTarget.value = null;
     await load();
     emit("changed");
-    notice.value = `Deleted "${target.label}".`;
+    notice.value = `Deleted "${accountDisplayName(target)}".`;
   });
 }
 
 onMounted(() => perform(load));
 onBeforeUnmount(() => {
   accountForm.apiKey = "";
+  if (copiedTimer !== null) {
+    clearTimeout(copiedTimer);
+    copiedTimer = null;
+  }
 });
 </script>
 
@@ -273,7 +477,7 @@ onBeforeUnmount(() => {
       <h2 class="settingsBlockTitle">Detected runtimes</h2>
       <div class="settingsList">
         <div
-          v-for="runtime in runtimes"
+          v-for="runtime in detectedRuntimes"
           :key="runtime.id"
           class="settingsRow"
           :data-testid="`runtime-row-${runtime.id}`"
@@ -319,7 +523,12 @@ onBeforeUnmount(() => {
           <div class="settingsRow agyAccountHeader">
             <span class="settingsRowContent">
               <span>
-                {{ account.label }}
+                <span
+                  v-if="account.ready && account.accountEmail"
+                  class="agyAccountEmail"
+                  :data-testid="`agy-account-email-${account.id}`"
+                >{{ account.accountEmail }}</span>
+                <span v-else>{{ accountDisplayName(account) }}</span>
                 <small v-if="account.isDefault" class="accountTag">Host default</small>
                 <small
                   v-if="account.ready && account.tier"
@@ -327,13 +536,8 @@ onBeforeUnmount(() => {
                   :data-testid="`agy-account-tier-${account.id}`"
                 >{{ account.tier }}</small>
               </span>
-              <small
-                v-if="account.ready && account.accountEmail"
-                class="settingsDetail agyAccountEmail"
-                :data-testid="`agy-account-email-${account.id}`"
-              >{{ account.accountEmail }}</small>
               <small class="settingsDetail">
-                {{ AUTH_METHOD_LABELS[account.authMethod] || account.authMethod }} · {{ account.agentId }}
+                {{ accountSubtitle(account) }}
               </small>
               <small v-if="account.error && !account.ready" class="settingsDetail">{{ account.error }}</small>
             </span>
@@ -389,7 +593,12 @@ onBeforeUnmount(() => {
             :data-testid="`agy-login-flow-${account.id}`"
           >
             <p class="settingsNote agyLoginHint">
-              1. Open Google sign-in and approve access. 2. Copy the authorization code (or full callback URL) and paste it below.
+              <template v-if="isStandalonePwa">
+                1. Open Google sign-in (opens an in-app sheet — copy the code, then tap Done to return), or use Copy link / Share to sign in from Safari or another browser without covering this app. 2. Paste the authorization code or callback URL below.
+              </template>
+              <template v-else>
+                1. Open Google sign-in and approve access. 2. Copy the authorization code (or full callback URL) and paste it below.
+              </template>
             </p>
             <div class="agyLoginLinkRow">
               <a
@@ -398,23 +607,56 @@ onBeforeUnmount(() => {
                 rel="noopener noreferrer"
                 class="agyOAuthLink"
                 :data-testid="`agy-login-link-${account.id}`"
+                @click="openSignInLink($event, activeLogins[account.id].authorizationUrl)"
               >
                 Open Google Sign-In ↗
               </a>
+              <button
+                type="button"
+                class="agyActionBtn agyCompactBtn"
+                :data-testid="`agy-login-copy-${account.id}`"
+                :disabled="busy"
+                @click="copySignInLink(account.id)"
+              >
+                {{ copiedAccountId === account.id ? "Copied" : "Copy link" }}
+              </button>
+              <button
+                v-if="canShare"
+                type="button"
+                class="agyActionBtn agyCompactBtn"
+                :data-testid="`agy-login-share-${account.id}`"
+                :disabled="busy"
+                @click="shareSignInLink(account)"
+              >
+                Share…
+              </button>
             </div>
-            <label class="settingsField agyCodeField">
-              <span>Authorization code or callback URL</span>
-              <input
-                v-model="activeLogins[account.id].code"
-                type="text"
-                autocomplete="off"
-                autocapitalize="none"
-                spellcheck="false"
-                :data-testid="`agy-login-code-${account.id}`"
-                placeholder="Paste code or callback URL"
-              />
+            <label class="agyCodeField">
+              <span class="agyCodeLabel">Authorization code or callback URL</span>
+              <span class="agyCodeInputRow">
+                <input
+                  v-model="activeLogins[account.id].code"
+                  type="text"
+                  class="agyCodeInput"
+                  autocomplete="off"
+                  autocapitalize="none"
+                  spellcheck="false"
+                  :data-testid="`agy-login-code-${account.id}`"
+                  placeholder="Paste code or callback URL"
+                />
+                <button
+                  v-if="canReadClipboard"
+                  type="button"
+                  class="agyActionBtn agyCompactBtn"
+                  :data-testid="`agy-login-paste-${account.id}`"
+                  :disabled="busy"
+                  @click="pasteLoginCode(account.id)"
+                >
+                  Paste
+                </button>
+              </span>
             </label>
-            <div class="agyAccountActions">
+            <div class="agyAccountActions agyLoginActions">
               <button
                 type="button"
                 class="agyActionBtn primary"
@@ -467,16 +709,6 @@ onBeforeUnmount(() => {
         <fieldset :disabled="busy">
           <div class="settingsBlock settingsList">
             <label class="settingsField">
-              <span>Account label</span>
-              <input
-                v-model="accountForm.label"
-                required
-                maxlength="80"
-                data-testid="agy-account-label"
-                placeholder="e.g. Work Google, Personal Gemini"
-              />
-            </label>
-            <label class="settingsField">
               <span>Authentication method</span>
               <select v-model="accountForm.authMethod" data-testid="agy-account-auth-method">
                 <option value="oauth-personal">Google OAuth (Personal)</option>
@@ -524,7 +756,12 @@ onBeforeUnmount(() => {
             </label>
           </div>
           <p class="settingsNote">
-            API keys are encrypted on the server and never written to browser storage or plaintext profile files.
+            <template v-if="accountForm.authMethod === 'oauth-personal' || accountForm.authMethod === 'oauth-business'">
+              After adding, sign in with Google to bind your account email automatically.
+            </template>
+            <template v-else>
+              API keys are encrypted on the server and never written to browser storage or plaintext profile files.
+            </template>
           </p>
         </fieldset>
       </form>
@@ -541,7 +778,7 @@ onBeforeUnmount(() => {
       @submit="confirmDeleteAccount"
     >
       <div class="settingsBlock">
-        <p>Delete {{ deleteTarget.label }}?</p>
+        <p>Delete {{ accountDisplayName(deleteTarget) }}?</p>
         <p class="settingsNote">
           This removes the isolated Antigravity profile directory and stored credentials on the server.
         </p>
@@ -595,6 +832,9 @@ onBeforeUnmount(() => {
   gap: 8px;
   padding: 0 16px 12px;
 }
+.agyLoginActions {
+  padding: 4px 0 0;
+}
 .agyActionBtn {
   padding: 6px 12px;
   border: 1px solid var(--settings-separator);
@@ -612,21 +852,35 @@ onBeforeUnmount(() => {
   border-color: rgba(255, 59, 48, 0.35);
   color: var(--settings-danger);
 }
+.agyCompactBtn {
+  min-height: 36px;
+  padding: 6px 12px;
+  font-size: 13px;
+  background: var(--settings-surface);
+}
+.agyCodeInputRow .agyCompactBtn {
+  min-height: 40px;
+}
 .agyLoginBox {
   margin: 0 16px 14px;
-  padding: 10px 12px;
+  padding: 12px;
   border: 1px solid var(--settings-separator);
   border-radius: 10px;
   background: rgba(0, 122, 255, 0.04);
 }
 .agyLoginHint {
-  margin: 0 0 8px;
+  margin: 0 0 10px;
 }
 .agyLoginLinkRow {
-  margin-bottom: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
 }
 .agyOAuthLink {
   display: inline-block;
+  margin-right: auto;
   font-size: 14px;
   font-weight: 600;
   color: var(--settings-tint);
@@ -636,6 +890,43 @@ onBeforeUnmount(() => {
   text-decoration: underline;
 }
 .agyCodeField {
-  padding: 8px 0;
+  display: block;
+  padding: 6px 0 8px;
+}
+.agyCodeLabel {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 13px;
+  color: var(--settings-secondary);
+}
+.agyCodeInputRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.agyCodeInput {
+  -webkit-appearance: none;
+  appearance: none;
+  flex: 1;
+  min-width: 0;
+  width: 100%;
+  box-sizing: border-box;
+  height: 40px;
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--settings-separator);
+  border-radius: 8px;
+  background: var(--settings-surface);
+  color: var(--settings-text);
+  font-size: 16px;
+  line-height: 22px;
+}
+.agyCodeInput::placeholder {
+  color: #8e8e93;
+}
+.agyCodeInput:focus {
+  outline: none;
+  border-color: var(--settings-tint);
+  box-shadow: 0 0 0 2px rgba(0, 122, 255, 0.14);
 }
 </style>

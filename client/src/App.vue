@@ -47,6 +47,7 @@ import { isLaneConnected } from "./lib/laneConnectionStatus";
 import { t } from "./lib/i18n";
 import { RECONNECT_BUSY_MESSAGE } from "./app/projectsWs/reconnectNotice";
 import { resolveLaneConnectionPhase, type LaneConnectionPhase } from "./lib/laneConnectionPhase";
+import { clearPendingAgyLoginView, hasPendingAgyLoginView } from "./lib/agyPendingLogin";
 import type { LaneStatus, ProjectRuntime } from "./app/controllerTypes";
 const {
   loggedIn,
@@ -131,6 +132,7 @@ const {
 } = createAppController();
 
 const settingsOpen = ref(false);
+const settingsInitialTab = ref<"roles" | "models" | "notifications">("roles");
 const notesOpen = ref(false);
 
 type MobileDrawerSection = "projects" | "settings";
@@ -522,6 +524,7 @@ async function refreshVisibleLaneChat(lane: ChatLane): Promise<void> {
 function selectMobileDrawerSection(section: MobileDrawerSection): void {
   mobileDrawerSection.value = section;
   mobileContextMenuOpen.value = false;
+  if (section !== "settings") clearPendingAgyLoginView();
   if (section === "settings") closeMobileDrawer();
 }
 
@@ -530,6 +533,7 @@ const mobileSettingsTab = ref<"roles" | "models" | "notifications">("roles");
 function selectMobileDrawerSettings(tab: "roles" | "models" | "notifications"): void {
   if (!loggedIn.value) return;
   mobileSettingsTab.value = tab;
+  if (tab !== "models") clearPendingAgyLoginView();
   selectMobileDrawerSection("settings");
 }
 
@@ -614,6 +618,7 @@ function openProjectDialogFromDrawer(): void {
 
 function closeMobileModule(): void {
   mobileDrawerSection.value = "projects";
+  clearPendingAgyLoginView();
   closeMobileDrawer();
 }
 
@@ -1165,12 +1170,29 @@ const DRAFT_STASH_KEY = "ADS_WEB_DRAFT_STASH";
 watch(accountGeneration, () => {
   settingsOpen.value = false;
   mobileDrawerSection.value = "projects";
+  clearPendingAgyLoginView();
   closeMobileDrawer();
   try {
     sessionStorage.removeItem(DRAFT_STASH_KEY);
     purgeLatestPromptPreferences();
   } catch { /* Private input must not be restored across accounts. */ }
 }, { flush: "sync" });
+
+watch(
+  loggedIn,
+  (isLoggedIn) => {
+    if (!isLoggedIn || !hasPendingAgyLoginView()) return;
+    if (isMobile.value) {
+      mobileSettingsTab.value = "models";
+      mobileDrawerSection.value = "settings";
+      mobileDrawerOpen.value = false;
+    } else {
+      settingsInitialTab.value = "models";
+      settingsOpen.value = true;
+    }
+  },
+  { immediate: true },
+);
 
 function stashComposerDrafts(): void {
   try {
@@ -1463,11 +1485,13 @@ function openSettings(): void {
     openMobileDrawer("settings");
     return;
   }
+  settingsInitialTab.value = "roles";
   settingsOpen.value = true;
 }
 
 function closeSettings(): void {
   settingsOpen.value = false;
+  clearPendingAgyLoginView();
 }
 
 function openNotes(): void {
@@ -2216,7 +2240,7 @@ const acopilotOperationalError = computed(() => loggedIn.value
     <DraggableModal v-if="settingsOpen" card-variant="large" @close="closeSettings">
       <ModelManager
         :api="api"
-        initial-tab="roles"
+        :initial-tab="settingsInitialTab"
         @close="closeSettings"
         @changed="onSettingsChanged"
       />
