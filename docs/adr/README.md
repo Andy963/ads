@@ -84,4 +84,5 @@
 - 0073 - [ADR 0073: Implement AgyDriver and AcpPromptRunner for agy acp (Phase 2A)](0073-agy-driver-and-acp-prompt-runner.md)
 - 0074 - [ADR 0074: Dynamic Runtime Auto-Probing, Multi-Account Antigravity Support, and Client-Side Runtime Switching (Phase 2B)](0074-dynamic-runtime-autoprobing-and-multi-account-switcher.md)
 - 0075 - [ADR 0075: Unify Codex and Antigravity on ACP and Scope ADS Providers to Native Runtime](0075-unify-codex-and-antigravity-on-acp-and-scope-providers-to-native.md)
+- 0076 - [ADR 0076: Activity-Aware Liveness Watchdogs and Resilient Transport Timeouts Across Native and ACP Runtimes](0076-activity-aware-liveness-and-resilient-timeouts.md)
 <!-- ADS:ADR_INDEX_END -->

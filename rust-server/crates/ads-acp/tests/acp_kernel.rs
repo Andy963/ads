@@ -774,6 +774,7 @@ async fn failure_modes_crash_malformed_frame_timeout_auth_and_process_group_clea
         let config = AcpSessionConfig {
             transport: AcpTransportConfig {
                 rpc_timeout: Duration::from_secs(5),
+                lifecycle_rpc_timeout: Duration::from_secs(5),
                 graceful_exit_timeout: Duration::from_millis(80),
                 term_exit_timeout: Duration::from_millis(80),
             },

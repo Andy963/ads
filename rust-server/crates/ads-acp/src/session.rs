@@ -1,6 +1,9 @@
+use std::collections::HashSet;
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 
+use ads_contract::time::now_unix_millis;
 use ads_runtime::PromptRunContext;
 use serde_json::{Map, Value, json};
 use tokio::sync::{Mutex, watch};
@@ -20,7 +23,193 @@ use crate::protocol::{
 };
 use crate::transport::{AcpTransport, AcpTransportConfig, StdoutLineInterceptor, Subscription};
 
-pub const DEFAULT_CANCEL_DRAIN_TIMEOUT: Duration = Duration::from_secs(10);
+pub const DEFAULT_CANCEL_DRAIN_TIMEOUT: Duration = Duration::from_secs(30);
+const MAX_WATCHDOG_POLL_INTERVAL: Duration = Duration::from_secs(5);
+
+/// Activity-aware, tool-paused liveness tracker modeled after T3 Code's `watchPromptInactivity`.
+///
+/// Tracks incoming ACP wire activity (stdout/stderr + all `session/update` notifications,
+/// including `Unknown` frames) and pauses inactivity checks before `session/prompt` begins,
+/// while any tool call is in flight, or while a permission prompt is awaiting resolution.
+pub struct AcpTurnLiveness {
+    prompt_started: AtomicBool,
+    last_activity_ms: AtomicI64,
+    transport_activity: StdMutex<Option<Arc<AtomicI64>>>,
+    in_flight_tools: StdMutex<HashSet<String>>,
+    pending_permissions: AtomicUsize,
+}
+
+impl Default for AcpTurnLiveness {
+    fn default() -> Self {
+        Self {
+            prompt_started: AtomicBool::new(false),
+            last_activity_ms: AtomicI64::new(now_unix_millis()),
+            transport_activity: StdMutex::new(None),
+            in_flight_tools: StdMutex::new(HashSet::new()),
+            pending_permissions: AtomicUsize::new(0),
+        }
+    }
+}
+
+impl AcpTurnLiveness {
+    pub fn new() -> Arc<Self> {
+        Arc::new(Self::default())
+    }
+
+    pub fn touch(&self) {
+        self.last_activity_ms
+            .store(now_unix_millis(), Ordering::Release);
+    }
+
+    pub(crate) fn mark_prompt_started(&self, transport_activity: Arc<AtomicI64>) {
+        *self
+            .transport_activity
+            .lock()
+            .expect("liveness transport lock") = Some(transport_activity);
+        self.touch();
+        self.prompt_started.store(true, Ordering::Release);
+    }
+
+    pub(crate) fn mark_prompt_ended(&self) {
+        self.prompt_started.store(false, Ordering::Release);
+        *self
+            .transport_activity
+            .lock()
+            .expect("liveness transport lock") = None;
+        self.in_flight_tools
+            .lock()
+            .expect("liveness tools lock")
+            .clear();
+    }
+
+    pub fn observe_update(&self, update: &SessionUpdate) {
+        self.touch();
+        match update {
+            SessionUpdate::ToolCall(info) | SessionUpdate::ToolCallUpdate(info) => {
+                let id = info.tool_call_id.trim();
+                if id.is_empty() {
+                    return;
+                }
+                let mut tools = self.in_flight_tools.lock().expect("liveness tools lock");
+                if is_terminal_tool_call_status(info.status.as_deref()) {
+                    tools.remove(id);
+                } else {
+                    tools.insert(id.to_string());
+                }
+            }
+            _ => {}
+        }
+    }
+
+    pub fn enter_permission(self: &Arc<Self>) -> PermissionLivenessGuard {
+        self.pending_permissions.fetch_add(1, Ordering::AcqRel);
+        self.touch();
+        PermissionLivenessGuard {
+            liveness: Arc::clone(self),
+        }
+    }
+
+    pub fn is_paused(&self) -> bool {
+        !self.prompt_started.load(Ordering::Acquire)
+            || self.pending_permissions.load(Ordering::Acquire) > 0
+            || !self
+                .in_flight_tools
+                .lock()
+                .expect("liveness tools lock")
+                .is_empty()
+    }
+
+    pub fn in_flight_tool_count(&self) -> usize {
+        self.in_flight_tools
+            .lock()
+            .expect("liveness tools lock")
+            .len()
+    }
+
+    pub fn pending_permission_count(&self) -> usize {
+        self.pending_permissions.load(Ordering::Acquire)
+    }
+
+    pub fn last_activity_ms(&self) -> i64 {
+        let local = self.last_activity_ms.load(Ordering::Acquire);
+        let wire = self
+            .transport_activity
+            .lock()
+            .expect("liveness transport lock")
+            .as_ref()
+            .map(|handle| handle.load(Ordering::Acquire))
+            .unwrap_or(0);
+        local.max(wire)
+    }
+}
+
+pub struct PermissionLivenessGuard {
+    liveness: Arc<AcpTurnLiveness>,
+}
+
+impl Drop for PermissionLivenessGuard {
+    fn drop(&mut self) {
+        self.liveness.touch();
+        let mut current = self.liveness.pending_permissions.load(Ordering::Acquire);
+        while current > 0 {
+            match self.liveness.pending_permissions.compare_exchange_weak(
+                current,
+                current - 1,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => break,
+                Err(next) => current = next,
+            }
+        }
+    }
+}
+
+fn is_terminal_tool_call_status(status: Option<&str>) -> bool {
+    let Some(status) = status.map(str::trim).filter(|value| !value.is_empty()) else {
+        return false;
+    };
+    matches!(
+        status.to_ascii_lowercase().as_str(),
+        "completed" | "failed" | "cancelled" | "canceled" | "declined" | "error" | "rejected" | "done"
+    )
+}
+
+/// Spawns an activity-aware inactivity watchdog that pauses while the session is attaching,
+/// executing tool calls, or awaiting permission approval, and cancels only after `idle_timeout`
+/// elapses with no ACP wire/stderr activity.
+pub fn spawn_inactivity_watchdog(
+    idle_timeout: Duration,
+    liveness: Arc<AcpTurnLiveness>,
+    timed_out: Arc<AtomicBool>,
+    cancel_tx: watch::Sender<bool>,
+    mut stop_rx: watch::Receiver<bool>,
+) -> tokio::task::JoinHandle<()> {
+    let poll_interval = (idle_timeout / 4).clamp(Duration::from_millis(25), MAX_WATCHDOG_POLL_INTERVAL);
+    let timeout_ms = i64::try_from(idle_timeout.as_millis()).unwrap_or(i64::MAX);
+    tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                _ = tokio::time::sleep(poll_interval) => {
+                    if liveness.is_paused() {
+                        continue;
+                    }
+                    let elapsed = now_unix_millis().saturating_sub(liveness.last_activity_ms());
+                    if elapsed >= timeout_ms {
+                        timed_out.store(true, Ordering::Release);
+                        let _ = cancel_tx.send(true);
+                        return;
+                    }
+                }
+                changed = stop_rx.changed() => {
+                    if changed.is_err() || *stop_rx.borrow() {
+                        return;
+                    }
+                }
+            }
+        }
+    })
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AcpSessionLifecycle {
@@ -92,6 +281,7 @@ pub struct AcpPromptRequest {
     pub extra: Map<String, Value>,
     pub context: Option<PromptRunContext>,
     pub cancel: Option<watch::Receiver<bool>>,
+    pub liveness: Option<Arc<AcpTurnLiveness>>,
 }
 
 impl AcpPromptRequest {
@@ -103,6 +293,7 @@ impl AcpPromptRequest {
             extra: Map::new(),
             context: None,
             cancel: None,
+            liveness: None,
         }
     }
 
@@ -114,6 +305,7 @@ impl AcpPromptRequest {
             extra: Map::new(),
             context: None,
             cancel: None,
+            liveness: None,
         }
     }
 
@@ -129,6 +321,11 @@ impl AcpPromptRequest {
 
     pub fn with_cancel(mut self, cancel: watch::Receiver<bool>) -> Self {
         self.cancel = Some(cancel);
+        self
+    }
+
+    pub fn with_liveness(mut self, liveness: Arc<AcpTurnLiveness>) -> Self {
+        self.liveness = Some(liveness);
         self
     }
 }
@@ -161,6 +358,7 @@ struct SessionRuntimeState {
     config_options: ConfigOptionsState,
     available_commands: Vec<AvailableCommand>,
     active_bridge: Option<Arc<StdMutex<AcpEventBridge>>>,
+    active_liveness: Option<Arc<AcpTurnLiveness>>,
     active_permission_cancel: Option<watch::Sender<bool>>,
     close_cancel_tx: watch::Sender<bool>,
     subscriptions: Vec<SubscriptionHandle>,
@@ -200,6 +398,9 @@ impl Drop for ActiveTurnGuard<'_> {
         let _ = self.perm_cancel_tx.send(true);
         let mut guard = self.state.lock().expect("session state lock");
         guard.active_bridge = None;
+        if let Some(liveness) = guard.active_liveness.take() {
+            liveness.mark_prompt_ended();
+        }
         guard.active_permission_cancel = None;
         if self.completed_cleanly {
             if !self.transport.is_closed() && guard.lifecycle != AcpSessionLifecycle::Closed {
@@ -276,6 +477,7 @@ impl AcpSession {
             config_options: ConfigOptionsState::default(),
             available_commands: Vec::new(),
             active_bridge: None,
+            active_liveness: None,
             active_permission_cancel: None,
             close_cancel_tx,
             subscriptions: Vec::new(),
@@ -318,14 +520,18 @@ impl AcpSession {
                             }
                         });
                     };
-                    let cancel_rx = {
+                    let (cancel_rx, active_liveness) = {
                         let guard = state.lock().expect("session state lock");
-                        if let Some(tx) = guard.active_permission_cancel.as_ref() {
+                        let cancel_rx = if let Some(tx) = guard.active_permission_cancel.as_ref() {
                             tx.subscribe()
                         } else {
                             guard.close_cancel_tx.subscribe()
-                        }
+                        };
+                        (cancel_rx, guard.active_liveness.clone())
                     };
+                    let _liveness_guard = active_liveness
+                        .as_ref()
+                        .map(AcpTurnLiveness::enter_permission);
                     let request = PendingPermissionRequest {
                         request_id: format!("acp-perm-{rpc_id}-{}", uuid::Uuid::new_v4().simple()),
                         session_id: parsed.session_id,
@@ -492,7 +698,11 @@ impl AcpSession {
             client_info: Some(self.config.client_info.clone()),
         };
         let value = self
-            .rpc_request("initialize", serde_json::to_value(params).unwrap(), None)
+            .rpc_request(
+                "initialize",
+                serde_json::to_value(params).unwrap(),
+                Some(self.config.transport.effective_lifecycle_rpc_timeout()),
+            )
             .await?;
         let response: InitializeResponse =
             serde_json::from_value(value).map_err(|error| AcpError::InvalidResponse {
@@ -540,7 +750,11 @@ impl AcpSession {
                 .extra_session_new_params(context, initialize.as_ref()),
         };
         let value = self
-            .rpc_request("session/new", serde_json::to_value(request).unwrap(), None)
+            .rpc_request(
+                "session/new",
+                serde_json::to_value(request).unwrap(),
+                Some(self.config.transport.effective_lifecycle_rpc_timeout()),
+            )
             .await?;
         let response: SessionNewResponse =
             serde_json::from_value(value).map_err(|error| AcpError::InvalidResponse {
@@ -592,7 +806,7 @@ impl AcpSession {
             .rpc_request(
                 "session/resume",
                 serde_json::to_value(request).unwrap(),
-                None,
+                Some(self.config.transport.effective_lifecycle_rpc_timeout()),
             )
             .await?;
         let response: SessionResumeResponse = if value.is_null() {
@@ -664,7 +878,11 @@ impl AcpSession {
             extra: Map::new(),
         };
         let value = self
-            .rpc_request("session/load", serde_json::to_value(request).unwrap(), None)
+            .rpc_request(
+                "session/load",
+                serde_json::to_value(request).unwrap(),
+                Some(self.config.transport.effective_lifecycle_rpc_timeout()),
+            )
             .await?;
 
         let response: SessionLoadResponse = if value.is_null() {
@@ -943,10 +1161,14 @@ impl AcpSession {
             request.context.clone(),
         )));
         let (perm_cancel_tx, _perm_cancel_rx) = watch::channel(false);
+        if let Some(liveness) = request.liveness.as_ref() {
+            liveness.mark_prompt_started(self.transport.io_activity_handle());
+        }
         {
             let mut guard = self.state.lock().expect("session state lock");
             guard.lifecycle = AcpSessionLifecycle::Prompting;
             guard.active_bridge = Some(Arc::clone(&bridge));
+            guard.active_liveness = request.liveness.clone();
             guard.active_permission_cancel = Some(perm_cancel_tx.clone());
         }
         let mut active_guard = ActiveTurnGuard {
@@ -1162,6 +1384,17 @@ fn handle_session_update(
     driver: &dyn AcpDriver,
     params: Value,
 ) {
+    // Touch active turn liveness on every incoming `session/update` frame even if the payload
+    // is vendor-specific or filtered by driver normalization.
+    let active_liveness = state
+        .lock()
+        .expect("session state lock")
+        .active_liveness
+        .clone();
+    if let Some(liveness) = active_liveness.as_ref() {
+        liveness.touch();
+    }
+
     let Ok(mut notification) = SessionUpdateNotification::from_params(params) else {
         return;
     };
@@ -1171,7 +1404,7 @@ fn handle_session_update(
         return;
     };
     notification.update = update;
-    let bridge = {
+    let (bridge, liveness) = {
         let mut guard = state.lock().expect("session state lock");
         if let Some(active_session_id) = guard.session_id.as_deref()
             && active_session_id != notification.session_id
@@ -1197,8 +1430,11 @@ fn handle_session_update(
             }
             _ => {}
         }
-        guard.active_bridge.clone()
+        (guard.active_bridge.clone(), guard.active_liveness.clone())
     };
+    if let Some(liveness) = liveness {
+        liveness.observe_update(&notification.update);
+    }
     if let Some(bridge) = bridge {
         bridge
             .lock()

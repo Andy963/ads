@@ -747,7 +747,8 @@ async fn acp_reviewer_enforces_read_only_boundaries_and_captures_verification_co
         repo_path: repo_path.clone(),
         profile_id: None,
         job_id: "job-730".to_string(),
-        timeout: Duration::from_secs(30),
+        idle_timeout: Some(Duration::from_secs(30)),
+        max_duration: None,
         cancellation: Cancellation::new(),
         verification_report: Arc::clone(&verification_report),
     })
@@ -780,7 +781,8 @@ async fn acp_reviewer_enforces_read_only_boundaries_and_captures_verification_co
         repo_path,
         profile_id: None,
         job_id: "job-730-cancel".to_string(),
-        timeout: Duration::from_secs(30),
+        idle_timeout: Some(Duration::from_secs(30)),
+        max_duration: None,
         cancellation: cancelled,
         verification_report: Arc::new(Mutex::new(ReviewVerificationReport::default())),
     })
@@ -931,7 +933,8 @@ async fn acp_reviewer_handles_seeded_model_post_model_effort_narrowing_and_rejec
         repo_path: repo_path.clone(),
         profile_id: None,
         job_id: "job-746-seeded".to_string(),
-        timeout: Duration::from_secs(30),
+        idle_timeout: Some(Duration::from_secs(30)),
+        max_duration: None,
         cancellation: Cancellation::new(),
         verification_report: Arc::new(std::sync::Mutex::new(ReviewVerificationReport::default())),
     })
@@ -956,7 +959,8 @@ async fn acp_reviewer_handles_seeded_model_post_model_effort_narrowing_and_rejec
         repo_path: repo_path.clone(),
         profile_id: None,
         job_id: "job-746-mini".to_string(),
-        timeout: Duration::from_secs(30),
+        idle_timeout: Some(Duration::from_secs(30)),
+        max_duration: None,
         cancellation: Cancellation::new(),
         verification_report: Arc::new(std::sync::Mutex::new(ReviewVerificationReport::default())),
     })
@@ -1011,7 +1015,8 @@ async fn acp_reviewer_handles_seeded_model_post_model_effort_narrowing_and_rejec
         repo_path,
         profile_id: None,
         job_id: "job-746-cpa-guard".to_string(),
-        timeout: Duration::from_secs(30),
+        idle_timeout: Some(Duration::from_secs(30)),
+        max_duration: None,
         cancellation: Cancellation::new(),
         verification_report: Arc::new(std::sync::Mutex::new(ReviewVerificationReport::default())),
     })

@@ -384,6 +384,12 @@ fn flatten_summary_messages(messages: &[NativeChatMessage]) -> Vec<NativeChatMes
 fn reviewer_native_error(error: NativeError) -> ReviewerError {
     match error {
         NativeError::Cancelled => ReviewerError::Cancelled,
+        NativeError::TimedOut => ReviewerError::Incomplete("Reviewer timed out.".to_string()),
+        NativeError::Provider { message, .. }
+            if message.to_ascii_lowercase().contains("stream timed out") =>
+        {
+            ReviewerError::Incomplete(format!("Reviewer timed out waiting for model stream: {message}"))
+        }
         error => ReviewerError::Execution(error.to_string()),
     }
 }

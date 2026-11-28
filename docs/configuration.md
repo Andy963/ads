@@ -54,11 +54,16 @@ ADS 会在启动时从当前工作目录向上查找 `.env` 文件，并自动�
 | `ADS_AGENT_RUNTIME` | `native` | 启动时首选默认 Agent 运行时：`native`（默认，使用 Settings → Providers 配置的 OpenAI 兼容端点）、`codex`（经 ACP 协议 `codex-acp` 运行）或 `agy`（经 ACP 协议 `agy acp` 运行）；所有可用运行时均会自动探测并在客户端实时切换 |
 | `ADS_CODEX_ACP_BIN` | `codex-acp` | Codex ACP 适配器二进制路径或别名（例如 `@agentclientprotocol/codex-acp`），通过 ACP stdio 协议接入并复用 `$CODEX_HOME` 持久化凭据 |
 | `ADS_AGY_BIN` | `agy` | Antigravity CLI 二进制路径或别名，通过 `agy acp --stdio` 接入 |
-| `ADS_AGENT_PROBE_TIMEOUT_MS` | `5000` | 启动时探测 Agent 可用性的超时时间（毫秒） |
-| `ADS_AGENT_IDLE_TIMEOUT_MS` | `3600000` (1小时) | CLI 连续无标准输出/错误的空闲看门狗超时，`0` 表示禁用 |
-| `ADS_AGENT_MAX_RUN_TIMEOUT_MS` | `43200000` (12小时)| 单次 CLI 运行的最大硬超时保护，`0` 表示禁用 |
+| `ADS_AGENT_PROBE_TIMEOUT_MS` / `ADS_ACP_PROBE_TIMEOUT_MS` | `60000` (60秒) | 启动时探测 ACP Agent（`codex` / `agy*`）可用性与模型目录的超时时间（毫秒）；`ADS_ACP_PROBE_TIMEOUT_MS` 优先 |
+| `ADS_ACP_IDLE_TIMEOUT_MS` / `ADS_AGENT_IDLE_TIMEOUT_MS` | `900000` (15分钟) | ACP 活跃 turn 的无活动看门狗超时（毫秒），`0` 表示禁用。任一 ACP 协议帧/stderr 均刷新活跃度，工具执行与权限审批期间自动暂停计时，不会对持续进展的长 turn 做 wall-clock 硬超时；真正静默超时后自动终止并重启卡死子进程 |
+| `ADS_ACP_SESSION_IDLE_TTL_MS` | `1800000` (30分钟) | ACP 空闲子进程在 turn 之间的保活 TTL（毫秒），`0` 表示禁用自动回收；仅回收非运行中会话，不影响活跃 turn |
+| `ADS_ACP_RPC_TIMEOUT_MS` | `60000`（生命周期 RPC 默认 `180000`） | ACP 控制面 JSON-RPC 请求超时（毫秒）；`initialize` / `session/new` / `session/resume` / `session/load` 至少使用 180 秒窗口，resume/load 超时后自动重建子进程并回退 `session/new` |
+| `ADS_AGENT_MAX_RUN_TIMEOUT_MS` | `43200000` (12小时)| 历史 CLI 最大运行时长保护（毫秒），`0` 表示禁用 |
 | `ADS_CLI_POST_COMPLETION_GRACE_MS`| `10000` (10秒) | CLI 报告终态结果后等待其正常退出的宽限时长 |
-| `ADS_UPSTREAM_RETRY_COUNT` | `1` | 遭遇上游网络/服务故障时的自动安全重试次数 |
+| `ADS_UPSTREAM_RETRY_COUNT` | `1` | 遭遇上游瞬态网络/服务故障或提前 SSE 断流时的自动安全重试次数（按轮次在当前轮输出/工具前生效，`0` 表示关闭） |
+| `ADS_NATIVE_STREAM_IDLE_TIMEOUT_MS` | `600000` (10分钟) | Native 上游 HTTP 流的单次响应头/chunk 空闲读超时（毫秒），`0` 表示禁用；配合 30 秒 TCP keepalive 防止半开连接无限挂起，不限制持续流式输出的总时长 |
+| `ADS_REVIEWER_IDLE_TIMEOUT_MS` | `900000` (15分钟) | Actions Reviewer（Native 与 ACP）的活跃度无响应超时（毫秒），`0` 表示禁用；ACP 工具/验证命令运行期间暂停计时 |
+| `ADS_REVIEWER_MAX_DURATION_MS` | `0`（不限制） | 可选的 Actions Reviewer 总时长上限（毫秒），默认禁用以免误杀正常进展中的深度审查与全量验证；触发时取消检查并返回 `INCOMPLETE` |
 | `ADS_CLI_MAX_CONCURRENCY` | `4` | 单机允许并发执行的 Agent CLI 最大数量 |
 | `ADS_CLI_MAX_PENDING` | `32` | 并发占满时进入排队等待的最大请求队列长度 |
 | `ADS_CLI_OUTPUT_MAX_BYTES` | `8388608` (8MB) | 单次运行捕获的 stdout/stderr 最大保留体积 |
@@ -74,7 +79,7 @@ Native Runtime 是默认后端，使用 **Settings → Providers** 中配置的 
 | 变量名 | 默认值 | 说明 |
 |---|---|---|
 | `ADS_AGENT_MAX_TOOL_ROUNDS` / `ADS_NATIVE_RUNTIME_MAX_TOOL_ROUNDS` | 已弃用 | 不再限制执行总轮数，旧值忽略；改用重复无进展检测，先提醒再暂停。单次工具超时、取消、权限和网络重试仍保留。 |
-| `ADS_NATIVE_RUNTIME_TURN_TIMEOUT_MS` | `0`（不限制） | 原生 turn 的总 wall-clock 超时（毫秒），上限 `1800000`（30 分钟）；`0` 或未设置时 turn 仅受用户取消与各工具自身超时约束 |
+| `ADS_NATIVE_RUNTIME_TURN_TIMEOUT_MS` | `0`（不限制） | 可选的原生 turn 总时长安全上限（毫秒）；`0` 或未设置时不做 wall-clock 硬超时，仅受用户取消、流空闲读超时与各工具自身约束 |
 | `ADS_NATIVE_CONTEXT_WINDOW` | `262144` | 模型未配置上下文窗口时的 fallback；不是硬下限，支持显式小窗口及 1M 以上窗口 |
 | `ADS_NATIVE_CONTEXT_RESERVED_TOKENS` | `131072` | 模型未配置输出上限时的预留；未配置该变量时，小窗口默认最多预留窗口一半 |
 
@@ -82,7 +87,7 @@ Native Runtime 是默认后端，使用 **Settings → Providers** 中配置的 
 
 命令会话隔离在当前 turn，最多同时保留 16 个运行中或尚未取走结果的会话，这是进程／内存资源限制而非总轮数限制。模型提前结束时，运行时先收集未完成命令的真实退出结果再交还模型；运行中状态不会被记成验证成功。取消、turn deadline、重置或异常退出会清理进程组；重启只恢复历史证据，不恢复进程句柄，也不自动重跑命令。输出按完整行增量读取并脱敏，超长行／溢出明确标记截断；没有换行的片段延迟到退出时返回，静默不是超时或死循环。
 
-`read_file` 未指定 `line_count` 时默认读取 1,000 行，显式上限仍为 2,000 行。只读 `search` 的 30 秒操作超时及 Reviewer 的 30 分钟总期限不变。
+`read_file` 未指定 `line_count` 时默认读取 1,000 行，显式上限仍为 2,000 行。只读 `search` 的 30 秒操作超时不变；Reviewer 改用 15 分钟活跃度超时（`ADS_REVIEWER_IDLE_TIMEOUT_MS`）与防循环保护，默认不设 30 分钟硬期限（需要时可配置 `ADS_REVIEWER_MAX_DURATION_MS`）。
 
 ### 模型 Token 预算
 

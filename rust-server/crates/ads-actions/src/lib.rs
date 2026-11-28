@@ -5,7 +5,10 @@ pub mod resolver;
 mod runtime;
 mod types;
 
-pub use defaults::default_reviewer_runner;
+pub use defaults::{
+    DEFAULT_REVIEWER_IDLE_TIMEOUT, REVIEWER_IDLE_TIMEOUT_ENV, REVIEWER_MAX_DURATION_ENV,
+    default_reviewer_runner, resolve_reviewer_idle_timeout, resolve_reviewer_max_duration,
+};
 pub use dispatch::{
     REVIEW_QUEUE_NOTE, ReviewDispatchRequest, canonical_project_id, dispatch_review_job,
     is_protected_branch, issue_id_from_branch,

@@ -10,10 +10,14 @@ use ads_acp::{
     AgyAuthMethod, AgyDriver, AgyDriverConfig, AgyIsolatedProfile, AgyLoginHandle, AgyProbeResult,
     AgyProbeStatus, AgyProfileMode, CODEX_ACP_BINARY_ENV, CodexDriver, CodexDriverConfig,
     CodexProbeResult, CodexProbeStatus, DEFAULT_CODEX_ACP_BINARY, logout_agy_profile,
-    probe_agy_runtime, probe_codex_runtime, resolve_agy_binary, resolve_agy_profile_dir,
-    resolve_codex_acp_binary, run_acp_review, start_agy_login, validate_agy_login_response,
+    probe_agy_runtime, probe_codex_runtime, resolve_acp_probe_timeout, resolve_agy_binary,
+    resolve_agy_profile_dir, resolve_codex_acp_binary, run_acp_review, start_agy_login,
+    validate_agy_login_response,
 };
-use ads_actions::{ReviewError, ReviewerRequest, ReviewerRunner, default_reviewer_runner};
+use ads_actions::{
+    ReviewError, ReviewerRequest, ReviewerRunner, default_reviewer_runner,
+    resolve_reviewer_idle_timeout, resolve_reviewer_max_duration,
+};
 use ads_contract::models::ModelConfig;
 use ads_contract::time::now_unix_millis;
 use ads_runtime::scheduler::{ScheduleExecuteFuture, ScheduleExecutor, SchedulerExecutionInput};
@@ -45,7 +49,6 @@ const AGY_CREDENTIAL_BASE_URL: &str = "https://generativelanguage.googleapis.com
 const AGY_CREDENTIAL_PROVIDER: &str = "antigravity";
 const MAX_AGY_ACCOUNTS: usize = 32;
 const ACTIVE_LOGIN_TTL: Duration = Duration::from_secs(10 * 60);
-const DEFAULT_REVIEWER_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 const EFFORT_ORDER: [&str; 6] = ["minimal", "low", "medium", "high", "xhigh", "max"];
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -228,6 +231,7 @@ impl RuntimeRegistryConfig {
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty())
             .unwrap_or_else(|| ads_acp::DEFAULT_AGY_BINARY.to_string());
+        let probe_timeout = resolve_acp_probe_timeout();
         Self {
             db,
             state_dir,
@@ -237,9 +241,9 @@ impl RuntimeRegistryConfig {
             native_scheduler: None,
             codex_acp_binary,
             codex_home,
-            codex_probe_timeout: Duration::from_secs(20),
+            codex_probe_timeout: probe_timeout,
             agy_binary,
-            agy_probe_timeout: Duration::from_secs(20),
+            agy_probe_timeout: probe_timeout,
         }
     }
 }
@@ -1684,7 +1688,11 @@ pub fn build_deferred_reviewer_runner(
     db: StateDb,
     registry_cell: Arc<OnceLock<Weak<RuntimeRegistry>>>,
 ) -> ReviewerRunner {
-    let native_runner = default_reviewer_runner(db.clone(), DEFAULT_REVIEWER_TIMEOUT);
+    let native_runner = default_reviewer_runner(
+        db.clone(),
+        resolve_reviewer_idle_timeout(),
+        resolve_reviewer_max_duration(),
+    );
     Arc::new(move |request: ReviewerRequest| {
         let db = db.clone();
         let registry_cell = Arc::clone(&registry_cell);
@@ -1728,7 +1736,8 @@ pub fn build_deferred_reviewer_runner(
                 repo_path: request.repo_path,
                 profile_id: request.profile_id,
                 job_id: request.job_id,
-                timeout: DEFAULT_REVIEWER_TIMEOUT,
+                idle_timeout: ads_acp::resolve_reviewer_idle_timeout(),
+                max_duration: ads_acp::resolve_reviewer_max_duration(),
                 cancellation: request.cancellation,
                 verification_report: request.verification_report,
             })

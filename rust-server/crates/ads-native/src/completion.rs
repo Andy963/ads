@@ -1,4 +1,6 @@
 use std::collections::BTreeMap;
+use std::future::Future;
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use reqwest::Client;
@@ -9,8 +11,89 @@ use crate::{
     NativeResult, NativeTextDelta, NativeToolCall, NativeUsage, WireApi,
 };
 
+pub const NATIVE_STREAM_IDLE_TIMEOUT_ENV: &str = "ADS_NATIVE_STREAM_IDLE_TIMEOUT_MS";
+pub const DEFAULT_NATIVE_STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+const TCP_KEEPALIVE: Duration = Duration::from_secs(30);
+const POOL_IDLE_TIMEOUT: Duration = Duration::from_secs(90);
 const MAX_IMAGE_BYTES: usize = 50 * 1024 * 1024;
 const SUPPORTED_FINISH_REASONS: [&str; 4] = ["stop", "length", "tool_calls", "content_filter"];
+
+/// Resolves the per-chunk stream inactivity timeout for Native upstream HTTP requests.
+/// Defaults to 10 minutes; set `ADS_NATIVE_STREAM_IDLE_TIMEOUT_MS=0` to disable.
+pub fn resolve_native_stream_idle_timeout() -> Option<Duration> {
+    std::env::var(NATIVE_STREAM_IDLE_TIMEOUT_ENV)
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .map_or(Some(DEFAULT_NATIVE_STREAM_IDLE_TIMEOUT), |ms| {
+            (ms > 0).then(|| Duration::from_millis(ms))
+        })
+}
+
+pub(crate) fn effective_stream_idle_timeout(override_timeout: Option<Duration>) -> Option<Duration> {
+    match override_timeout {
+        Some(duration) if duration.is_zero() => None,
+        Some(duration) => Some(duration),
+        None => resolve_native_stream_idle_timeout(),
+    }
+}
+
+pub(crate) fn upstream_http_client() -> NativeResult<&'static Client> {
+    static CLIENT: OnceLock<Result<Client, String>> = OnceLock::new();
+    let result = CLIENT.get_or_init(|| {
+        Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .connect_timeout(CONNECT_TIMEOUT)
+            .tcp_keepalive(Some(TCP_KEEPALIVE))
+            .pool_idle_timeout(Some(POOL_IDLE_TIMEOUT))
+            .build()
+            .map_err(|error| error.to_string())
+    });
+    match result {
+        Ok(client) => Ok(client),
+        Err(error) => Err(NativeError::Io(error.clone())),
+    }
+}
+
+pub(crate) async fn await_with_stream_idle_timeout<T, E, F, M>(
+    future: F,
+    idle_timeout: Option<Duration>,
+    cancellation: &Cancellation,
+    timeout_message: &str,
+    map_error: M,
+) -> NativeResult<T>
+where
+    F: Future<Output = Result<T, E>>,
+    M: FnOnce(E) -> NativeError,
+{
+    if let Some(timeout) = idle_timeout {
+        tokio::select! {
+            _ = cancellation.cancelled() => Err(NativeError::Cancelled),
+            result = tokio::time::timeout(timeout, future) => match result {
+                Ok(Ok(value)) => Ok(value),
+                Ok(Err(error)) => Err(map_error(error)),
+                Err(_) => {
+                    if cancellation.is_cancelled() {
+                        Err(NativeError::Cancelled)
+                    } else {
+                        Err(NativeError::provider(
+                            NativeProviderErrorKind::Transient,
+                            format!(
+                                "{timeout_message} after {}ms with no data",
+                                timeout.as_millis()
+                            ),
+                        ))
+                    }
+                }
+            },
+        }
+    } else {
+        tokio::select! {
+            _ = cancellation.cancelled() => Err(NativeError::Cancelled),
+            result = future => result.map_err(map_error),
+        }
+    }
+}
 
 pub fn normalize_upstream_base_url(input: &str) -> NativeResult<String> {
     ads_state::normalize_upstream_base_url(input)
@@ -41,21 +124,22 @@ async fn complete_chat(
         "{}/chat/completions",
         normalize_upstream_base_url(&request.base_url)?.trim_end_matches('/')
     );
-    let client = Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .connect_timeout(Duration::from_secs(30))
-        .build()
-        .map_err(|error| NativeError::Io(error.to_string()))?;
+    let client = upstream_http_client()?;
+    let stream_idle_timeout = effective_stream_idle_timeout(request.options.stream_idle_timeout);
     let send = client
         .post(endpoint)
         .bearer_auth(&request.api_key)
         .header("Content-Type", "application/json")
         .json(&body)
         .send();
-    let response = tokio::select! {
-        _ = cancellation.cancelled() => return Err(NativeError::Cancelled),
-        response = send => response.map_err(|error| transport_error(error, cancellation))?,
-    };
+    let response = await_with_stream_idle_timeout(
+        send,
+        stream_idle_timeout,
+        cancellation,
+        "Native upstream request stream timed out",
+        |error| transport_error(error, cancellation),
+    )
+    .await?;
     let status = response.status();
     if !status.is_success() {
         if status.is_redirection() {
@@ -67,12 +151,16 @@ async fn complete_chat(
         return Err(http_error(status.as_u16()));
     }
     if request.streaming {
-        parse_chat_stream(response, cancellation, on_delta).await
+        parse_chat_stream(response, cancellation, stream_idle_timeout, on_delta).await
     } else {
-        let payload = tokio::select! {
-            _ = cancellation.cancelled() => return Err(NativeError::Cancelled),
-            payload = response.json::<Value>() => payload.map_err(|error| NativeError::malformed(error.to_string()))?,
-        };
+        let payload = await_with_stream_idle_timeout(
+            response.json::<Value>(),
+            stream_idle_timeout,
+            cancellation,
+            "Native upstream response stream timed out",
+            |error| NativeError::malformed(error.to_string()),
+        )
+        .await?;
         parse_chat_response(&payload)
     }
 }
@@ -208,6 +296,7 @@ fn parse_chat_response(payload: &Value) -> NativeResult<NativeCompletion> {
 async fn parse_chat_stream(
     mut response: reqwest::Response,
     cancellation: &Cancellation,
+    stream_idle_timeout: Option<Duration>,
     on_delta: Option<NativeTextDelta>,
 ) -> NativeResult<NativeCompletion> {
     let mut buffer = Vec::new();
@@ -222,13 +311,23 @@ async fn parse_chat_stream(
 
     loop {
         cancellation.check()?;
-        let chunk = tokio::select! {
-            _ = cancellation.cancelled() => return Err(NativeError::Cancelled),
-            chunk = response.chunk() => chunk.map_err(|error| NativeError::provider(
-                NativeProviderErrorKind::Transient,
-                format!("Native upstream stream disconnected: {error}"),
-            ))?,
-        };
+        let chunk = await_with_stream_idle_timeout(
+            response.chunk(),
+            stream_idle_timeout,
+            cancellation,
+            "Native upstream stream timed out",
+            |error| {
+                if cancellation.is_cancelled() {
+                    NativeError::Cancelled
+                } else {
+                    NativeError::provider(
+                        NativeProviderErrorKind::Transient,
+                        format!("Native upstream stream disconnected: {error}"),
+                    )
+                }
+            },
+        )
+        .await?;
         let eof = chunk.is_none();
         if let Some(chunk) = chunk {
             buffer.extend_from_slice(&chunk);
@@ -335,7 +434,13 @@ async fn parse_chat_stream(
             break;
         }
     }
-    if !saw_choice || !saw_done {
+    if !saw_done {
+        return Err(NativeError::provider(
+            NativeProviderErrorKind::Transient,
+            "Native upstream stream ended before a complete response",
+        ));
+    }
+    if !saw_choice {
         return Err(NativeError::malformed(
             "stream ended before a complete response",
         ));

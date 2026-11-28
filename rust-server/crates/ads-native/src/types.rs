@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -194,6 +195,9 @@ pub struct NativeRequestOptions {
     pub reasoning_effort: Option<String>,
     pub parallel_tool_calls: Option<bool>,
     pub include_usage: bool,
+    /// Optional per-chunk stream inactivity timeout override.
+    /// `None` uses `resolve_native_stream_idle_timeout()`; `Some(Duration::ZERO)` disables it.
+    pub stream_idle_timeout: Option<Duration>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]

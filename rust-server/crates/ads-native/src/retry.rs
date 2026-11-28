@@ -226,6 +226,8 @@ pub fn is_transient_upstream_model_error(message: &str) -> bool {
         "premature close",
         "fetch failed",
         "stream closed before response.completed",
+        "stream ended before a complete response",
+        "stream timed out",
         "stream disconnected",
         "stream reset",
         "stream aborted",
