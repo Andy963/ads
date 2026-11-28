@@ -73,11 +73,7 @@ const needsGcp = computed(
   () => accountForm.authMethod === "oauth-business" || accountForm.authMethod === "agent-platform",
 );
 
-const readyAgyCount = computed(
-  () => runtimes.value.filter((runtime) => (runtime.id === "agy" || runtime.id.startsWith("agy:")) && runtime.ready).length,
-);
-
-/** Collapse all Antigravity account routes (`agy`, `agy:*`) into a single Detected Runtime entry. */
+/** Collapse all Antigravity account routes (`agy`, `agy:*`) into a single Detected Runtime entry without account details. */
 const detectedRuntimes = computed<RuntimeAgentDescriptor[]>(() => {
   const nonAgy: RuntimeAgentDescriptor[] = [];
   const agyEntries: RuntimeAgentDescriptor[] = [];
@@ -100,25 +96,12 @@ const detectedRuntimes = computed<RuntimeAgentDescriptor[]>(() => {
         ...defaultEntry,
         id: "agy",
         name: "Antigravity",
+        accountEmail: null,
+        tier: null,
       },
     ];
-  }
-  if (readyEntries.length === 1 && readyEntries[0].id === "agy") {
-    return [...nonAgy, readyEntries[0]];
   }
   const version = readyEntries.find((entry) => entry.version)?.version ?? defaultEntry.version ?? null;
-  if (readyEntries.length === 1) {
-    const single = readyEntries[0];
-    return [
-      ...nonAgy,
-      {
-        ...single,
-        id: "agy",
-        name: "Antigravity",
-        version,
-      },
-    ];
-  }
   return [
     ...nonAgy,
     {
@@ -200,10 +183,7 @@ function formatRuntimeDetail(runtime: RuntimeAgentDescriptor): string {
   if (!runtime.ready) {
     return runtime.error || "Unavailable";
   }
-  const summary =
-    runtime.id === "agy" && !runtime.accountEmail?.trim() && readyAgyCount.value > 1
-      ? `${readyAgyCount.value} accounts ready`
-      : runtime.accountEmail?.trim() || "";
+  const summary = runtime.id === "agy" ? "" : runtime.accountEmail?.trim() || "";
   const parts = [
     summary,
     runtime.id,

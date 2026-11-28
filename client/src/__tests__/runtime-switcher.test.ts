@@ -448,9 +448,13 @@ describe("AntigravityAccountsPanel inside ModelManager Runtimes tab", () => {
     await wrapper.get('[data-testid="runtime-settings-tab"]').trigger("click");
     await flushPromises();
     expect(wrapper.get('[data-testid="settings-runtimes-panel"]').exists()).toBe(true);
-    // Detected runtimes collapses all agy* accounts into the single Antigravity runtime row.
-    expect(wrapper.get('[data-testid="runtime-row-agy"]').text()).toContain("Ready");
-    expect(wrapper.get('[data-testid="runtime-row-agy"]').text()).toContain("2 accounts ready · agy · v1.5.18");
+    // Detected runtimes collapses all agy* accounts into a single Antigravity row without account details.
+    const agyRuntimeRow = wrapper.get('[data-testid="runtime-row-agy"]');
+    expect(agyRuntimeRow.text()).toContain("Ready");
+    expect(agyRuntimeRow.text()).toContain("agy · v1.5.18");
+    expect(agyRuntimeRow.text()).not.toContain("host@example.com");
+    expect(agyRuntimeRow.text()).not.toContain("accounts ready");
+    expect(agyRuntimeRow.find('[data-testid="runtime-tier-agy"]').exists()).toBe(false);
     expect(wrapper.find('[data-testid="runtime-row-agy:api-key-acct"]').exists()).toBe(false);
 
     // Host default card displays email & concise tier badge; API-key card omits them cleanly.
@@ -631,9 +635,12 @@ describe("AntigravityAccountsPanel inside ModelManager Runtimes tab", () => {
     await wrapper.get('[data-testid="runtime-settings-tab"]').trigger("click");
     await flushPromises();
 
-    // Detected runtimes reports Ready for Antigravity via the ready isolated account without adding a duplicate row.
-    expect(wrapper.get('[data-testid="runtime-row-agy"]').text()).toContain("Ready");
-    expect(wrapper.get('[data-testid="runtime-row-agy"]').text()).toContain("isolated@example.com · agy · v1.5.18");
+    // Detected runtimes reports Ready for Antigravity via the ready isolated account without showing account details.
+    const agyRuntimeRow = wrapper.get('[data-testid="runtime-row-agy"]');
+    expect(agyRuntimeRow.text()).toContain("Ready");
+    expect(agyRuntimeRow.text()).toContain("agy · v1.5.18");
+    expect(agyRuntimeRow.text()).not.toContain("isolated@example.com");
+    expect(agyRuntimeRow.find('[data-testid="runtime-tier-agy"]').exists()).toBe(false);
     expect(wrapper.find('[data-testid="runtime-row-agy:acct-iso"]').exists()).toBe(false);
 
     // Start login on default account.
