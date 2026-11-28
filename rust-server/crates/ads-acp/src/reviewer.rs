@@ -164,6 +164,25 @@ fn extract_permission_command(info: &ToolCallInfo) -> Option<String> {
     None
 }
 
+struct AbortOnDrop(tokio::task::JoinHandle<()>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+async fn shutdown_session_bounded(session: Arc<AcpSession>, deadline: tokio::time::Instant) {
+    if tokio::time::timeout_at(deadline, session.shutdown())
+        .await
+        .is_err()
+    {
+        tokio::spawn(async move {
+            session.shutdown().await;
+        });
+    }
+}
+
 /// Runs a clean-room, verification-bounded Actions Reviewer turn over any `AcpDriver`
 /// (preserving ADR 0066 runtime unification and ADR 0060 verification capture).
 pub async fn run_acp_review(request: AcpReviewRequest) -> Result<ReviewVerdict, ReviewerError> {
@@ -182,6 +201,14 @@ pub async fn run_acp_review_with_retry(
     retry_count: usize,
     backoff_ms: Option<&[u64]>,
 ) -> Result<ReviewVerdict, ReviewerError> {
+    let deadline = tokio::time::Instant::now() + request.timeout;
+    let timeout_err = || {
+        ReviewerError::Incomplete(format!(
+            "Reviewer timed out after {} seconds.",
+            request.timeout.as_secs()
+        ))
+    };
+
     if request.payload.diff_capture_error.is_some() {
         return Err(ReviewerError::Incomplete(
             "Reviewer evidence capture failed; no authoritative verdict is available.".to_string(),
@@ -282,7 +309,6 @@ pub async fn run_acp_review_with_retry(
         mcp_servers: Vec::new(),
     };
     let attempts = ads_native::max_attempts(retry_count);
-    let deadline = tokio::time::Instant::now() + request.timeout;
     let mut completed_turn = None;
 
     for attempt in 1..=attempts {
@@ -293,10 +319,7 @@ pub async fn run_acp_review_with_retry(
 
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         if remaining.is_zero() {
-            return Err(ReviewerError::Incomplete(format!(
-                "Reviewer timed out after {} seconds.",
-                request.timeout.as_secs()
-            )));
+            return Err(timeout_err());
         }
 
         let session_cfg = AcpSessionConfig {
@@ -304,39 +327,56 @@ pub async fn run_acp_review_with_retry(
                 rpc_timeout: remaining.min(Duration::from_secs(60)),
                 ..Default::default()
             },
-            prompt_timeout: remaining,
+            // The single hard deadline is enforced by `timeout_at(deadline, ...)` across
+            // spawn, initialize, new_session, alignment, prompt, and shutdown so stages
+            // never reuse or extend `request.timeout`.
+            prompt_timeout: Duration::ZERO,
+            cancel_drain_timeout: remaining.min(crate::session::DEFAULT_CANCEL_DRAIN_TIMEOUT),
             ..Default::default()
         };
-        let outer_timeout = remaining
-            .saturating_add(session_cfg.cancel_drain_timeout)
-            .saturating_add(Duration::from_secs(5));
         let unsafe_to_retry = Arc::new(AtomicBool::new(false));
+        let active_session: Arc<StdMutex<Option<Arc<AcpSession>>>> = Arc::new(StdMutex::new(None));
 
-        let attempt_res = async {
-            let session = AcpSession::spawn(
-                Arc::clone(&request.driver),
-                &launch_ctx,
-                Arc::new(ReviewVerificationPermissionHandler),
-                session_cfg,
-            )
-            .await
-            .map_err(|error| ("ACP reviewer spawn failed", error))?;
+        let attempt_fut = async {
+            let session = tokio::select! {
+                biased;
+                _ = request.cancellation.cancelled() => {
+                    return Err(("ACP reviewer spawn failed", crate::error::AcpError::Cancelled));
+                }
+                res = AcpSession::spawn(
+                    Arc::clone(&request.driver),
+                    &launch_ctx,
+                    Arc::new(ReviewVerificationPermissionHandler),
+                    session_cfg,
+                ) => res.map_err(|error| ("ACP reviewer spawn failed", error))?,
+            };
+            *active_session.lock().expect("active review session lock") =
+                Some(Arc::clone(&session));
 
-            if let Err(error) = session.initialize().await {
-                session.shutdown().await;
+            let init_res = tokio::select! {
+                biased;
+                _ = request.cancellation.cancelled() => Err(crate::error::AcpError::Cancelled),
+                res = session.initialize() => res.map(|_| ()),
+            };
+            if let Err(error) = init_res {
                 return Err(("ACP reviewer initialize failed", error));
             }
-            if let Err(error) = session.new_session(&session_ctx).await {
-                session.shutdown().await;
+
+            let new_session_res = tokio::select! {
+                biased;
+                _ = request.cancellation.cancelled() => Err(crate::error::AcpError::Cancelled),
+                res = session.new_session(&session_ctx) => res.map(|_| ()),
+            };
+            if let Err(error) = new_session_res {
                 return Err(("ACP reviewer session creation failed", error));
             }
 
-            let (cancel_tx, cancel_rx) = watch::channel(false);
+            let (cancel_tx, cancel_rx) = watch::channel(request.cancellation.is_cancelled());
             let cancellation = request.cancellation.clone();
-            let cancel_bridge = tokio::spawn(async move {
+            let _cancel_bridge = AbortOnDrop(tokio::spawn(async move {
                 cancellation.cancelled().await;
                 let _ = cancel_tx.send(true);
-            });
+            }));
 
             let prompt_req = AcpPromptRequest::text(request.job_id.clone(), prompt.clone())
                 .with_alignment(DesiredConfigAlignment {
@@ -348,24 +388,37 @@ pub async fn run_acp_review_with_retry(
                 .with_cancel(cancel_rx)
                 .with_retry_fence(Arc::clone(&unsafe_to_retry));
 
-            let turn_res = tokio::time::timeout(outer_timeout, session.prompt(prompt_req)).await;
+            session
+                .prompt(prompt_req)
+                .await
+                .map_err(|error| ("ACP reviewer execution failed", error))
+        };
 
-            cancel_bridge.abort();
-            session.shutdown().await;
+        let timed_attempt = tokio::time::timeout_at(deadline, attempt_fut).await;
+        let spawned_session = active_session
+            .lock()
+            .expect("active review session lock")
+            .take();
 
-            match turn_res {
-                Ok(Ok(turn)) => Ok(turn),
-                Ok(Err(error)) => Err(("ACP reviewer execution failed", error)),
-                Err(_) => Err((
-                    "ACP reviewer execution failed",
-                    crate::error::AcpError::Timeout {
-                        method: "session/prompt".to_string(),
-                        timeout: remaining,
-                    },
-                )),
+        let attempt_res = match timed_attempt {
+            Ok(result) => {
+                if let Some(session) = spawned_session {
+                    shutdown_session_bounded(session, deadline).await;
+                }
+                result
             }
-        }
-        .await;
+            Err(_) => {
+                if let Some(session) = spawned_session {
+                    tokio::spawn(async move {
+                        session.shutdown().await;
+                    });
+                }
+                if request.cancellation.is_cancelled() {
+                    return Err(ReviewerError::Cancelled);
+                }
+                return Err(timeout_err());
+            }
+        };
 
         match attempt_res {
             Ok(turn) => {
@@ -377,10 +430,7 @@ pub async fn run_acp_review_with_retry(
                     return Err(ReviewerError::Cancelled);
                 }
                 if error.is_timeout() {
-                    return Err(ReviewerError::Incomplete(format!(
-                        "Reviewer timed out after {} seconds.",
-                        request.timeout.as_secs()
-                    )));
+                    return Err(timeout_err());
                 }
                 let can_retry = attempt < attempts
                     && !unsafe_to_retry.load(Ordering::Acquire)
@@ -394,22 +444,23 @@ pub async fn run_acp_review_with_retry(
                     );
                     let remaining_after =
                         deadline.saturating_duration_since(tokio::time::Instant::now());
+                    if remaining_after.is_zero() {
+                        return Err(timeout_err());
+                    }
                     if Duration::from_millis(delay_ms) < remaining_after {
                         if delay_ms > 0 {
                             tokio::select! {
+                                biased;
                                 _ = request.cancellation.cancelled() => {
                                     return Err(ReviewerError::Cancelled);
+                                }
+                                _ = tokio::time::sleep_until(deadline) => {
+                                    return Err(timeout_err());
                                 }
                                 _ = tokio::time::sleep(Duration::from_millis(delay_ms)) => {}
                             }
                         }
                         continue;
-                    }
-                    if remaining_after.is_zero() {
-                        return Err(ReviewerError::Incomplete(format!(
-                            "Reviewer timed out after {} seconds.",
-                            request.timeout.as_secs()
-                        )));
                     }
                 }
                 return Err(ReviewerError::Execution(format!("{stage}: {error}")));

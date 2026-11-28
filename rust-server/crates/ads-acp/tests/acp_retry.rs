@@ -19,11 +19,14 @@ use serde_json::{Map, Value, json};
 fn write_retry_mock_acp_script(dir: &Path) -> PathBuf {
     let script_path = dir.join("mock-retry-acp.py");
     let script = r#"#!/usr/bin/env python3
-import json, os, sys
+import json, os, sys, time
 
 counter_path = os.environ["MOCK_COUNTER_FILE"]
 mode = os.environ.get("MOCK_MODE", "ok")
 fail_times = int(os.environ.get("MOCK_FAIL_TIMES", "0"))
+init_delay_ms = int(os.environ.get("MOCK_INIT_DELAY_MS", "0"))
+new_session_delay_ms = int(os.environ.get("MOCK_NEW_SESSION_DELAY_MS", "0"))
+prompt_delay_ms = int(os.environ.get("MOCK_PROMPT_DELAY_MS", "0"))
 
 def send(obj):
     sys.stdout.write(json.dumps(obj) + "\n")
@@ -53,6 +56,8 @@ for line in sys.stdin:
     params = msg.get("params") or {}
 
     if method == "initialize":
+        if init_delay_ms > 0:
+            time.sleep(init_delay_ms / 1000.0)
         send({
             "jsonrpc": "2.0",
             "id": req_id,
@@ -64,6 +69,8 @@ for line in sys.stdin:
             },
         })
     elif method == "session/new":
+        if new_session_delay_ms > 0:
+            time.sleep(new_session_delay_ms / 1000.0)
         session_num += 1
         send({
             "jsonrpc": "2.0",
@@ -77,6 +84,8 @@ for line in sys.stdin:
     elif method == "session/set_mode":
         send({"jsonrpc": "2.0", "id": req_id, "result": {"modes": {"currentModeId": params.get("modeId", "default"), "availableModes": []}}})
     elif method == "session/prompt":
+        if prompt_delay_ms > 0:
+            time.sleep(prompt_delay_ms / 1000.0)
         session_id = params.get("sessionId", "sess-1")
         attempt = bump_attempt()
 
@@ -557,4 +566,126 @@ async fn acp_reviewer_retries_transient_failure_and_respects_output_fence() {
     .expect_err("fenced review failure must not retry");
     assert!(matches!(err, ReviewerError::Execution(_)));
     assert_eq!(read_attempts(&counter_fenced), 1);
+}
+
+#[tokio::test]
+async fn acp_reviewer_enforces_hard_deadline_across_init_session_and_prompt() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let repo_path = temp.path().join("repo");
+    fs::create_dir_all(&repo_path).expect("repo");
+    let script = write_retry_mock_acp_script(temp.path());
+    let db = StateDb::open(temp.path().join("state.db")).expect("db");
+    {
+        let conn = db.connect().expect("conn");
+        conn.execute(
+            "UPDATE role_profiles SET model_id = ?1 WHERE id = 'profile-default-reviewer'",
+            rusqlite::params!["codex:gpt-5.3-codex"],
+        )
+        .expect("configure reviewer profile");
+    }
+
+    let payload = ReviewPayload {
+        issue: ReviewIssue {
+            id: Some(755),
+            title: "Hard deadline".to_string(),
+            ..Default::default()
+        },
+        diff_range: Some(ReviewDiffRange {
+            base_ref: "dev".to_string(),
+            head_ref: "HEAD".to_string(),
+            base_commit: Some("0000000".to_string()),
+            head_commit: Some("1111111".to_string()),
+            range: "dev..HEAD".to_string(),
+        }),
+        diff: "+fn deadline() {}".to_string(),
+        ..Default::default()
+    };
+
+    // Each individual stage is < 1000ms (450ms + 450ms + 1500ms = 2400ms total),
+    // but the hard deadline is 1000ms for the entire review flow.
+    let counter_stage = temp.path().join("review_deadline_stage.txt");
+    let driver_stage: Arc<dyn AcpDriver> = Arc::new(
+        GenericAcpDriver::new("mock-retry", script.to_string_lossy().as_ref())
+            .with_env(
+                "MOCK_COUNTER_FILE",
+                counter_stage.to_string_lossy().into_owned(),
+            )
+            .with_env("MOCK_MODE", "review_transient_rpc")
+            .with_env("MOCK_FAIL_TIMES", "0")
+            .with_env("MOCK_INIT_DELAY_MS", "450")
+            .with_env("MOCK_NEW_SESSION_DELAY_MS", "450")
+            .with_env("MOCK_PROMPT_DELAY_MS", "1500"),
+    );
+
+    let started = Instant::now();
+    let err = run_acp_review_with_retry(
+        AcpReviewRequest {
+            db: db.clone(),
+            driver: driver_stage,
+            payload: payload.clone(),
+            repo_path: repo_path.clone(),
+            profile_id: None,
+            job_id: "job-755-deadline-stages".to_string(),
+            timeout: Duration::from_secs(1),
+            cancellation: Cancellation::new(),
+            verification_report: Arc::new(Mutex::new(ReviewVerificationReport::default())),
+        },
+        3,
+        Some(&[0]),
+    )
+    .await
+    .expect_err("cumulative init+session+prompt must hit hard deadline");
+    let elapsed = started.elapsed();
+
+    assert!(
+        matches!(&err, ReviewerError::Incomplete(msg) if msg.contains("timed out after 1 seconds")),
+        "expected Incomplete timeout error, got {err:?}"
+    );
+    assert!(
+        elapsed < Duration::from_millis(1_800),
+        "hard 1s deadline should return near 1s without adding drain/extra slack, took {elapsed:?}"
+    );
+
+    // Cumulative time across retries must also obey the single hard deadline.
+    let counter_retry = temp.path().join("review_deadline_retry.txt");
+    let driver_retry: Arc<dyn AcpDriver> = Arc::new(
+        GenericAcpDriver::new("mock-retry", script.to_string_lossy().as_ref())
+            .with_env(
+                "MOCK_COUNTER_FILE",
+                counter_retry.to_string_lossy().into_owned(),
+            )
+            .with_env("MOCK_MODE", "review_transient_rpc")
+            .with_env("MOCK_FAIL_TIMES", "3")
+            .with_env("MOCK_INIT_DELAY_MS", "350")
+            .with_env("MOCK_NEW_SESSION_DELAY_MS", "350"),
+    );
+
+    let started_retry = Instant::now();
+    let err_retry = run_acp_review_with_retry(
+        AcpReviewRequest {
+            db,
+            driver: driver_retry,
+            payload,
+            repo_path,
+            profile_id: None,
+            job_id: "job-755-deadline-retry".to_string(),
+            timeout: Duration::from_secs(1),
+            cancellation: Cancellation::new(),
+            verification_report: Arc::new(Mutex::new(ReviewVerificationReport::default())),
+        },
+        3,
+        Some(&[0]),
+    )
+    .await
+    .expect_err("cumulative retries must hit hard deadline");
+    let elapsed_retry = started_retry.elapsed();
+
+    assert!(
+        matches!(&err_retry, ReviewerError::Incomplete(msg) if msg.contains("timed out after 1 seconds")),
+        "expected Incomplete timeout error across retries, got {err_retry:?}"
+    );
+    assert!(
+        elapsed_retry < Duration::from_millis(1_800),
+        "hard 1s deadline across retries should return near 1s, took {elapsed_retry:?}"
+    );
 }
