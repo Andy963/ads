@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use ads_contract::time::now_unix_millis;
@@ -374,6 +375,7 @@ pub enum AcpStreamEvent {
 pub struct AcpEventBridge {
     client_message_id: String,
     context: Option<PromptRunContext>,
+    retry_fence: Option<Arc<AtomicBool>>,
     phase_index: usize,
     in_assistant_phase: bool,
     response_text: String,
@@ -388,6 +390,7 @@ impl AcpEventBridge {
         Self {
             client_message_id: client_message_id.into(),
             context,
+            retry_fence: None,
             phase_index: 0,
             in_assistant_phase: false,
             response_text: String::new(),
@@ -395,6 +398,17 @@ impl AcpEventBridge {
             tool_calls: HashMap::new(),
             usage: None,
             events: Vec::new(),
+        }
+    }
+
+    pub fn with_retry_fence(mut self, fence: Arc<AtomicBool>) -> Self {
+        self.retry_fence = Some(fence);
+        self
+    }
+
+    pub fn mark_retry_unsafe(&self) {
+        if let Some(fence) = self.retry_fence.as_ref() {
+            fence.store(true, Ordering::Release);
         }
     }
 
@@ -408,6 +422,7 @@ impl AcpEventBridge {
                 if text.is_empty() {
                     return;
                 }
+                self.mark_retry_unsafe();
                 if !self.in_assistant_phase {
                     self.phase_index += 1;
                     self.in_assistant_phase = true;
@@ -435,6 +450,7 @@ impl AcpEventBridge {
                 if text.is_empty() {
                     return;
                 }
+                self.mark_retry_unsafe();
                 self.thought_text.push_str(text);
                 self.events.push(AcpStreamEvent::ThoughtDelta {
                     text: text.to_string(),
@@ -448,6 +464,7 @@ impl AcpEventBridge {
                 }));
             }
             SessionUpdate::ToolCall(info) => {
+                self.mark_retry_unsafe();
                 self.in_assistant_phase = false;
                 let merged = self.merge_tool_call(info);
                 self.events.push(AcpStreamEvent::ToolCall {
@@ -458,6 +475,7 @@ impl AcpEventBridge {
                 self.emit_tool_call_frame(&merged, ts);
             }
             SessionUpdate::ToolCallUpdate(info) => {
+                self.mark_retry_unsafe();
                 self.in_assistant_phase = false;
                 let merged = self.merge_tool_call(info);
                 self.events.push(AcpStreamEvent::ToolCall {

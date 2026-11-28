@@ -10,8 +10,7 @@ use ads_native::{
     MiddlewarePipeline, ModelResolver, NativePromptRunner, NativePromptRunnerOptions, TurnContext,
 };
 use ads_runtime::{
-    LaneTurn, LaneTurnKey, LaneTurnKind, PromptQueueRunOutcome, PromptQueueRunner,
-    PromptRunContext,
+    LaneTurn, LaneTurnKey, LaneTurnKind, PromptQueueRunOutcome, PromptQueueRunner, PromptRunContext,
 };
 use ads_state::{
     BeginNativeTurn, CONVERSATION_SERVICE, EnqueuePromptInput, HistoryStore, NativeTranscriptStore,
@@ -2406,5 +2405,98 @@ async fn carries_a_persisted_execution_summary_into_the_next_turn() {
         second_turn_messages,
         "Read the first evidence batch."
     ));
+    harness.drain().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn retries_transient_failure_during_compaction_summary() {
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let summary_attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let requests_for_router = Arc::clone(&requests);
+    let summary_attempts_for_router = Arc::clone(&summary_attempts);
+    let router = Router::new().route(
+        "/v1/chat/completions",
+        post(move |body: String| {
+            let requests = Arc::clone(&requests_for_router);
+            let summary_attempts = Arc::clone(&summary_attempts_for_router);
+            async move {
+                let payload: Value = serde_json::from_str(&body).expect("chat request body");
+                let is_summary = payload.get("tools").is_none();
+                let round = {
+                    let mut requests = requests.lock().expect("requests");
+                    requests.push(payload);
+                    requests.len()
+                };
+                if is_summary {
+                    let attempt = summary_attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+                    if attempt <= 2 {
+                        return (
+                            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                            "temporary summary outage",
+                        )
+                            .into_response();
+                    }
+                    let body = json!({
+                        "choices": [{
+                            "message": {"role": "assistant", "content": "Recovered summary after transient 503."},
+                            "finish_reason": "stop"
+                        }],
+                        "usage": {"prompt_tokens": 50, "completion_tokens": 8, "total_tokens": 58}
+                    })
+                    .to_string();
+                    return ([(header::CONTENT_TYPE, "application/json")], body).into_response();
+                }
+                let responses = if round <= 3 {
+                    vec![
+                        json!({"choices": [{"delta": {"tool_calls": [
+                            {"index": 0, "type": "function", "id": format!("read-{round}"), "function": {"name": "read_file", "arguments": json!({"file": "large.txt"}).to_string()}}
+                        ]}, "finish_reason": null}]}),
+                        json!({"choices": [{"delta": {}, "finish_reason": "tool_calls"}]}),
+                    ]
+                } else {
+                    vec![
+                        json!({"choices": [{"delta": {"content": "done after retried compaction"}, "finish_reason": "stop"}]}),
+                        json!({"choices": [], "usage": {"prompt_tokens": 20, "completion_tokens": 3, "total_tokens": 23}}),
+                    ]
+                };
+                let body = responses
+                    .into_iter()
+                    .map(|value| format!("data: {value}\n\n"))
+                    .chain(std::iter::once("data: [DONE]\n\n".to_string()))
+                    .collect::<String>();
+                ([(header::CONTENT_TYPE, "text/event-stream")], body).into_response()
+            }
+        }),
+    );
+
+    let harness = Harness::start_with_retry(
+        router,
+        Arc::clone(&requests),
+        ads_native::DEFAULT_RETRY_COUNT,
+        vec![0, 0, 0],
+    )
+    .await;
+    fs::write(harness.workspace.join("large.txt"), "x".repeat(10_000)).expect("large file");
+    harness.set_model_config_json(json!({
+        "max_input_tokens": 12_000,
+        "max_output_tokens": 1_000
+    }));
+
+    let entry = harness.enqueue("cm-compact-retry", "read repeatedly");
+    let outcome = harness
+        .runner
+        .run_prompt(entry, harness.context())
+        .await
+        .expect("run prompt");
+    assert!(outcome.ok, "unexpected error: {:?}", outcome.error);
+    assert_eq!(
+        summary_attempts.load(std::sync::atomic::Ordering::SeqCst),
+        3
+    );
+    assert_eq!(harness.events_of("retry").len(), 2);
+    assert_eq!(
+        harness.history().last().expect("history").text,
+        "done after retried compaction"
+    );
     harness.drain().await;
 }

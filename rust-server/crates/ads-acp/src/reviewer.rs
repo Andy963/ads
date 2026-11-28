@@ -1,9 +1,11 @@
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 
+use ads_contract::time::now_unix_millis;
 use ads_native::{Cancellation, find_security_violation};
 use ads_reviewer::{
     ReviewPayload, ReviewTestReport, ReviewVerdict, ReviewVerdictStatus, ReviewVerificationReport,
@@ -165,6 +167,21 @@ fn extract_permission_command(info: &ToolCallInfo) -> Option<String> {
 /// Runs a clean-room, verification-bounded Actions Reviewer turn over any `AcpDriver`
 /// (preserving ADR 0066 runtime unification and ADR 0060 verification capture).
 pub async fn run_acp_review(request: AcpReviewRequest) -> Result<ReviewVerdict, ReviewerError> {
+    run_acp_review_with_retry(
+        request,
+        ads_native::resolve_transient_model_retry_count(),
+        None,
+    )
+    .await
+}
+
+/// Variant of `run_acp_review` allowing explicit retry count and backoff schedule
+/// (useful for deterministic testing).
+pub async fn run_acp_review_with_retry(
+    request: AcpReviewRequest,
+    retry_count: usize,
+    backoff_ms: Option<&[u64]>,
+) -> Result<ReviewVerdict, ReviewerError> {
     if request.payload.diff_capture_error.is_some() {
         return Err(ReviewerError::Incomplete(
             "Reviewer evidence capture failed; no authoritative verdict is available.".to_string(),
@@ -264,89 +281,144 @@ pub async fn run_acp_review(request: AcpReviewRequest) -> Result<ReviewVerdict, 
         working_directory: Some(request.repo_path.clone()),
         mcp_servers: Vec::new(),
     };
-    let session_cfg = AcpSessionConfig {
-        transport: crate::transport::AcpTransportConfig {
-            rpc_timeout: request.timeout.min(Duration::from_secs(60)),
-            ..Default::default()
-        },
-        prompt_timeout: request.timeout,
-        ..Default::default()
-    };
-    let outer_timeout = request
-        .timeout
-        .saturating_add(session_cfg.cancel_drain_timeout)
-        .saturating_add(Duration::from_secs(5));
+    let attempts = ads_native::max_attempts(retry_count);
+    let deadline = tokio::time::Instant::now() + request.timeout;
+    let mut completed_turn = None;
 
-    let session = AcpSession::spawn(
-        Arc::clone(&request.driver),
-        &launch_ctx,
-        Arc::new(ReviewVerificationPermissionHandler),
-        session_cfg,
-    )
-    .await
-    .map_err(|error| ReviewerError::Execution(format!("ACP reviewer spawn failed: {error}")))?;
+    for attempt in 1..=attempts {
+        request
+            .cancellation
+            .check()
+            .map_err(|_| ReviewerError::Cancelled)?;
 
-    let init_res = session.initialize().await;
-    if let Err(error) = init_res {
-        session.shutdown().await;
-        return Err(ReviewerError::Execution(format!(
-            "ACP reviewer initialize failed: {error}"
-        )));
-    }
-    let _created = match session.new_session(&session_ctx).await {
-        Ok(created) => created,
-        Err(error) => {
-            session.shutdown().await;
-            return Err(ReviewerError::Execution(format!(
-                "ACP reviewer session creation failed: {error}"
-            )));
-        }
-    };
-
-    let (cancel_tx, cancel_rx) = watch::channel(false);
-    let cancellation = request.cancellation.clone();
-    let cancel_bridge = tokio::spawn(async move {
-        cancellation.cancelled().await;
-        let _ = cancel_tx.send(true);
-    });
-
-    let prompt_req = AcpPromptRequest::text(request.job_id.clone(), prompt)
-        .with_alignment(DesiredConfigAlignment {
-            mode: Some(SessionMode::Plan),
-            model: Some(resolved_model_id),
-            thought_level: Some(profile.reasoning_effort.clone()),
-            extra_options: Vec::new(),
-        })
-        .with_cancel(cancel_rx);
-
-    let turn_res = tokio::time::timeout(outer_timeout, session.prompt(prompt_req)).await;
-
-    cancel_bridge.abort();
-    session.shutdown().await;
-
-    let turn = match turn_res {
-        Ok(Ok(turn)) => turn,
-        Ok(Err(error)) => {
-            if request.cancellation.is_cancelled() || error.is_cancelled() {
-                return Err(ReviewerError::Cancelled);
-            }
-            if error.is_timeout() {
-                return Err(ReviewerError::Incomplete(format!(
-                    "Reviewer timed out after {} seconds.",
-                    request.timeout.as_secs()
-                )));
-            }
-            return Err(ReviewerError::Execution(format!(
-                "ACP reviewer execution failed: {error}"
-            )));
-        }
-        Err(_) => {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
             return Err(ReviewerError::Incomplete(format!(
                 "Reviewer timed out after {} seconds.",
                 request.timeout.as_secs()
             )));
         }
-    };
+
+        let session_cfg = AcpSessionConfig {
+            transport: crate::transport::AcpTransportConfig {
+                rpc_timeout: remaining.min(Duration::from_secs(60)),
+                ..Default::default()
+            },
+            prompt_timeout: remaining,
+            ..Default::default()
+        };
+        let outer_timeout = remaining
+            .saturating_add(session_cfg.cancel_drain_timeout)
+            .saturating_add(Duration::from_secs(5));
+        let unsafe_to_retry = Arc::new(AtomicBool::new(false));
+
+        let attempt_res = async {
+            let session = AcpSession::spawn(
+                Arc::clone(&request.driver),
+                &launch_ctx,
+                Arc::new(ReviewVerificationPermissionHandler),
+                session_cfg,
+            )
+            .await
+            .map_err(|error| ("ACP reviewer spawn failed", error))?;
+
+            if let Err(error) = session.initialize().await {
+                session.shutdown().await;
+                return Err(("ACP reviewer initialize failed", error));
+            }
+            if let Err(error) = session.new_session(&session_ctx).await {
+                session.shutdown().await;
+                return Err(("ACP reviewer session creation failed", error));
+            }
+
+            let (cancel_tx, cancel_rx) = watch::channel(false);
+            let cancellation = request.cancellation.clone();
+            let cancel_bridge = tokio::spawn(async move {
+                cancellation.cancelled().await;
+                let _ = cancel_tx.send(true);
+            });
+
+            let prompt_req = AcpPromptRequest::text(request.job_id.clone(), prompt.clone())
+                .with_alignment(DesiredConfigAlignment {
+                    mode: Some(SessionMode::Plan),
+                    model: Some(resolved_model_id.clone()),
+                    thought_level: Some(profile.reasoning_effort.clone()),
+                    extra_options: Vec::new(),
+                })
+                .with_cancel(cancel_rx)
+                .with_retry_fence(Arc::clone(&unsafe_to_retry));
+
+            let turn_res = tokio::time::timeout(outer_timeout, session.prompt(prompt_req)).await;
+
+            cancel_bridge.abort();
+            session.shutdown().await;
+
+            match turn_res {
+                Ok(Ok(turn)) => Ok(turn),
+                Ok(Err(error)) => Err(("ACP reviewer execution failed", error)),
+                Err(_) => Err((
+                    "ACP reviewer execution failed",
+                    crate::error::AcpError::Timeout {
+                        method: "session/prompt".to_string(),
+                        timeout: remaining,
+                    },
+                )),
+            }
+        }
+        .await;
+
+        match attempt_res {
+            Ok(turn) => {
+                completed_turn = Some(turn);
+                break;
+            }
+            Err((stage, error)) => {
+                if request.cancellation.is_cancelled() || error.is_cancelled() {
+                    return Err(ReviewerError::Cancelled);
+                }
+                if error.is_timeout() {
+                    return Err(ReviewerError::Incomplete(format!(
+                        "Reviewer timed out after {} seconds.",
+                        request.timeout.as_secs()
+                    )));
+                }
+                let can_retry = attempt < attempts
+                    && !unsafe_to_retry.load(Ordering::Acquire)
+                    && error.is_retryable();
+                if can_retry {
+                    let delay_ms = ads_native::resolve_transient_retry_delay_ms(
+                        &error.to_string(),
+                        attempt,
+                        backoff_ms,
+                        now_unix_millis(),
+                    );
+                    let remaining_after =
+                        deadline.saturating_duration_since(tokio::time::Instant::now());
+                    if Duration::from_millis(delay_ms) < remaining_after {
+                        if delay_ms > 0 {
+                            tokio::select! {
+                                _ = request.cancellation.cancelled() => {
+                                    return Err(ReviewerError::Cancelled);
+                                }
+                                _ = tokio::time::sleep(Duration::from_millis(delay_ms)) => {}
+                            }
+                        }
+                        continue;
+                    }
+                    if remaining_after.is_zero() {
+                        return Err(ReviewerError::Incomplete(format!(
+                            "Reviewer timed out after {} seconds.",
+                            request.timeout.as_secs()
+                        )));
+                    }
+                }
+                return Err(ReviewerError::Execution(format!("{stage}: {error}")));
+            }
+        }
+    }
+
+    let turn = completed_turn
+        .ok_or_else(|| ReviewerError::Execution("ACP reviewer retry loop exhausted".to_string()))?;
 
     if request.cancellation.is_cancelled() || turn.stop_reason == StopReason::Cancelled {
         return Err(ReviewerError::Cancelled);

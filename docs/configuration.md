@@ -58,7 +58,7 @@ ADS 会在启动时从当前工作目录向上查找 `.env` 文件，并自动�
 | `ADS_AGENT_IDLE_TIMEOUT_MS` | `3600000` (1小时) | CLI 连续无标准输出/错误的空闲看门狗超时，`0` 表示禁用 |
 | `ADS_AGENT_MAX_RUN_TIMEOUT_MS` | `43200000` (12小时)| 单次 CLI 运行的最大硬超时保护，`0` 表示禁用 |
 | `ADS_CLI_POST_COMPLETION_GRACE_MS`| `10000` (10秒) | CLI 报告终态结果后等待其正常退出的宽限时长 |
-| `ADS_UPSTREAM_RETRY_COUNT` | `1` | 遭遇上游网络/服务故障时的自动安全重试次数 |
+| `ADS_UPSTREAM_RETRY_COUNT` | `3` | Native 与 ACP（`codex` / `agy*`）运行时遭遇上游瞬态网络/服务故障时的默认自动安全重试次数（`0` 表示关闭） |
 | `ADS_CLI_MAX_CONCURRENCY` | `4` | 单机允许并发执行的 Agent CLI 最大数量 |
 | `ADS_CLI_MAX_PENDING` | `32` | 并发占满时进入排队等待的最大请求队列长度 |
 | `ADS_CLI_OUTPUT_MAX_BYTES` | `8388608` (8MB) | 单次运行捕获的 stdout/stderr 最大保留体积 |

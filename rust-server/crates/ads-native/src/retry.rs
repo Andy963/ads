@@ -9,7 +9,7 @@ use crate::error::{NativeError, NativeProviderErrorKind};
 
 pub const TRANSIENT_MODEL_RETRY_COUNT_ENV: &str = "ADS_UPSTREAM_RETRY_COUNT";
 pub const MAX_RETRY_AFTER_MS: u64 = 60_000;
-const DEFAULT_RETRY_COUNT: usize = 1;
+pub const DEFAULT_RETRY_COUNT: usize = 3;
 const DEFAULT_BACKOFF_BASE_MS: u64 = 2_000;
 const DEFAULT_BACKOFF_CAP_MS: u64 = 30_000;
 const RATE_LIMIT_BACKOFF_CYCLE_SIZE: usize = 5;
@@ -207,7 +207,7 @@ pub fn is_transient_upstream_model_error(message: &str) -> bool {
     if has_http_status_429(&normalized) {
         return true;
     }
-    if has_http_status_503(&normalized) {
+    if has_http_status_retryable_non_429(&normalized) {
         return true;
     }
     if has_http_status_52x(&normalized) {
@@ -231,6 +231,12 @@ pub fn is_transient_upstream_model_error(message: &str) -> bool {
         "stream aborted",
         "connection reset by peer",
         "unexpected eof",
+        "rate_limit_exceeded",
+        "rate limit exceeded",
+        "too many requests",
+        "overloaded_error",
+        "service unavailable",
+        "temporarily unavailable",
     ]
     .iter()
     .any(|needle| normalized.contains(needle))
@@ -254,11 +260,11 @@ fn has_http_status_429(normalized: &str) -> bool {
     re.is_match(normalized)
 }
 
-fn has_http_status_503(normalized: &str) -> bool {
+fn has_http_status_retryable_non_429(normalized: &str) -> bool {
     static RE: OnceLock<Regex> = OnceLock::new();
     let re = RE.get_or_init(|| {
-        Regex::new(r"\b(?:http(?:/\d(?:\.\d)?)?\s+503|status(?:\s+code)?\s*[:=]?\s*503|503\s+service\s+unavailable|returned\s+503)\b")
-            .expect("valid 503 status regex")
+        Regex::new(r"\b(?:http(?:/\d(?:\.\d)?)?\s+(?:408|425|500|502|503|504)|status(?:\s+code)?\s*[:=]?\s*(?:408|425|500|502|503|504)|returned\s+(?:408|425|500|502|503|504)|408\s+request\s+timeout|425\s+too\s+early|500\s+internal\s+server\s+error|502\s+bad\s+gateway|503\s+service\s+unavailable|504\s+gateway\s+timeout)\b")
+            .expect("valid retryable status regex")
     });
     re.is_match(normalized)
 }
@@ -685,6 +691,42 @@ mod tests {
             "stream closed before response.completed".to_string()
         )));
         assert!(!is_retryable_model_error(&NativeError::Cancelled));
+        assert_eq!(DEFAULT_RETRY_COUNT, 3);
+        assert_eq!(max_attempts(DEFAULT_RETRY_COUNT), 4);
         assert_eq!(max_attempts(1), 2);
+    }
+
+    #[test]
+    fn classifies_extended_transient_http_and_text_errors() {
+        assert!(is_transient_upstream_model_error(
+            "HTTP 408 Request Timeout"
+        ));
+        assert!(is_transient_upstream_model_error("HTTP 425 Too Early"));
+        assert!(is_transient_upstream_model_error(
+            "HTTP 500 Internal Server Error"
+        ));
+        assert!(is_transient_upstream_model_error("502 Bad Gateway"));
+        assert!(is_transient_upstream_model_error("504 Gateway Timeout"));
+        assert!(is_transient_upstream_model_error(
+            "upstream returned 502 while proxying"
+        ));
+        assert!(is_transient_upstream_model_error(
+            "rate_limit_exceeded: slow down"
+        ));
+        assert!(is_transient_upstream_model_error(
+            "overloaded_error: capacity reached"
+        ));
+        assert!(is_transient_upstream_model_error(
+            "service temporarily unavailable"
+        ));
+
+        assert!(!is_transient_upstream_model_error("request_id=trace-500"));
+        assert!(!is_transient_upstream_model_error("request_id=trace-502"));
+        assert!(!is_transient_upstream_model_error(
+            "401 unauthorized: service unavailable"
+        ));
+        assert!(!is_transient_upstream_model_error(
+            "HTTP 403 Forbidden: too many requests"
+        ));
     }
 }
