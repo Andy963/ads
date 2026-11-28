@@ -1,18 +1,19 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex as StdMutex, RwLock};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex as StdMutex, OnceLock, RwLock, Weak};
 use std::time::{Duration, Instant};
 
 use ads_acp::{
-    AcpDriver, AcpPromptRunner, AcpPromptRunnerConfig, AgyAuthConfig, AgyAuthMethod, AgyDriver,
-    AgyDriverConfig, AgyIsolatedProfile, AgyLoginHandle, AgyProbeResult, AgyProbeStatus,
-    AgyProfileMode, CODEX_ACP_BINARY_ENV, CodexDriver, CodexDriverConfig, CodexProbeResult,
-    CodexProbeStatus, DEFAULT_CODEX_ACP_BINARY, logout_agy_profile, probe_agy_runtime,
-    probe_codex_runtime, resolve_agy_binary, resolve_agy_profile_dir, resolve_codex_acp_binary,
-    start_agy_login, validate_agy_login_response,
+    AcpDriver, AcpPromptRunner, AcpPromptRunnerConfig, AcpReviewRequest, AgyAuthConfig,
+    AgyAuthMethod, AgyDriver, AgyDriverConfig, AgyIsolatedProfile, AgyLoginHandle, AgyProbeResult,
+    AgyProbeStatus, AgyProfileMode, CODEX_ACP_BINARY_ENV, CodexDriver, CodexDriverConfig,
+    CodexProbeResult, CodexProbeStatus, DEFAULT_CODEX_ACP_BINARY, logout_agy_profile,
+    probe_agy_runtime, probe_codex_runtime, resolve_agy_binary, resolve_agy_profile_dir,
+    resolve_codex_acp_binary, run_acp_review, start_agy_login, validate_agy_login_response,
 };
+use ads_actions::{ReviewError, ReviewerRequest, ReviewerRunner, default_reviewer_runner};
 use ads_contract::models::ModelConfig;
 use ads_contract::time::now_unix_millis;
 use ads_runtime::scheduler::{ScheduleExecuteFuture, ScheduleExecutor, SchedulerExecutionInput};
@@ -20,7 +21,11 @@ use ads_runtime::{
     LaneTurn, LaneTurnKey, LaneTurnKind, PromptQueueFuture, PromptQueueRunOutcome,
     PromptQueueRunner, PromptRunContext,
 };
-use ads_state::{StateDb, StateError, StateResult, UpstreamCredentialStore, UpstreamCredentials};
+use ads_state::{
+    ROLE_REVIEWER, StateDb, StateError, StateResult, UpstreamCredentialStore, UpstreamCredentials,
+    get_default_role_profile, get_model_config, get_model_config_by_agent_model_id,
+    get_role_profile_by_id, resolve_conversation_model,
+};
 use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -40,6 +45,7 @@ const AGY_CREDENTIAL_BASE_URL: &str = "https://generativelanguage.googleapis.com
 const AGY_CREDENTIAL_PROVIDER: &str = "antigravity";
 const MAX_AGY_ACCOUNTS: usize = 32;
 const ACTIVE_LOGIN_TTL: Duration = Duration::from_secs(10 * 60);
+const DEFAULT_REVIEWER_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 const EFFORT_ORDER: [&str; 6] = ["minimal", "low", "medium", "high", "xhigh", "max"];
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -252,6 +258,7 @@ pub struct RuntimeRegistry {
     agy_binary: String,
     agy_probe_timeout: Duration,
     next_generation: AtomicU64,
+    initial_probe_done: AtomicBool,
     agy_entries: RwLock<BTreeMap<String, ManagedAgyRuntime>>,
     active_logins: Mutex<HashMap<String, ActiveAgyLogin>>,
     mutation_lock: Mutex<()>,
@@ -360,6 +367,7 @@ impl RuntimeRegistry {
             agy_binary: config.agy_binary,
             agy_probe_timeout: config.agy_probe_timeout,
             next_generation: AtomicU64::new(generation_seq),
+            initial_probe_done: AtomicBool::new(false),
             agy_entries: RwLock::new(agy_entries),
             active_logins: Mutex::new(HashMap::new()),
             mutation_lock: Mutex::new(()),
@@ -406,6 +414,22 @@ impl RuntimeRegistry {
 
     pub async fn probe_all(&self) {
         let _guard = self.probe_lock.lock().await;
+        self.run_probe_pass().await;
+    }
+
+    /// Ensures initial runtime probing has completed before reading cached ACP model catalogs.
+    pub async fn ensure_probed(&self) {
+        if self.initial_probe_done.load(Ordering::Acquire) {
+            return;
+        }
+        let _guard = self.probe_lock.lock().await;
+        if self.initial_probe_done.load(Ordering::Acquire) {
+            return;
+        }
+        self.run_probe_pass().await;
+    }
+
+    async fn run_probe_pass(&self) {
         let codex_probe =
             probe_codex_runtime(&self.codex_driver_config, &self.default_workspace_root).await;
         *self.codex_probe.write().expect("codex probe lock") = codex_probe;
@@ -434,6 +458,7 @@ impl RuntimeRegistry {
             }
         }
 
+        self.initial_probe_done.store(true, Ordering::Release);
         self.broadcast_agents_snapshot();
     }
 
@@ -1355,6 +1380,163 @@ impl RuntimeRegistry {
         Ok(entry_to_account_view(entry, pending_url))
     }
 
+    /// Returns an instantiated ACP driver for `agent_id` (`codex`, `agy`, or `agy:<account_id>`)
+    /// if that runtime has probed as ready.
+    pub fn acp_driver_for(&self, agent_id: &str) -> Result<Arc<dyn AcpDriver>, String> {
+        if agent_id == CODEX_AGENT_ID {
+            let probe = self.codex_probe.read().expect("codex probe lock");
+            if probe.status != CodexProbeStatus::Ready {
+                return Err(probe
+                    .message
+                    .clone()
+                    .unwrap_or_else(|| "Codex ACP runtime is not ready.".to_string()));
+            }
+            return Ok(Arc::new(CodexDriver::new(self.codex_driver_config.clone())));
+        }
+
+        let entries = self.agy_entries.read().expect("agy entries read lock");
+        let Some(entry) = entries.get(agent_id) else {
+            return Err(format!("Unknown ACP runtime '{agent_id}'."));
+        };
+        if let Some(error) = describe_agy_probe_error(&entry.probe) {
+            return Err(error);
+        }
+        Ok(Arc::new(AgyDriver::new(entry.driver_config.clone())))
+    }
+
+    /// Selects a ready `agy*` agent ID (default `agy` preferred, else any ready account),
+    /// preferring entries whose cached catalog advertises `model_hint`.
+    fn select_ready_agy_agent(
+        &self,
+        preferred_agent: Option<&str>,
+        model_hint: Option<&str>,
+    ) -> String {
+        let entries = self.agy_entries.read().expect("agy entries read lock");
+        if let Some(preferred) = preferred_agent
+            && let Some(entry) = entries.get(preferred)
+            && entry.probe.status == AgyProbeStatus::Ready
+        {
+            return entry.agent_id.clone();
+        }
+
+        let mut ordered_keys: Vec<String> = Vec::with_capacity(entries.len());
+        if entries.contains_key(AGY_DEFAULT_AGENT_ID) {
+            ordered_keys.push(AGY_DEFAULT_AGENT_ID.to_string());
+        }
+        for key in entries.keys() {
+            if key != AGY_DEFAULT_AGENT_ID {
+                ordered_keys.push(key.clone());
+            }
+        }
+
+        if let Some(hint) = model_hint.map(str::trim).filter(|value| !value.is_empty()) {
+            for agent_id in &ordered_keys {
+                if let Some(entry) = entries.get(agent_id)
+                    && entry.probe.status == AgyProbeStatus::Ready
+                    && entry.probe.models.iter().any(|model| {
+                        model.value.trim().eq_ignore_ascii_case(hint)
+                            || model.name.trim().eq_ignore_ascii_case(hint)
+                    })
+                {
+                    return entry.agent_id.clone();
+                }
+            }
+        }
+
+        for agent_id in ordered_keys {
+            if let Some(entry) = entries.get(&agent_id)
+                && entry.probe.status == AgyProbeStatus::Ready
+            {
+                return entry.agent_id.clone();
+            }
+        }
+
+        preferred_agent
+            .unwrap_or(AGY_DEFAULT_AGENT_ID)
+            .to_string()
+    }
+
+    /// Classifies a configured Reviewer role `model_id` into either Native execution (`Ok(None)`)
+    /// or an ACP target agent ID (`Ok(Some("codex" | "agy" | "agy:<account>"))`).
+    pub fn resolve_reviewer_acp_agent(&self, model_ref: &str) -> Result<Option<String>, String> {
+        let trimmed = model_ref.trim();
+        if trimmed.is_empty() {
+            return Ok(None);
+        }
+        if trimmed.starts_with("codex:") {
+            return Ok(Some(CODEX_AGENT_ID.to_string()));
+        }
+        if let Some(inner) = trimmed.strip_prefix("agy:") {
+            return Ok(Some(
+                self.select_ready_agy_agent(None, Some(inner.trim())),
+            ));
+        }
+
+        let connection = self.db.connect().map_err(|error| error.to_string())?;
+        let saved = find_model_config_for_reference(&connection, trimmed)
+            .map_err(|error| error.to_string())?;
+        drop(connection);
+
+        if let Some(saved) = saved {
+            return match classify_db_model_for_reviewer(&saved) {
+                ReviewerModelRoute::Native => Ok(None),
+                ReviewerModelRoute::Acp(agent) if agent == CODEX_AGENT_ID => {
+                    Ok(Some(CODEX_AGENT_ID.to_string()))
+                }
+                ReviewerModelRoute::Acp(agent) => Ok(Some(
+                    self.select_ready_agy_agent(Some(&agent), Some(&saved.model_id)),
+                )),
+            };
+        }
+
+        {
+            let probe = self.codex_probe.read().expect("codex probe lock");
+            if probe.status == CodexProbeStatus::Ready
+                && probe
+                    .models
+                    .iter()
+                    .any(|option| codex_option_matches(&option.value, &option.name, trimmed))
+            {
+                return Ok(Some(CODEX_AGENT_ID.to_string()));
+            }
+        }
+
+        {
+            let entries = self.agy_entries.read().expect("agy entries read lock");
+            if let Some(default_entry) = entries.get(AGY_DEFAULT_AGENT_ID)
+                && default_entry.probe.status == AgyProbeStatus::Ready
+                && default_entry.probe.models.iter().any(|option| {
+                    option.value.trim().eq_ignore_ascii_case(trimmed)
+                        || option.name.trim().eq_ignore_ascii_case(trimmed)
+                })
+            {
+                return Ok(Some(default_entry.agent_id.clone()));
+            }
+            for entry in entries.values() {
+                if entry.agent_id == AGY_DEFAULT_AGENT_ID
+                    || entry.probe.status != AgyProbeStatus::Ready
+                {
+                    continue;
+                }
+                if entry.probe.models.iter().any(|option| {
+                    option.value.trim().eq_ignore_ascii_case(trimmed)
+                        || option.name.trim().eq_ignore_ascii_case(trimmed)
+                }) {
+                    return Ok(Some(entry.agent_id.clone()));
+                }
+            }
+        }
+
+        Ok(None)
+    }
+
+    /// Builds a `ReviewerRunner` bound to this `RuntimeRegistry`.
+    pub fn reviewer_runner(self: &Arc<Self>) -> ReviewerRunner {
+        let cell = Arc::new(OnceLock::new());
+        let _ = cell.set(Arc::downgrade(self));
+        build_deferred_reviewer_runner(self.db.clone(), cell)
+    }
+
     fn broadcast_agents_snapshot(&self) {
         let hub = self.ws_hub.read().expect("runtime ws hub lock").clone();
         if let Some(hub) = hub {
@@ -1368,6 +1550,192 @@ impl RuntimeRegistry {
             hub.broadcast_agents(&frame);
         }
     }
+}
+
+enum ReviewerModelRoute {
+    Native,
+    Acp(String),
+}
+
+enum ReviewerRouteHint {
+    NativeDirect,
+    Inspect(String),
+}
+
+fn codex_option_matches(value: &str, name: &str, candidate: &str) -> bool {
+    let stripped = candidate.strip_prefix("openai/").unwrap_or(candidate).trim();
+    if stripped.is_empty() {
+        return false;
+    }
+    value.trim().eq_ignore_ascii_case(stripped)
+        || name.trim().eq_ignore_ascii_case(stripped)
+}
+
+fn classify_db_model_for_reviewer(saved: &ModelConfig) -> ReviewerModelRoute {
+    if saved
+        .provider_id
+        .as_deref()
+        .is_some_and(|value| !value.trim().is_empty())
+    {
+        return ReviewerModelRoute::Native;
+    }
+    if let Some(cfg) = saved.config_json.as_ref().and_then(Value::as_object) {
+        if let Some(runtime) = cfg.get("runtime").and_then(Value::as_str) {
+            let rt = runtime.trim().to_ascii_lowercase();
+            if rt == NATIVE_AGENT_ID {
+                return ReviewerModelRoute::Native;
+            }
+            if rt == CODEX_AGENT_ID {
+                return ReviewerModelRoute::Acp(CODEX_AGENT_ID.to_string());
+            }
+            if rt == AGY_DEFAULT_AGENT_ID || rt.starts_with("agy:") {
+                return ReviewerModelRoute::Acp(rt);
+            }
+        }
+        if let Some(allowed) = cfg.get("allowedAgents").and_then(Value::as_array) {
+            let agents: Vec<String> = allowed
+                .iter()
+                .filter_map(Value::as_str)
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+                .collect();
+            if !agents.is_empty() {
+                if agents.iter().any(|agent| agent == NATIVE_AGENT_ID) {
+                    return ReviewerModelRoute::Native;
+                }
+                if agents.iter().any(|agent| agent == CODEX_AGENT_ID) {
+                    return ReviewerModelRoute::Acp(CODEX_AGENT_ID.to_string());
+                }
+                if let Some(agy_agent) = agents
+                    .iter()
+                    .find(|agent| *agent == AGY_DEFAULT_AGENT_ID || agent.starts_with("agy:"))
+                {
+                    return ReviewerModelRoute::Acp(agy_agent.clone());
+                }
+            }
+        }
+    }
+    match saved.provider.trim().to_ascii_lowercase().as_str() {
+        CODEX_AGENT_ID => ReviewerModelRoute::Acp(CODEX_AGENT_ID.to_string()),
+        "antigravity" | AGY_DEFAULT_AGENT_ID => {
+            ReviewerModelRoute::Acp(AGY_DEFAULT_AGENT_ID.to_string())
+        }
+        _ => ReviewerModelRoute::Native,
+    }
+}
+
+fn find_model_config_for_reference(
+    connection: &rusqlite::Connection,
+    reference: &str,
+) -> StateResult<Option<ModelConfig>> {
+    if let Some(model) = get_model_config(connection, reference)? {
+        return Ok(Some(model));
+    }
+    if let Ok(model) = resolve_conversation_model(connection, reference) {
+        return Ok(Some(model));
+    }
+    Ok(get_model_config_by_agent_model_id(connection, reference, None)
+        .ok()
+        .flatten())
+}
+
+fn inspect_reviewer_route_hint(
+    db: &StateDb,
+    profile_id: Option<&str>,
+) -> Result<ReviewerRouteHint, ReviewError> {
+    let connection = db.connect()?;
+    let profile = match profile_id {
+        Some(id) => get_role_profile_by_id(&connection, id)?,
+        None => get_default_role_profile(&connection, ROLE_REVIEWER)?,
+    };
+    let Some(profile) = profile else {
+        return Ok(ReviewerRouteHint::NativeDirect);
+    };
+    if profile.role != ROLE_REVIEWER
+        || profile.is_enabled != 1
+        || profile.model_id.trim().is_empty()
+        || profile.system_prompt.trim().is_empty()
+    {
+        return Ok(ReviewerRouteHint::NativeDirect);
+    }
+
+    let model_ref = profile.model_id.trim();
+    if model_ref.starts_with("codex:") || model_ref.starts_with("agy:") {
+        return Ok(ReviewerRouteHint::Inspect(model_ref.to_string()));
+    }
+
+    if let Some(saved) = find_model_config_for_reference(&connection, model_ref)?
+        && saved
+            .provider_id
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty())
+    {
+        return Ok(ReviewerRouteHint::NativeDirect);
+    }
+
+    Ok(ReviewerRouteHint::Inspect(model_ref.to_string()))
+}
+
+/// Builds a `ReviewerRunner` that dynamically routes each review job based on the active
+/// Reviewer role profile's configured model (`Native` for provider-backed/Native models,
+/// `codex`/`agy*` ACP via `run_acp_review` for ACP models). Using `OnceLock<Weak<RuntimeRegistry>>`
+/// lets `ReviewQueue` be constructed before `RuntimeRegistry` without creating an `Arc` cycle.
+pub fn build_deferred_reviewer_runner(
+    db: StateDb,
+    registry_cell: Arc<OnceLock<Weak<RuntimeRegistry>>>,
+) -> ReviewerRunner {
+    let native_runner = default_reviewer_runner(db.clone(), DEFAULT_REVIEWER_TIMEOUT);
+    Arc::new(move |request: ReviewerRequest| {
+        let db = db.clone();
+        let registry_cell = Arc::clone(&registry_cell);
+        let native_runner = Arc::clone(&native_runner);
+        Box::pin(async move {
+            if request.payload.diff_capture_error.is_some() {
+                return native_runner(request).await;
+            }
+            let db_for_hint = db.clone();
+            let profile_id_for_hint = request.profile_id.clone();
+            let hint = tokio::task::spawn_blocking(move || {
+                inspect_reviewer_route_hint(&db_for_hint, profile_id_for_hint.as_deref())
+            })
+            .await
+            .map_err(|error| ReviewError::Other(error.to_string()))??;
+
+            let model_ref = match hint {
+                ReviewerRouteHint::NativeDirect => return native_runner(request).await,
+                ReviewerRouteHint::Inspect(model_ref) => model_ref,
+            };
+
+            let Some(registry) = registry_cell.get().and_then(Weak::upgrade) else {
+                return native_runner(request).await;
+            };
+
+            registry.ensure_probed().await;
+            let acp_agent = registry
+                .resolve_reviewer_acp_agent(&model_ref)
+                .map_err(ReviewError::Other)?;
+            let Some(agent_id) = acp_agent else {
+                return native_runner(request).await;
+            };
+
+            let driver = registry
+                .acp_driver_for(&agent_id)
+                .map_err(ReviewError::Other)?;
+            run_acp_review(AcpReviewRequest {
+                db,
+                driver,
+                payload: request.payload,
+                repo_path: request.repo_path,
+                profile_id: request.profile_id,
+                job_id: request.job_id,
+                timeout: DEFAULT_REVIEWER_TIMEOUT,
+                cancellation: request.cancellation,
+                verification_report: request.verification_report,
+            })
+            .await
+            .map_err(ReviewError::from)
+        })
+    })
 }
 
 struct ActiveTurnRouteGuard<'a> {

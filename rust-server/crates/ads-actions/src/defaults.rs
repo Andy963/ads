@@ -15,7 +15,7 @@ use crate::types::{
 
 const COMMENT_TIMEOUT: Duration = Duration::from_secs(30);
 
-pub(crate) fn default_reviewer_runner(db: StateDb, timeout: Duration) -> ReviewerRunner {
+pub fn default_reviewer_runner(db: StateDb, timeout: Duration) -> ReviewerRunner {
     std::sync::Arc::new(move |request| {
         let db = db.clone();
         Box::pin(async move { run_default_reviewer(db, request, timeout).await })

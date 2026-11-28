@@ -5,6 +5,7 @@ pub mod resolver;
 mod runtime;
 mod types;
 
+pub use defaults::default_reviewer_runner;
 pub use dispatch::{
     REVIEW_QUEUE_NOTE, ReviewDispatchRequest, canonical_project_id, dispatch_review_job,
     is_protected_branch, issue_id_from_branch,

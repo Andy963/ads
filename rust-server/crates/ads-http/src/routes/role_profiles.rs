@@ -31,6 +31,52 @@ pub(super) async fn list(
     Ok(Json(profiles))
 }
 
+fn resolve_role_profile_model(
+    connection: &rusqlite::Connection,
+    registry: Option<&crate::runtimes::RuntimeRegistry>,
+    reference: &str,
+) -> Result<String, ads_state::StateError> {
+    let trimmed = reference.trim();
+    match resolve_conversation_model(connection, trimmed) {
+        Ok(model) => Ok(model.id),
+        Err(db_err) => {
+            if trimmed.is_empty() {
+                return Err(db_err);
+            }
+            let Some(registry) = registry else {
+                return Err(db_err);
+            };
+            let existing =
+                ads_state::list_service_models(connection, ads_state::CONVERSATION_SERVICE)?;
+            let mut existing_ids = std::collections::HashSet::with_capacity(existing.len());
+            for model in &existing {
+                existing_ids.insert(model.model_id.clone());
+            }
+            let discovered = registry.discovered_acp_models(&existing_ids);
+            if let Some(exact) = discovered.iter().find(|model| model.id == trimmed) {
+                return Ok(exact.id.clone());
+            }
+            let mut by_model_id = discovered.iter().filter(|model| {
+                if model.model_id == trimmed {
+                    return true;
+                }
+                let runtime = model
+                    .config_json
+                    .as_ref()
+                    .and_then(|cfg| cfg.get("runtime"))
+                    .and_then(serde_json::Value::as_str);
+                runtime.is_some_and(|rt| trimmed == format!("{rt}:{}", model.model_id))
+            });
+            if let Some(first) = by_model_id.next()
+                && by_model_id.next().is_none()
+            {
+                return Ok(first.id.clone());
+            }
+            Err(db_err)
+        }
+    }
+}
+
 pub(super) async fn update(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -50,6 +96,7 @@ pub(super) async fn update(
     let patch = validate_patch(request)?;
 
     let db = state.auth.db().clone();
+    let registry = state.runtime_registry.clone();
     let result = tokio::task::spawn_blocking(move || {
         let mut connection = db.connect().map_err(ProfileRouteError::State)?;
         initialize_model_services(&connection).map_err(ProfileRouteError::State)?;
@@ -60,9 +107,8 @@ pub(super) async fn update(
         };
         let model_id = match patch.model_id.as_deref() {
             Some(reference) => {
-                resolve_conversation_model(&connection, reference)
+                resolve_role_profile_model(&connection, registry.as_deref(), reference)
                     .map_err(ProfileRouteError::State)?
-                    .id
             }
             None => existing.model_id,
         };

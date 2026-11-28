@@ -10,8 +10,8 @@ use ads_reviewer::{
     ReviewerError, build_review_prompt, parse_review_verdict,
 };
 use ads_state::{
-    ROLE_REVIEWER, StateDb, derive_project_session_id, get_default_role_profile,
-    get_role_profile_by_id,
+    ROLE_REVIEWER, StateDb, derive_project_session_id, get_default_role_profile, get_model_config,
+    get_role_profile_by_id, resolve_conversation_model,
 };
 use async_trait::async_trait;
 use serde_json::Value;
@@ -200,6 +200,33 @@ pub async fn run_acp_review(request: AcpReviewRequest) -> Result<ReviewVerdict, 
                 .to_string(),
         ));
     }
+    let saved_model = match get_model_config(&connection, profile.model_id.trim())
+        .map_err(|error| ReviewerError::Execution(error.to_string()))?
+    {
+        Some(saved) => Some(saved),
+        None => resolve_conversation_model(&connection, profile.model_id.trim()).ok(),
+    };
+    let resolved_model_id = match saved_model {
+        Some(saved) => {
+            if saved
+                .provider_id
+                .as_deref()
+                .is_some_and(|value| !value.trim().is_empty())
+            {
+                return Err(ReviewerError::Execution(format!(
+                    "Reviewer execution failed: model '{}' ({}) belongs to a Native provider and cannot run over ACP; route Reviewer to the Native runtime.",
+                    saved.model_id, saved.id
+                )));
+            }
+            let trimmed = saved.model_id.trim();
+            if trimmed.is_empty() {
+                profile.model_id.clone()
+            } else {
+                trimmed.to_string()
+            }
+        }
+        None => profile.model_id.clone(),
+    };
     drop(connection);
 
     let mut env = HashMap::new();
@@ -286,7 +313,7 @@ pub async fn run_acp_review(request: AcpReviewRequest) -> Result<ReviewVerdict, 
     let prompt_req = AcpPromptRequest::text(request.job_id.clone(), prompt)
         .with_alignment(DesiredConfigAlignment {
             mode: Some(SessionMode::Plan),
-            model: Some(profile.model_id.clone()),
+            model: Some(resolved_model_id),
             thought_level: Some(profile.reasoning_effort.clone()),
             extra_options: Vec::new(),
         })
