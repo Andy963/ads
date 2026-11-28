@@ -103,11 +103,50 @@ for raw in sys.stdin:
             })
             continue
         session_counter += 1
+        session_id = f"codex-acp-sess-{session_counter}"
+        if "sessions" not in globals():
+            globals()["sessions"] = {}
+        efforts_by_model = {
+            "gpt-5.3-codex": [
+                {"value": "low", "name": "Low"},
+                {"value": "medium", "name": "Medium"},
+                {"value": "high", "name": "High"},
+                {"value": "xhigh", "name": "Extra High"}
+            ],
+            "gpt-5.1-codex-mini": [
+                {"value": "low", "name": "Low"},
+                {"value": "medium", "name": "Medium"}
+            ]
+        }
+        globals()["sessions"][session_id] = {"model": "gpt-5.3-codex", "effort": "high"}
+        def build_config_options(sid):
+            st = globals()["sessions"][sid]
+            return [
+                {
+                    "id": "model",
+                    "name": "Model",
+                    "category": "model",
+                    "type": "select",
+                    "currentValue": st["model"],
+                    "options": [
+                        {"value": "gpt-5.3-codex", "name": "GPT-5.3 Codex"},
+                        {"value": "gpt-5.1-codex-mini", "name": "GPT-5.1 Codex Mini"}
+                    ]
+                },
+                {
+                    "id": "reasoning_effort",
+                    "name": "Reasoning Effort",
+                    "category": "reasoning_effort",
+                    "type": "select",
+                    "currentValue": st["effort"],
+                    "options": efforts_by_model[st["model"]]
+                }
+            ]
         send({
             "jsonrpc": "2.0",
             "id": req_id,
             "result": {
-                "sessionId": f"codex-acp-sess-{session_counter}",
+                "sessionId": session_id,
                 "modes": {
                     "currentModeId": "auto",
                     "availableModes": [
@@ -115,36 +154,36 @@ for raw in sys.stdin:
                         {"id": "auto", "name": "Auto"}
                     ]
                 },
-                "configOptions": [
-                    {
-                        "id": "model",
-                        "name": "Model",
-                        "category": "model",
-                        "type": "select",
-                        "currentValue": "gpt-5.3-codex",
-                        "options": [
-                            {"value": "gpt-5.3-codex", "name": "GPT-5.3 Codex"},
-                            {"value": "gpt-5.1-codex-mini", "name": "GPT-5.1 Codex Mini"}
-                        ]
-                    },
-                    {
-                        "id": "reasoning_effort",
-                        "name": "Reasoning Effort",
-                        "category": "reasoning_effort",
-                        "type": "select",
-                        "currentValue": "high",
-                        "options": [
-                            {"value": "low", "name": "Low"},
-                            {"value": "medium", "name": "Medium"},
-                            {"value": "high", "name": "High"},
-                            {"value": "xhigh", "name": "Extra High"}
-                        ]
-                    }
-                ]
+                "configOptions": build_config_options(session_id)
             }
         })
     elif method == "session/set_config_option":
-        send({"jsonrpc": "2.0", "id": req_id, "result": {"configOptions": []}})
+        params = msg.get("params") or {}
+        sid = params.get("sessionId")
+        cid = params.get("configId")
+        val = params.get("value")
+        st = globals().get("sessions", {}).get(sid)
+        if st is None:
+            send({"jsonrpc": "2.0", "id": req_id, "error": {"code": -32602, "message": "Invalid params: unknown session"}})
+            continue
+        if cid == "model":
+            if val not in ("gpt-5.3-codex", "gpt-5.1-codex-mini"):
+                send({"jsonrpc": "2.0", "id": req_id, "error": {"code": -32602, "message": f"Invalid params: unknown model {val}"}})
+                continue
+            st["model"] = val
+            allowed = [o["value"] for o in efforts_by_model[val]]
+            if st["effort"] not in allowed:
+                st["effort"] = allowed[-1]
+            send({"jsonrpc": "2.0", "id": req_id, "result": {"configOptions": build_config_options(sid)}})
+        elif cid == "reasoning_effort":
+            allowed = [o["value"] for o in efforts_by_model[st["model"]]]
+            if val not in allowed:
+                send({"jsonrpc": "2.0", "id": req_id, "error": {"code": -32602, "message": f"Invalid params: unsupported reasoning_effort {val}"}})
+                continue
+            st["effort"] = val
+            send({"jsonrpc": "2.0", "id": req_id, "result": {"configOptions": build_config_options(sid)}})
+        else:
+            send({"jsonrpc": "2.0", "id": req_id, "error": {"code": -32602, "message": f"Invalid params: unknown configId {cid}"}})
     elif method == "session/set_mode":
         send({"jsonrpc": "2.0", "id": req_id, "result": {}})
     elif method == "session/prompt":
@@ -748,4 +787,238 @@ async fn acp_reviewer_enforces_read_only_boundaries_and_captures_verification_co
     .await
     .expect_err("expected cancellation error");
     assert!(matches!(cancel_err, ads_reviewer::ReviewerError::Cancelled));
+}
+
+#[test]
+fn codex_driver_resolve_alignment_handles_aliases_efforts_and_unknown_models() {
+    let options: Vec<ads_acp::ConfigOption> = serde_json::from_value(json!([
+        {
+            "id": "model",
+            "name": "Model",
+            "category": "model",
+            "type": "select",
+            "currentValue": "gpt-5.3-codex",
+            "options": [
+                {"value": "gpt-5.3-codex", "name": "GPT-5.3 Codex"},
+                {"value": "gpt-5.1-codex-mini", "name": "GPT-5.1 Codex Mini"}
+            ]
+        },
+        {
+            "id": "reasoning_effort",
+            "name": "Reasoning Effort",
+            "category": "reasoning_effort",
+            "type": "select",
+            "currentValue": "high",
+            "options": [
+                {"value": "low", "name": "Low"},
+                {"value": "medium", "name": "Medium"},
+                {"value": "high", "name": "High"},
+                {"value": "xhigh", "name": "Extra High"}
+            ]
+        }
+    ]))
+    .expect("deserialize config options");
+    let state = ads_acp::ConfigOptionsState::from_vec(options);
+    let driver = CodexDriver::from_env();
+
+    let aliased = driver.resolve_alignment(
+        &state,
+        None,
+        ads_acp::DesiredConfigAlignment {
+            mode: None,
+            model: Some("openai/gpt-5.3-codex".to_string()),
+            thought_level: Some("ultra".to_string()),
+            extra_options: Vec::new(),
+        },
+    );
+    assert_eq!(aliased.model.as_deref(), Some("gpt-5.3-codex"));
+    assert_eq!(aliased.thought_level.as_deref(), Some("xhigh"));
+
+    let split_suffix = driver.resolve_alignment(
+        &state,
+        None,
+        ads_acp::DesiredConfigAlignment {
+            mode: None,
+            model: Some("codex:gpt-5.3-codex-low".to_string()),
+            thought_level: None,
+            extra_options: Vec::new(),
+        },
+    );
+    assert_eq!(split_suffix.model.as_deref(), Some("gpt-5.3-codex"));
+    assert_eq!(split_suffix.thought_level.as_deref(), Some("low"));
+
+    let by_name = driver.resolve_alignment(
+        &state,
+        None,
+        ads_acp::DesiredConfigAlignment {
+            mode: None,
+            model: Some("GPT-5.3 Codex".to_string()),
+            thought_level: Some("minimal".to_string()),
+            extra_options: Vec::new(),
+        },
+    );
+    assert_eq!(by_name.model.as_deref(), Some("gpt-5.3-codex"));
+    assert_eq!(by_name.thought_level.as_deref(), Some("low"));
+
+    let seeded_unknown = driver.resolve_alignment(
+        &state,
+        None,
+        ads_acp::DesiredConfigAlignment {
+            mode: None,
+            model: Some("gpt-5.5".to_string()),
+            thought_level: Some("high".to_string()),
+            extra_options: Vec::new(),
+        },
+    );
+    assert_eq!(
+        seeded_unknown.model, None,
+        "unknown model outside codex-acp catalog must be omitted to avoid -32602 Invalid params"
+    );
+    assert_eq!(seeded_unknown.thought_level.as_deref(), Some("high"));
+}
+
+#[tokio::test]
+async fn acp_reviewer_handles_seeded_model_post_model_effort_narrowing_and_rejects_native_provider() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let repo_path = temp.path().join("repo");
+    fs::create_dir_all(&repo_path).expect("repo");
+    let codex_home = temp.path().join("codex-home");
+    fs::create_dir_all(&codex_home).expect("codex home");
+    fs::write(
+        codex_home.join("auth.json"),
+        r#"{"auth_mode":"chatgpt","tokens":{"access_token":"tok"}}"#,
+    )
+    .expect("auth.json");
+    let mock_bin = write_mock_codex_acp_script(temp.path());
+    let driver: Arc<dyn AcpDriver> = Arc::new(CodexDriver::new(
+        CodexDriverConfig::default()
+            .with_binary(mock_bin.to_string_lossy().as_ref())
+            .with_codex_home(&codex_home),
+    ));
+
+    let db = StateDb::open(temp.path().join("state.db")).expect("state db");
+    let payload = ReviewPayload {
+        issue: ReviewIssue {
+            id: Some(746),
+            title: "Reviewer dynamic routing".to_string(),
+            ..Default::default()
+        },
+        diff_range: Some(ReviewDiffRange {
+            base_ref: "dev".to_string(),
+            head_ref: "HEAD".to_string(),
+            base_commit: Some("0000000".to_string()),
+            head_commit: Some("1111111".to_string()),
+            range: "dev..HEAD".to_string(),
+        }),
+        diff: "+fn ok() {}".to_string(),
+        ..Default::default()
+    };
+
+    // 1. Seeded Codex model ID ('model-seed-codex-gpt-5-5' -> 'gpt-5.5') not present in live
+    //    codex-acp catalog + unsupported 'minimal' effort succeeds without -32602.
+    {
+        let conn = db.connect().expect("conn");
+        conn.execute(
+            "UPDATE role_profiles SET model_id = ?1, reasoning_effort = ?2 WHERE id = 'profile-default-reviewer'",
+            rusqlite::params!["model-seed-codex-gpt-5-5", "minimal"],
+        )
+        .expect("update reviewer profile");
+    }
+    let seed_verdict = run_acp_review(AcpReviewRequest {
+        db: db.clone(),
+        driver: Arc::clone(&driver),
+        payload: payload.clone(),
+        repo_path: repo_path.clone(),
+        profile_id: None,
+        job_id: "job-746-seeded".to_string(),
+        timeout: Duration::from_secs(30),
+        cancellation: Cancellation::new(),
+        verification_report: Arc::new(std::sync::Mutex::new(ReviewVerificationReport::default())),
+    })
+    .await
+    .expect("seeded legacy model should not trigger -32602");
+    assert_eq!(seed_verdict.status, ReviewVerdictStatus::Pass);
+
+    // 2. Switching to 'gpt-5.1-codex-mini' narrows supported efforts to ['low', 'medium'];
+    //    'xhigh' must be re-resolved against refreshed configOptions to 'medium' without -32602.
+    {
+        let conn = db.connect().expect("conn");
+        conn.execute(
+            "UPDATE role_profiles SET model_id = ?1, reasoning_effort = ?2 WHERE id = 'profile-default-reviewer'",
+            rusqlite::params!["gpt-5.1-codex-mini", "xhigh"],
+        )
+        .expect("update reviewer profile to mini");
+    }
+    let mini_verdict = run_acp_review(AcpReviewRequest {
+        db: db.clone(),
+        driver: Arc::clone(&driver),
+        payload: payload.clone(),
+        repo_path: repo_path.clone(),
+        profile_id: None,
+        job_id: "job-746-mini".to_string(),
+        timeout: Duration::from_secs(30),
+        cancellation: Cancellation::new(),
+        verification_report: Arc::new(std::sync::Mutex::new(ReviewVerificationReport::default())),
+    })
+    .await
+    .expect("post-model effort re-resolution should prevent -32602");
+    assert_eq!(mini_verdict.status, ReviewVerdictStatus::Pass);
+
+    // 3. Provider-backed DB models (e.g. CPA gpt-5.6-luna) belong to Native and must be rejected
+    //    clearly by run_acp_review rather than sending an internal UUID to codex-acp.
+    {
+        let mut conn = db.connect().expect("conn");
+        ads_state::upsert_model_provider(
+            &conn,
+            &ads_contract::models::ModelProvider {
+                id: "provider-cpa".to_string(),
+                name: "CPA".to_string(),
+                base_url: "http://127.0.0.1:1/v1".to_string(),
+                credential_profile: Some("provider-cpa".to_string()),
+                wire_api: Some("chat".to_string()),
+                is_enabled: true,
+                updated_at: None,
+            },
+            1_700_000_000_000,
+        )
+        .expect("provider");
+        ads_state::upsert_model_config(
+            &mut conn,
+            &ads_contract::models::ModelConfig {
+                id: "model-cpa-luna".to_string(),
+                model_id: "gpt-5.6-luna".to_string(),
+                display_name: "GPT-5.6 Luna".to_string(),
+                provider: "cpa".to_string(),
+                provider_id: Some("provider-cpa".to_string()),
+                is_enabled: true,
+                is_default: false,
+                config_json: None,
+                updated_at: None,
+            },
+            1_700_000_000_000,
+        )
+        .expect("model config");
+        conn.execute(
+            "UPDATE role_profiles SET model_id = ?1 WHERE id = 'profile-default-reviewer'",
+            rusqlite::params!["model-cpa-luna"],
+        )
+        .expect("set cpa model on reviewer");
+    }
+    let cpa_err = run_acp_review(AcpReviewRequest {
+        db,
+        driver,
+        payload,
+        repo_path,
+        profile_id: None,
+        job_id: "job-746-cpa-guard".to_string(),
+        timeout: Duration::from_secs(30),
+        cancellation: Cancellation::new(),
+        verification_report: Arc::new(std::sync::Mutex::new(ReviewVerificationReport::default())),
+    })
+    .await
+    .expect_err("provider-backed model must fail fast on ACP runner");
+    assert!(
+        cpa_err.to_string().contains("belongs to a Native provider"),
+        "unexpected error: {cpa_err}"
+    );
 }

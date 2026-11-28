@@ -88,6 +88,8 @@ dependencies = [
  "ads-actions",
  "ads-auth",
  "ads-contract",
+ "ads-native",
+ "ads-reviewer",
  "ads-runtime",
  "ads-state",
  "aes-gcm",

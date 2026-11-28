@@ -1,5 +1,5 @@
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock, Weak};
 
 use ads_actions::{
     ReviewQueue, ReviewQueueOptions, review_action_tools_factory,
@@ -8,9 +8,9 @@ use ads_auth::{AuthConfig, AuthService, InitAdminOutcome, ResetAdminOutcome};
 use ads_http::{
     ActionsLaneMessage, CookieSecureMode, NATIVE_AGENT_ID, ReviewVerdictMessage,
     RouterConfig, RoutingPromptRunner, RuntimeRegistry, RuntimeRegistryConfig, WebSocketConfig,
-    WebSocketHub, WebSocketScheduleNotifier, build_router, detect_workspace_root,
-    enqueue_review_verdict_message, parse_allowed_origins, publish_actions_lane_message,
-    resolve_allowed_dirs, resolve_client_dir,
+    WebSocketHub, WebSocketScheduleNotifier, build_deferred_reviewer_runner, build_router,
+    detect_workspace_root, enqueue_review_verdict_message, parse_allowed_origins,
+    publish_actions_lane_message, resolve_allowed_dirs, resolve_client_dir,
 };
 use ads_native::{
     ModelResolver, NativePromptRunner, NativePromptRunnerOptions, NativeScheduleCompiler,
@@ -54,7 +54,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let current_dir = std::env::current_dir()?;
     let fallback_allowed_dir = detect_workspace_root(&current_dir);
     let state_dir = resolve_ads_state_dir();
-    let review_queue = build_review_queue(state_db.clone(), Arc::clone(&websocket_hub));
+    let reviewer_registry: Arc<OnceLock<Weak<RuntimeRegistry>>> = Arc::new(OnceLock::new());
+    let review_queue = build_review_queue(
+        state_db.clone(),
+        Arc::clone(&websocket_hub),
+        Arc::clone(&reviewer_registry),
+    );
     let model_resolver = ModelResolver::new(state_db.clone());
     let mut native_options =
         NativePromptRunnerOptions::new(state_db.clone(), model_resolver.clone());
@@ -71,6 +76,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     registry_config.native_runner = Some(native_runner.clone());
     registry_config.native_scheduler = Some(native_runner);
     let runtime_registry = RuntimeRegistry::new(registry_config);
+    let _ = reviewer_registry.set(Arc::downgrade(&runtime_registry));
     runtime_registry.attach_ws_hub(Arc::clone(&websocket_hub));
     let startup_probe = runtime_registry.spawn_startup_probe();
 
@@ -126,7 +132,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn build_review_queue(db: StateDb, hub: Arc<WebSocketHub>) -> Arc<ReviewQueue> {
+fn build_review_queue(
+    db: StateDb,
+    hub: Arc<WebSocketHub>,
+    reviewer_registry: Arc<OnceLock<Weak<RuntimeRegistry>>>,
+) -> Arc<ReviewQueue> {
     let messenger_db = db.clone();
     let messenger_hub = Arc::clone(&hub);
     let waker_db = db.clone();
@@ -175,7 +185,9 @@ fn build_review_queue(db: StateDb, hub: Arc<WebSocketHub>) -> Arc<ReviewQueue> {
             eprintln!("[ads-actions] unable to enqueue Reviewer handoff: {error}");
         }
     });
+    let reviewer = build_deferred_reviewer_runner(db.clone(), reviewer_registry);
     let options = ReviewQueueOptions {
+        reviewer: Some(reviewer),
         messenger: Some(messenger),
         waker: Some(waker),
         ..ReviewQueueOptions::default()

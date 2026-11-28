@@ -805,7 +805,7 @@ impl AcpSession {
         &self,
         desired: &DesiredConfigAlignment,
     ) -> AcpResult<ConfigAlignmentReport> {
-        let desired = {
+        let initial_desired = {
             let guard = self.state.lock().expect("session state lock");
             self.driver.resolve_alignment(
                 &guard.config_options,
@@ -814,11 +814,11 @@ impl AcpSession {
             )
         };
         let mut report = ConfigAlignmentReport::default();
-        if let Some(mode) = desired.mode.as_ref() {
+        if let Some(mode) = initial_desired.mode.as_ref() {
             report.mode_changed = self.set_mode(mode).await?;
         }
 
-        if let Some(desired_model) = desired
+        if let Some(desired_model) = initial_desired
             .model
             .as_deref()
             .map(str::trim)
@@ -838,7 +838,27 @@ impl AcpSession {
             }
         }
 
-        if let Some(desired_thought) = desired
+        // Re-resolve after `model` alignment so updated `configOptions` returned by
+        // `session/set_config_option` govern `thought_level` validation and mapping.
+        let post_model_desired = {
+            let guard = self.state.lock().expect("session state lock");
+            let mut post_input = desired.clone();
+            if initial_desired.thought_level.is_some()
+                && post_input
+                    .thought_level
+                    .as_deref()
+                    .is_none_or(|value| value.trim().is_empty())
+            {
+                post_input.thought_level = initial_desired.thought_level.clone();
+            }
+            self.driver.resolve_alignment(
+                &guard.config_options,
+                guard.modes.as_ref(),
+                post_input,
+            )
+        };
+
+        if let Some(desired_thought) = post_model_desired
             .thought_level
             .as_deref()
             .map(str::trim)
@@ -858,7 +878,7 @@ impl AcpSession {
             }
         }
 
-        for (config_id, value) in &desired.extra_options {
+        for (config_id, value) in &initial_desired.extra_options {
             if self.set_config_option(config_id, value).await? {
                 report.applied_config_ids.push(config_id.clone());
             } else {

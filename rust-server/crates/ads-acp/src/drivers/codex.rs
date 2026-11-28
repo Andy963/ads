@@ -278,6 +278,99 @@ impl CodexDriver {
     }
 }
 
+const CODEX_KNOWN_THOUGHT_LEVELS: [&str; 6] =
+    ["minimal", "low", "medium", "high", "xhigh", "max"];
+
+fn match_codex_model_candidate(
+    candidate: &str,
+    config_options: &ConfigOptionsState,
+) -> Option<(String, Option<String>)> {
+    let model_option = config_options.resolve_model()?;
+    let option_values = model_option.flattened_values();
+    if option_values.is_empty() {
+        return None;
+    }
+
+    let stripped_candidates = [candidate, candidate.strip_prefix("openai/").unwrap_or(candidate)];
+    for probe in stripped_candidates {
+        let probe = probe.trim();
+        if probe.is_empty() {
+            continue;
+        }
+        if let Some(entry) = option_values.iter().find(|entry| entry.value == probe) {
+            return Some((entry.value.clone(), None));
+        }
+        if let Some(entry) = option_values
+            .iter()
+            .find(|entry| entry.value.eq_ignore_ascii_case(probe) || entry.name.eq_ignore_ascii_case(probe))
+        {
+            return Some((entry.value.clone(), None));
+        }
+
+        let mut family_matches: Vec<(&str, &str)> = Vec::new();
+        for entry in &option_values {
+            for sep in ['-', '/'] {
+                let prefix = format!("{}{}", entry.value, sep);
+                if probe.len() > prefix.len()
+                    && probe[..prefix.len()].eq_ignore_ascii_case(&prefix)
+                {
+                    family_matches.push((entry.value.as_str(), &probe[prefix.len()..]));
+                }
+            }
+        }
+        family_matches.sort_by_key(|(family, _)| std::cmp::Reverse(family.len()));
+        for (family, suffix) in family_matches {
+            let suffix_lower = suffix.trim().to_ascii_lowercase();
+            let suffix_supported = CODEX_KNOWN_THOUGHT_LEVELS.contains(&suffix_lower.as_str())
+                || config_options
+                    .resolve_thought_level()
+                    .is_some_and(|opt| {
+                        opt.flattened_values()
+                            .iter()
+                            .any(|v| v.value.eq_ignore_ascii_case(&suffix_lower))
+                    });
+            if suffix_supported {
+                return Some((family.to_string(), Some(suffix_lower)));
+            }
+        }
+    }
+
+    None
+}
+
+fn match_codex_thought_level(
+    candidate: &str,
+    config_options: &ConfigOptionsState,
+) -> Option<String> {
+    let Some(thought_option) = config_options.resolve_thought_level() else {
+        return Some(candidate.to_string());
+    };
+    let values = thought_option.flattened_values();
+    if values.is_empty() {
+        return Some(candidate.to_string());
+    }
+    let find_supported = |target: &str| -> Option<String> {
+        values
+            .iter()
+            .find(|entry| {
+                entry.value.eq_ignore_ascii_case(target) || entry.name.eq_ignore_ascii_case(target)
+            })
+            .map(|entry| entry.value.clone())
+    };
+    if let Some(exact) = find_supported(candidate) {
+        return Some(exact);
+    }
+    let fallbacks: &[&str] = match candidate {
+        "minimal" => &["minimal", "low", "medium"],
+        "low" => &["low", "minimal", "medium"],
+        "medium" => &["medium", "low", "high"],
+        "high" => &["high", "xhigh", "medium", "max"],
+        "xhigh" | "max" | "ultra" => &["xhigh", "max", "high", "medium"],
+        _ => &[],
+    };
+    fallbacks.iter().find_map(|level| find_supported(level))
+}
+
 impl AcpDriver for CodexDriver {
     fn id(&self) -> &str {
         &self.config.id
@@ -331,14 +424,33 @@ impl AcpDriver for CodexDriver {
         if let Some(raw_model) = desired.model.take() {
             let mapped = self.map_model_id(&raw_model);
             if !mapped.is_empty() {
-                desired.model = Some(mapped);
+                let has_model_catalog = config_options
+                    .resolve_model()
+                    .is_some_and(|option| !option.flattened_values().is_empty());
+                if has_model_catalog {
+                    if let Some((canonical_model, extracted_thought)) =
+                        match_codex_model_candidate(&mapped, config_options)
+                    {
+                        desired.model = Some(canonical_model);
+                        if let Some(thought) = extracted_thought
+                            && desired
+                                .thought_level
+                                .as_deref()
+                                .is_none_or(|value| value.trim().is_empty())
+                        {
+                            desired.thought_level = Some(thought);
+                        }
+                    }
+                } else {
+                    desired.model = Some(mapped);
+                }
             }
         }
 
         if let Some(raw_thought) = desired.thought_level.take() {
             let mapped = self.map_thought_level(&raw_thought);
             if !mapped.is_empty() {
-                desired.thought_level = Some(mapped);
+                desired.thought_level = match_codex_thought_level(&mapped, config_options);
             }
         }
 

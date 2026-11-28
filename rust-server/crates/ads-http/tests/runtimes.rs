@@ -213,6 +213,16 @@ for raw in sys.stdin:
             }}
         }})
     elif method == "session/set_config_option":
+        params = msg.get("params") or {{}}
+        cid = params.get("configId")
+        val = params.get("value")
+        if cid == "model" and val not in ("gemini-2.5-pro", "gemini-2.5-flash"):
+            send({{
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "error": {{"code": -32602, "message": f"Invalid params: unknown model {{val}}"}}
+            }})
+            continue
         send({{"jsonrpc": "2.0", "id": req_id, "result": {{"configOptions": []}}}})
     elif method == "session/set_mode":
         send({{"jsonrpc": "2.0", "id": req_id, "result": {{}}}})
@@ -221,6 +231,11 @@ for raw in sys.stdin:
         session_id = params.get("sessionId", "agy-sess-1")
         blocks = params.get("prompt") or []
         text = " ".join(b.get("text", "") for b in blocks if isinstance(b, dict))
+        reply = (
+            json.dumps({{"status": "PASS", "summary": "Mock Agy reviewer pass", "defects": []}})
+            if "Review runtime protocol:" in text
+            else f"{{text}} [via-mock-agy]"
+        )
         send({{
             "jsonrpc": "2.0",
             "method": "session/update",
@@ -228,7 +243,7 @@ for raw in sys.stdin:
                 "sessionId": session_id,
                 "update": {{
                     "sessionUpdate": "agent_message_chunk",
-                    "content": {{"type": "text", "text": f"{{text}} [via-mock-agy]"}}
+                    "content": {{"type": "text", "text": reply}}
                 }}
             }}
         }})
@@ -1406,7 +1421,53 @@ for raw in sys.stdin:
             }
         })
     elif method == "session/set_config_option":
-        send({"jsonrpc": "2.0", "id": req_id, "result": {"configOptions": []}})
+        params = msg.get("params") or {}
+        cid = params.get("configId")
+        val = params.get("value")
+        if cid == "model" and val not in ("gpt-5.3-codex", "gpt-4.1"):
+            send({
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "error": {"code": -32602, "message": f"Invalid params: unknown model {val}"}
+            })
+            continue
+        if cid == "reasoning_effort" and val not in ("medium", "high"):
+            send({
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "error": {"code": -32602, "message": f"Invalid params: unsupported effort {val}"}
+            })
+            continue
+        send({
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "result": {
+                "configOptions": [
+                    {
+                        "id": "model",
+                        "name": "Model",
+                        "category": "model",
+                        "type": "select",
+                        "currentValue": val if cid == "model" else "gpt-5.3-codex",
+                        "options": [
+                            {"value": "gpt-5.3-codex", "name": "GPT-5.3 Codex"},
+                            {"value": "gpt-4.1", "name": "GPT-4.1 (Codex)"}
+                        ]
+                    },
+                    {
+                        "id": "reasoning_effort",
+                        "name": "Reasoning Effort",
+                        "category": "reasoning_effort",
+                        "type": "select",
+                        "currentValue": val if cid == "reasoning_effort" else "high",
+                        "options": [
+                            {"value": "medium", "name": "Medium"},
+                            {"value": "high", "name": "High"}
+                        ]
+                    }
+                ]
+            }
+        })
     elif method == "session/set_mode":
         send({"jsonrpc": "2.0", "id": req_id, "result": {}})
     elif method == "session/prompt":
@@ -1414,6 +1475,11 @@ for raw in sys.stdin:
         session_id = params.get("sessionId", "codex-sess-1")
         blocks = params.get("prompt") or []
         text = " ".join(b.get("text", "") for b in blocks if isinstance(b, dict))
+        reply = (
+            json.dumps({"status": "PASS", "summary": "Mock Codex reviewer pass", "defects": []})
+            if "Review runtime protocol:" in text
+            else f"{text} [via-mock-codex-acp]"
+        )
         send({
             "jsonrpc": "2.0",
             "method": "session/update",
@@ -1421,7 +1487,7 @@ for raw in sys.stdin:
                 "sessionId": session_id,
                 "update": {
                     "sessionUpdate": "agent_message_chunk",
-                    "content": {"type": "text", "text": f"{text} [via-mock-codex-acp]"}
+                    "content": {"type": "text", "text": reply}
                 }
             }
         })
@@ -1438,6 +1504,451 @@ for raw in sys.stdin:
         fs::set_permissions(&script_path, perms).expect("chmod");
     }
     script_path
+}
+
+struct ReviewerRoutingFixture {
+    app: Router,
+    db: StateDb,
+    registry: Arc<RuntimeRegistry>,
+    cookie: String,
+    workspace: PathBuf,
+    _dir: TempDir,
+}
+
+async fn setup_reviewer_routing_fixture() -> ReviewerRoutingFixture {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db = StateDb::open(dir.path().join("state.db")).expect("state db");
+    insert_user(
+        &db,
+        "user-1",
+        "admin",
+        &hash_password_scrypt("secret"),
+        1_700_000_000,
+    )
+    .expect("user");
+    let auth = Arc::new(AuthService::new(
+        db.clone(),
+        AuthConfig {
+            session_ttl_seconds: 3_600,
+            session_pepper: "reviewer-routing-pepper".to_string(),
+            sliding_sessions: false,
+            login_max_attempts: 5,
+            login_base_lockout: Duration::from_secs(1),
+        },
+    ));
+    let workspace = dir.path().join("workspace");
+    fs::create_dir_all(&workspace).expect("workspace");
+    let state_dir = dir.path().join("state");
+    fs::create_dir_all(&state_dir).expect("state dir");
+    let codex_home = dir.path().join("codex-home");
+    fs::create_dir_all(&codex_home).expect("codex home");
+    fs::write(
+        codex_home.join("auth.json"),
+        r#"{"auth_mode":"chatgpt","account_email":"reviewer@example.com","tokens":{"access_token":"codex-secret-tok"}}"#,
+    )
+    .expect("write codex auth.json");
+    let workspace_db =
+        Arc::new(WorkspaceDb::open(dir.path().join("workspaces.db")).expect("workspaces db"));
+
+    let mock_codex = write_mock_codex_acp_script(dir.path());
+    let mock_agy = write_mock_agy_script(dir.path(), &state_dir.join("providers").join("agy"));
+    let native_runner = Arc::new(RecordingNativeRunner::new());
+
+    let mut reg_cfg = RuntimeRegistryConfig::new(db.clone(), state_dir.clone(), workspace.clone());
+    reg_cfg.preferred_default_agent_id = NATIVE_AGENT_ID.to_string();
+    reg_cfg.native_runner = Some(native_runner.clone());
+    reg_cfg.native_scheduler = Some(native_runner);
+    reg_cfg.codex_acp_binary = mock_codex.to_string_lossy().to_string();
+    reg_cfg.codex_home = Some(codex_home);
+    reg_cfg.codex_probe_timeout = Duration::from_secs(10);
+    reg_cfg.agy_binary = mock_agy.to_string_lossy().to_string();
+    reg_cfg.agy_probe_timeout = Duration::from_secs(10);
+
+    let registry = RuntimeRegistry::new(reg_cfg);
+    registry.probe_all().await;
+
+    let mut origins = HashSet::new();
+    origins.insert("http://localhost".to_string());
+    let config = RouterConfig::new(
+        CookieSecureMode::Never,
+        vec![workspace.clone()],
+        origins,
+        workspace_db,
+        workspace.clone(),
+    )
+    .with_workspace_state_dir(state_dir)
+    .with_prompt_queue_runner(Arc::new(RoutingPromptRunner::new(Arc::clone(&registry))))
+    .with_runtime_registry(Arc::clone(&registry));
+    let app = build_router(auth, config);
+    let cookie = login_cookie(&app).await;
+
+    ReviewerRoutingFixture {
+        app,
+        db,
+        registry,
+        cookie,
+        workspace,
+        _dir: dir,
+    }
+}
+
+fn init_git_repo_for_review(workspace: &Path) -> String {
+    let run_git = |args: &[&str]| {
+        let output = std::process::Command::new("git")
+            .args(args)
+            .current_dir(workspace)
+            .output()
+            .expect("run git");
+        assert!(
+            output.status.success(),
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    };
+    run_git(&["init"]);
+    run_git(&["config", "user.name", "ADS Test"]);
+    run_git(&["config", "user.email", "test@example.com"]);
+    fs::write(workspace.join("README.md"), "hello review\n").expect("write readme");
+    run_git(&["add", "README.md"]);
+    run_git(&["commit", "-m", "initial commit"]);
+    run_git(&["rev-parse", "HEAD"])
+}
+
+fn make_reviewer_request(workspace: &Path, head_commit: &str, job_id: &str) -> ads_actions::ReviewerRequest {
+    ads_actions::ReviewerRequest {
+        payload: ads_reviewer::ReviewPayload {
+            issue: ads_reviewer::ReviewIssue {
+                id: Some(746),
+                title: "Verify dynamic reviewer runtime routing".to_string(),
+                ..Default::default()
+            },
+            diff_range: Some(ads_reviewer::ReviewDiffRange {
+                base_ref: "dev".to_string(),
+                head_ref: "HEAD".to_string(),
+                base_commit: Some(head_commit.to_string()),
+                head_commit: Some(head_commit.to_string()),
+                range: format!("{head_commit}^..{head_commit}"),
+            }),
+            diff: "diff --git a/README.md b/README.md\n+hello review\n".to_string(),
+            ..Default::default()
+        },
+        repo_path: workspace.to_path_buf(),
+        profile_id: None,
+        job_id: job_id.to_string(),
+        owner: "user-1".to_string(),
+        cancellation: ads_native::Cancellation::new(),
+        verification_report: Arc::new(std::sync::Mutex::new(
+            ads_reviewer::ReviewVerificationReport::default(),
+        )),
+    }
+}
+
+#[tokio::test]
+async fn role_profile_update_accepts_discovered_acp_models_and_rejects_unknown() {
+    let fixture = setup_reviewer_routing_fixture().await;
+
+    for (requested, expected_saved) in [
+        ("gpt-5.3-codex", "gpt-5.3-codex"),
+        ("codex:gpt-4.1", "gpt-4.1"),
+        ("gemini-2.5-pro", "gemini-2.5-pro"),
+    ] {
+        let (status, updated) = authed_request(
+            &fixture.app,
+            "PUT",
+            "/api/role-profiles/profile-default-reviewer",
+            &fixture.cookie,
+            Some(json!({ "model_id": requested })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "requested={requested}: {updated}");
+        assert_eq!(updated["model_id"], expected_saved);
+    }
+
+    // When a DB model shares 'gemini-2.5-pro', GET /api/models disambiguates Agy as
+    // 'agy:gemini-2.5-pro', and PUT /api/role-profiles accepts that prefixed ID.
+    let (status, created_db) = authed_request(
+        &fixture.app,
+        "POST",
+        "/api/model-configs",
+        &fixture.cookie,
+        Some(json!({ "modelId": "gemini-2.5-pro", "provider": "openai" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{created_db}");
+    let created_db_id = created_db["id"].as_str().expect("id").to_string();
+
+    let (status, svc_before) = authed_request(
+        &fixture.app,
+        "GET",
+        "/api/model-services",
+        &fixture.cookie,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let mut conv_ids: Vec<String> = svc_before
+        .as_array()
+        .expect("services")
+        .iter()
+        .find(|item| item["service"] == "conversation")
+        .expect("conversation")["modelIds"]
+        .as_array()
+        .expect("modelIds")
+        .iter()
+        .filter_map(|v| v.as_str().map(str::to_string))
+        .collect();
+    conv_ids.push(created_db_id.clone());
+    let (status, _) = authed_request(
+        &fixture.app,
+        "PUT",
+        "/api/model-services/conversation",
+        &fixture.cookie,
+        Some(json!({ "modelIds": conv_ids, "defaultModelId": created_db_id })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, prefixed_res) = authed_request(
+        &fixture.app,
+        "PUT",
+        "/api/role-profiles/profile-default-reviewer",
+        &fixture.cookie,
+        Some(json!({ "model_id": "agy:gemini-2.5-pro" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{prefixed_res}");
+    assert_eq!(prefixed_res["model_id"], "agy:gemini-2.5-pro");
+
+    let (status, err_body) = authed_request(
+        &fixture.app,
+        "PUT",
+        "/api/role-profiles/profile-default-reviewer",
+        &fixture.cookie,
+        Some(json!({ "model_id": "does-not-exist-anywhere" })),
+    )
+    .await;
+    assert!(
+        !status.is_success(),
+        "unknown model should be rejected, got {status}: {err_body}"
+    );
+}
+
+#[tokio::test]
+async fn reviewer_runner_routes_dynamically_across_native_cpa_codex_and_agy() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use axum::routing::post;
+    use tokio::net::TcpListener;
+
+    let fixture = setup_reviewer_routing_fixture().await;
+    let head_commit = init_git_repo_for_review(&fixture.workspace);
+
+    // Local mock CPA OpenAI-compatible upstream proving Native execution for provider models.
+    let native_hits = Arc::new(AtomicUsize::new(0));
+    let hits_for_chat = Arc::clone(&native_hits);
+    let hits_for_resp = Arc::clone(&native_hits);
+    let verdict_json = r#"{"status":"REJECT","summary":"Native CPA reviewer reject","defects":[{"file":"README.md","line":1,"severity":"blocker","description":"native path verified"}]}"#;
+    let sse_body = format!(
+        "data: {{\"type\":\"response.content_part.added\",\"item_id\":\"msg-1\",\"output_index\":0,\"content_index\":0,\"part\":{{\"type\":\"output_text\",\"text\":\"\",\"annotations\":[]}}}}\n\n\
+         data: {{\"type\":\"response.output_text.delta\",\"item_id\":\"msg-1\",\"output_index\":0,\"content_index\":0,\"delta\":{delta}}}\n\n\
+         data: {{\"type\":\"response.content_part.done\",\"item_id\":\"msg-1\",\"output_index\":0,\"content_index\":0,\"part\":{{\"type\":\"output_text\",\"text\":{delta},\"annotations\":[]}}}}\n\n\
+         data: {{\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{{\"type\":\"message\",\"id\":\"msg-1\",\"role\":\"assistant\",\"status\":\"completed\",\"content\":[{{\"type\":\"output_text\",\"text\":{delta},\"annotations\":[]}}]}}}}\n\n\
+         data: {{\"type\":\"response.completed\",\"response\":{{\"id\":\"resp-1\",\"status\":\"completed\",\"output\":[{{\"type\":\"message\",\"id\":\"msg-1\",\"role\":\"assistant\",\"status\":\"completed\",\"content\":[{{\"type\":\"output_text\",\"text\":{delta},\"annotations\":[]}}]}}],\"usage\":{{\"input_tokens\":5,\"output_tokens\":5,\"total_tokens\":10}}}}}}\n\n",
+        delta = serde_json::to_string(verdict_json).expect("json string")
+    );
+    let sse_arc = Arc::new(sse_body);
+    let upstream_router = Router::new()
+        .route(
+            "/v1/responses",
+            post(move || {
+                let hits = Arc::clone(&hits_for_resp);
+                let body = Arc::clone(&sse_arc);
+                async move {
+                    hits.fetch_add(1, Ordering::SeqCst);
+                    (
+                        [(axum::http::header::CONTENT_TYPE, "text/event-stream")],
+                        body.as_str().to_string(),
+                    )
+                }
+            }),
+        )
+        .route(
+            "/v1/chat/completions",
+            post(move || {
+                let hits = Arc::clone(&hits_for_chat);
+                async move {
+                    hits.fetch_add(1, Ordering::SeqCst);
+                    axum::Json(json!({
+                        "choices": [{
+                            "message": { "role": "assistant", "content": verdict_json },
+                            "finish_reason": "stop"
+                        }],
+                        "usage": { "prompt_tokens": 5, "completion_tokens": 5, "total_tokens": 10 }
+                    }))
+                }
+            }),
+        );
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind mock cpa");
+    let cpa_addr = listener.local_addr().expect("cpa addr");
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, upstream_router).await;
+    });
+
+    // Provision CPA provider + gpt-5.6-luna model via API.
+    let (status, cpa_provider) = authed_request(
+        &fixture.app,
+        "POST",
+        "/api/model-providers",
+        &fixture.cookie,
+        Some(json!({
+            "name": "CPA",
+            "baseUrl": format!("http://{cpa_addr}/v1"),
+            "apiKey": "cpa-secret-key",
+            "wireApi": "responses"
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{cpa_provider}");
+    let provider_id = cpa_provider["id"].as_str().expect("provider id");
+
+    let (status, cpa_model) = authed_request(
+        &fixture.app,
+        "POST",
+        "/api/model-configs",
+        &fixture.cookie,
+        Some(json!({
+            "modelId": "gpt-5.6-luna",
+            "displayName": "GPT-5.6 Luna",
+            "provider": "cpa",
+            "providerId": provider_id
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{cpa_model}");
+    let cpa_model_id = cpa_model["id"].as_str().expect("cpa model id").to_string();
+
+    let (status, _) = authed_request(
+        &fixture.app,
+        "PUT",
+        "/api/model-services/conversation",
+        &fixture.cookie,
+        Some(json!({ "modelIds": [cpa_model_id], "defaultModelId": cpa_model_id })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let runner = fixture.registry.reviewer_runner();
+
+    // 1. Provider-backed CPA model must route to Native (never Codex/Agy ACP).
+    let (status, _) = authed_request(
+        &fixture.app,
+        "PUT",
+        "/api/role-profiles/profile-default-reviewer",
+        &fixture.cookie,
+        Some(json!({ "model_id": cpa_model_id })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        fixture.registry.resolve_reviewer_acp_agent(&cpa_model_id),
+        Ok(None)
+    );
+    let cpa_verdict = runner(make_reviewer_request(
+        &fixture.workspace,
+        &head_commit,
+        "job-route-cpa",
+    ))
+    .await
+    .expect("CPA native reviewer must succeed");
+    assert_eq!(
+        cpa_verdict.status,
+        ads_reviewer::ReviewVerdictStatus::Reject
+    );
+    assert!(cpa_verdict.summary.contains("Native CPA reviewer reject"));
+    assert_eq!(native_hits.load(Ordering::SeqCst), 1);
+
+    // 2. Discovered Codex model routes to CodexDriver and passes without affecting Native hits.
+    let (status, _) = authed_request(
+        &fixture.app,
+        "PUT",
+        "/api/role-profiles/profile-default-reviewer",
+        &fixture.cookie,
+        Some(json!({ "model_id": "gpt-5.3-codex" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        fixture.registry.resolve_reviewer_acp_agent("gpt-5.3-codex"),
+        Ok(Some(CODEX_AGENT_ID.to_string()))
+    );
+    let codex_verdict = runner(make_reviewer_request(
+        &fixture.workspace,
+        &head_commit,
+        "job-route-codex",
+    ))
+    .await
+    .expect("Codex ACP reviewer must succeed");
+    assert_eq!(
+        codex_verdict.status,
+        ads_reviewer::ReviewVerdictStatus::Pass
+    );
+    assert!(codex_verdict.summary.contains("Mock Codex reviewer pass"));
+    assert_eq!(native_hits.load(Ordering::SeqCst), 1);
+
+    // 3. Legacy seeded 'gpt-5.5' routes to CodexDriver and skips unknown model alignment safely.
+    {
+        let conn = fixture.db.connect().expect("conn");
+        conn.execute(
+            "UPDATE role_profiles SET model_id = 'gpt-5.5' WHERE id = 'profile-default-reviewer'",
+            [],
+        )
+        .expect("set legacy gpt-5.5");
+    }
+    let legacy_verdict = runner(make_reviewer_request(
+        &fixture.workspace,
+        &head_commit,
+        "job-route-legacy-codex",
+    ))
+    .await
+    .expect("legacy seeded gpt-5.5 must not trigger -32602");
+    assert_eq!(
+        legacy_verdict.status,
+        ads_reviewer::ReviewVerdictStatus::Pass
+    );
+    assert!(legacy_verdict.summary.contains("Mock Codex reviewer pass"));
+
+    // 4. Discovered Agy model routes to AgyDriver and passes.
+    let (status, _) = authed_request(
+        &fixture.app,
+        "PUT",
+        "/api/role-profiles/profile-default-reviewer",
+        &fixture.cookie,
+        Some(json!({ "model_id": "agy:gemini-2.5-pro" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        fixture
+            .registry
+            .resolve_reviewer_acp_agent("agy:gemini-2.5-pro"),
+        Ok(Some(AGY_DEFAULT_AGENT_ID.to_string()))
+    );
+    let agy_verdict = runner(make_reviewer_request(
+        &fixture.workspace,
+        &head_commit,
+        "job-route-agy",
+    ))
+    .await
+    .expect("Agy ACP reviewer must succeed");
+    assert_eq!(
+        agy_verdict.status,
+        ads_reviewer::ReviewVerdictStatus::Pass
+    );
+    assert!(agy_verdict.summary.contains("Mock Agy reviewer pass"));
+    assert_eq!(native_hits.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test]
