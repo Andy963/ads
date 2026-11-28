@@ -42,7 +42,6 @@ use crate::{
 const DEFAULT_MAX_IMAGE_BYTES: usize = 25 * 1024 * 1024;
 const DEFAULT_MAX_REQUEST_IMAGE_BYTES: usize = 50 * 1024 * 1024;
 const DEFAULT_TURN_TIMEOUT_MS: u64 = 0;
-const MAX_TURN_TIMEOUT_MS: u64 = 1_800_000;
 const DEFAULT_REASONING_EFFORT: &str = "high";
 
 pub type NativePromptRunOutcome = PromptQueueRunOutcome;
@@ -69,8 +68,7 @@ impl NativePromptRunnerOptions {
         let timeout_ms = std::env::var("ADS_NATIVE_RUNTIME_TURN_TIMEOUT_MS")
             .ok()
             .and_then(|value| value.trim().parse::<u64>().ok())
-            .unwrap_or(DEFAULT_TURN_TIMEOUT_MS)
-            .min(MAX_TURN_TIMEOUT_MS);
+            .unwrap_or(DEFAULT_TURN_TIMEOUT_MS);
         Self {
             db,
             resolver,
@@ -391,7 +389,11 @@ impl NativePromptRunner {
         let mut usage: Option<NativeUsage> = None;
         let mut loop_guard = ToolLoopGuard::new();
         let mut item_id = format!("{turn_id}-message-0");
-        let mut side_effect_observed = false;
+        let turn_deadline = self
+            .options
+            .turn_timeout
+            .filter(|timeout| !timeout.is_zero())
+            .map(|timeout| tokio::time::Instant::now() + timeout);
         let mut token_calibration: Option<TokenCalibration> = None;
         let mut command_frames = HashMap::new();
         let loop_result: NativeResult<()> = async {
@@ -467,7 +469,8 @@ impl NativePromptRunner {
                         &request,
                         &cancellation,
                         &context,
-                        !side_effect_observed,
+                        turn_deadline,
+                        true,
                         |emitted| Some(make_delta(emitted)),
                     )
                     .await?;
@@ -592,7 +595,6 @@ impl NativePromptRunner {
                     }
                     cancellation.check()?;
                     if loop_pause.is_none() {
-                        side_effect_observed = true;
                         let loop_result = result.loop_result.as_deref().unwrap_or(&result.output);
                         match loop_guard.observe(
                             &call.function.name,
@@ -703,6 +705,7 @@ impl NativePromptRunner {
                                     &request,
                                     &summary_cancellation,
                                     context_ref,
+                                    turn_deadline,
                                     true,
                                     |_| None,
                                 )
@@ -935,12 +938,17 @@ impl NativePromptRunner {
         &self,
         request: &NativeCompletionRequest,
         cancellation: &Cancellation,
+        turn_deadline: Option<tokio::time::Instant>,
         on_delta: Option<NativeTextDelta>,
     ) -> NativeResult<crate::NativeCompletion> {
-        if let Some(timeout) = self.options.turn_timeout {
+        if let Some(deadline) = turn_deadline {
+            if tokio::time::Instant::now() >= deadline {
+                cancellation.cancel();
+                return Err(NativeError::TimedOut);
+            }
             tokio::select! {
                 result = complete_native_model(request, cancellation, on_delta) => result,
-                _ = tokio::time::sleep(timeout) => {
+                _ = tokio::time::sleep_until(deadline) => {
                     cancellation.cancel();
                     Err(NativeError::TimedOut)
                 }
@@ -955,6 +963,7 @@ impl NativePromptRunner {
         request: &NativeCompletionRequest,
         cancellation: &Cancellation,
         context: &PromptRunContext,
+        turn_deadline: Option<tokio::time::Instant>,
         allow_retry: bool,
         mut make_delta: F,
     ) -> NativeResult<crate::NativeCompletion>
@@ -969,10 +978,14 @@ impl NativePromptRunner {
         let mut last_error = None;
         for attempt in 1..=attempts {
             cancellation.check()?;
+            if turn_deadline.is_some_and(|deadline| tokio::time::Instant::now() >= deadline) {
+                cancellation.cancel();
+                return Err(NativeError::TimedOut);
+            }
             let emitted = Arc::new(AtomicBool::new(false));
             let on_delta = make_delta(Arc::clone(&emitted));
             match self
-                .complete_with_timeout(request, cancellation, on_delta)
+                .complete_with_timeout(request, cancellation, turn_deadline, on_delta)
                 .await
             {
                 Ok(completion) => return Ok(completion),
@@ -1001,9 +1014,20 @@ impl NativePromptRunner {
                         "ts": now_ms(),
                     }));
                     last_error = Some(error);
-                    tokio::select! {
-                        _ = tokio::time::sleep(Duration::from_millis(delay)) => {}
-                        _ = cancellation.cancelled() => return Err(NativeError::Cancelled),
+                    if let Some(deadline) = turn_deadline {
+                        tokio::select! {
+                            _ = tokio::time::sleep(Duration::from_millis(delay)) => {}
+                            _ = tokio::time::sleep_until(deadline) => {
+                                cancellation.cancel();
+                                return Err(NativeError::TimedOut);
+                            }
+                            _ = cancellation.cancelled() => return Err(NativeError::Cancelled),
+                        }
+                    } else {
+                        tokio::select! {
+                            _ = tokio::time::sleep(Duration::from_millis(delay)) => {}
+                            _ = cancellation.cancelled() => return Err(NativeError::Cancelled),
+                        }
                     }
                 }
             }

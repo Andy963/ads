@@ -1,11 +1,13 @@
 use std::collections::{BTreeMap, HashSet};
 use std::time::Duration;
 
-use reqwest::Client;
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 
-use crate::completion::{http_error, normalize_upstream_base_url, take_sse_event_bytes};
+use crate::completion::{
+    await_with_stream_idle_timeout, effective_stream_idle_timeout, http_error,
+    normalize_upstream_base_url, take_sse_event_bytes, upstream_http_client,
+};
 use crate::error::{NativeError, NativeProviderErrorKind, NativeResult};
 use crate::types::{
     NativeChatMessage, NativeCompletion, NativeCompletionRequest, NativeContentPart,
@@ -205,11 +207,8 @@ pub(crate) async fn complete_responses(
     let scope = responses_scope(&base_url, &request.model, &request.api_key);
     let body = build_responses_body(request, &scope)?;
     let endpoint = format!("{}/responses", base_url.trim_end_matches('/'));
-    let client = Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .connect_timeout(Duration::from_secs(30))
-        .build()
-        .map_err(|error| NativeError::Io(error.to_string()))?;
+    let client = upstream_http_client()?;
+    let stream_idle_timeout = effective_stream_idle_timeout(request.options.stream_idle_timeout);
     let send = client
         .post(endpoint)
         .bearer_auth(&request.api_key)
@@ -224,10 +223,14 @@ pub(crate) async fn complete_responses(
         .header("Content-Type", "application/json")
         .json(&body)
         .send();
-    let response = tokio::select! {
-        _ = cancellation.cancelled() => return Err(NativeError::Cancelled),
-        response = send => response.map_err(|error| transport_error(error, cancellation))?,
-    };
+    let response = await_with_stream_idle_timeout(
+        send,
+        stream_idle_timeout,
+        cancellation,
+        "Native Responses upstream request stream timed out",
+        |error| transport_error(error, cancellation),
+    )
+    .await?;
     let status = response.status();
     if !status.is_success() {
         if status.is_redirection() {
@@ -251,12 +254,16 @@ pub(crate) async fn complete_responses(
                 "returned SSE for a non-streaming request",
             ));
         }
-        let payload = tokio::select! {
-            _ = cancellation.cancelled() => return Err(NativeError::Cancelled),
-            payload = response.json::<Value>() => payload.map_err(|error| {
+        let payload = await_with_stream_idle_timeout(
+            response.json::<Value>(),
+            stream_idle_timeout,
+            cancellation,
+            "Native Responses upstream response stream timed out",
+            |error| {
                 NativeError::malformed(format!("returned malformed non-streaming JSON: {error}"))
-            })?,
-        };
+            },
+        )
+        .await?;
         cancellation.check()?;
         return parse_terminal(&payload, &scope);
     }
@@ -265,7 +272,7 @@ pub(crate) async fn complete_responses(
             "returned a non-SSE response for a streaming request",
         ));
     }
-    parse_response_stream(response, cancellation, on_delta, &scope).await
+    parse_response_stream(response, cancellation, stream_idle_timeout, on_delta, &scope).await
 }
 
 fn responses_scope(base_url: &str, model: &str, api_key: &str) -> String {
@@ -820,6 +827,7 @@ fn provider_failure(value: &Value) -> NativeError {
 async fn parse_response_stream(
     mut response: reqwest::Response,
     cancellation: &crate::Cancellation,
+    stream_idle_timeout: Option<Duration>,
     on_delta: Option<NativeTextDelta>,
     scope: &str,
 ) -> NativeResult<NativeCompletion> {
@@ -827,9 +835,12 @@ async fn parse_response_stream(
     let mut buffer = Vec::new();
     loop {
         cancellation.check()?;
-        let chunk = tokio::select! {
-            _ = cancellation.cancelled() => return Err(NativeError::Cancelled),
-            chunk = response.chunk() => chunk.map_err(|error| {
+        let chunk = await_with_stream_idle_timeout(
+            response.chunk(),
+            stream_idle_timeout,
+            cancellation,
+            "Native Responses upstream stream timed out",
+            |error| {
                 if cancellation.is_cancelled() {
                     NativeError::Cancelled
                 } else {
@@ -838,8 +849,9 @@ async fn parse_response_stream(
                         format!("Native Responses upstream stream disconnected: {error}"),
                     )
                 }
-            })?,
-        };
+            },
+        )
+        .await?;
         let eof = chunk.is_none();
         if let Some(chunk) = chunk {
             buffer.extend_from_slice(&chunk);
@@ -858,8 +870,9 @@ async fn parse_response_stream(
                     return Ok(completion);
                 }
             }
-            return Err(NativeError::malformed(
-                "stream ended without a terminal response",
+            return Err(NativeError::provider(
+                NativeProviderErrorKind::Transient,
+                "Native Responses upstream stream closed before response.completed",
             ));
         }
     }

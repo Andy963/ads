@@ -35,8 +35,22 @@ pub const AGY_AUTH_STDOUT_PREFIX: &str = "Open the following link to authenticat
 pub const AGY_NO_BROWSER_PREFIX: &str = "No browser is available here";
 pub const AGY_CODE_REDIRECT_URI: &str = "https://antigravity.google/oauth-callback";
 pub const DEFAULT_AGY_PROBE_TTL: Duration = Duration::from_secs(300);
+pub const AGENT_PROBE_TIMEOUT_ENV: &str = "ADS_AGENT_PROBE_TIMEOUT_MS";
+pub const ACP_PROBE_TIMEOUT_ENV: &str = "ADS_ACP_PROBE_TIMEOUT_MS";
+pub const DEFAULT_ACP_PROBE_TIMEOUT: Duration = Duration::from_secs(60);
 
-const DEFAULT_PROBE_TIMEOUT: Duration = Duration::from_secs(20);
+pub fn resolve_acp_probe_timeout() -> Duration {
+    [ACP_PROBE_TIMEOUT_ENV, AGENT_PROBE_TIMEOUT_ENV]
+        .iter()
+        .find_map(|key| {
+            env::var(key)
+                .ok()
+                .and_then(|value| value.trim().parse::<u64>().ok())
+                .filter(|ms| *ms > 0)
+        })
+        .map_or(DEFAULT_ACP_PROBE_TIMEOUT, Duration::from_millis)
+}
+
 const DEFAULT_LOGIN_STARTUP_TIMEOUT: Duration = Duration::from_secs(60);
 const MAX_AUTHORIZATION_URL_LEN: usize = 16_384;
 const MAX_UPDATE_STEPS_TRACKED: usize = 256;
@@ -264,7 +278,7 @@ impl Default for AgyDriverConfig {
             client_file_reads: false,
             extra_args: Vec::new(),
             extra_env: HashMap::new(),
-            probe_timeout: DEFAULT_PROBE_TIMEOUT,
+            probe_timeout: resolve_acp_probe_timeout(),
         }
     }
 }
@@ -1508,7 +1522,11 @@ pub fn agy_supports_system_prompt_append(initialize: &InitializeResponse) -> boo
 
 fn is_agy_auth_error(code: i64, message: &str, data: Option<&Value>) -> bool {
     if code == -32000 {
-        return true;
+        let is_transient_upstream = data
+            .and_then(ads_native::is_transient_upstream_payload)
+            .unwrap_or(false)
+            || ads_native::is_transient_upstream_model_error(message);
+        return !is_transient_upstream;
     }
     if code == -32603 && message.trim_start().starts_with(AGY_NO_BROWSER_PREFIX) {
         return true;
@@ -2164,7 +2182,7 @@ pub async fn probe_agy_runtime(config: &AgyDriverConfig, workspace_root: &Path) 
     let mut effective_config = config.clone();
     effective_config.binary = binary_str.clone();
     let timeout = if effective_config.probe_timeout.is_zero() {
-        DEFAULT_PROBE_TIMEOUT
+        resolve_acp_probe_timeout()
     } else {
         effective_config.probe_timeout
     };
@@ -2185,10 +2203,7 @@ pub async fn probe_agy_runtime(config: &AgyDriverConfig, workspace_root: &Path) 
     };
 
     let session_config = AcpSessionConfig {
-        transport: crate::transport::AcpTransportConfig {
-            rpc_timeout: timeout,
-            ..Default::default()
-        },
+        transport: crate::transport::AcpTransportConfig::default().with_rpc_timeout(timeout),
         ..Default::default()
     };
 

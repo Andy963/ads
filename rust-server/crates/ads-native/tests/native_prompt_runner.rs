@@ -491,42 +491,6 @@ fn chat_retry_once_router(requests: Arc<Mutex<Vec<Value>>>) -> Router {
     )
 }
 
-fn chat_tool_then_error_router(requests: Arc<Mutex<Vec<Value>>>) -> Router {
-    Router::new().route(
-        "/v1/chat/completions",
-        post(move |body: String| {
-            let requests = Arc::clone(&requests);
-            async move {
-                let payload: Value = serde_json::from_str(&body).expect("chat request body");
-                let attempt = {
-                    let mut requests = requests.lock().expect("requests");
-                    requests.push(payload);
-                    requests.len()
-                };
-                if attempt > 1 {
-                    return (
-                        axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                        "temporary upstream failure",
-                    )
-                        .into_response();
-                }
-                let responses = [
-                    json!({"choices": [{"delta": {"tool_calls": [
-                        {"index": 0, "type": "function", "id": "read-1", "function": {"name": "read_file", "arguments": json!({"file": "notes.txt"}).to_string()}}
-                    ]}, "finish_reason": null}]}),
-                    json!({"choices": [{"delta": {}, "finish_reason": "tool_calls"}]}),
-                ];
-                let body = responses
-                    .into_iter()
-                    .map(|value| format!("data: {value}\n\n"))
-                    .chain(std::iter::once("data: [DONE]\n\n".to_string()))
-                    .collect::<String>();
-                ([(header::CONTENT_TYPE, "text/event-stream")], body).into_response()
-            }
-        }),
-    )
-}
-
 fn chat_compaction_router(requests: Arc<Mutex<Vec<Value>>>) -> Router {
     Router::new().route(
         "/v1/chat/completions",
@@ -2235,31 +2199,264 @@ async fn retries_transient_upstream_failures_before_any_side_effect() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn does_not_retry_after_a_tool_side_effect() {
+async fn retries_subsequent_round_without_replaying_prior_tool_calls() {
     let requests = Arc::new(Mutex::new(Vec::new()));
-    let harness = Harness::start_with_retry(
-        chat_tool_then_error_router(Arc::clone(&requests)),
-        Arc::clone(&requests),
-        2,
-        vec![0, 0, 0],
-    )
-    .await;
+    let router = Router::new().route(
+        "/v1/chat/completions",
+        post({
+            let requests = Arc::clone(&requests);
+            move |body: String| {
+                let requests = Arc::clone(&requests);
+                async move {
+                    let payload: Value = serde_json::from_str(&body).expect("chat request body");
+                    let attempt = {
+                        let mut requests = requests.lock().expect("requests");
+                        requests.push(payload);
+                        requests.len()
+                    };
+                    if attempt == 1 {
+                        let responses = [
+                            json!({"choices": [{"delta": {"tool_calls": [
+                                {"index": 0, "type": "function", "id": "read-1", "function": {"name": "read_file", "arguments": json!({"file": "notes.txt"}).to_string()}}
+                            ]}, "finish_reason": null}]}),
+                            json!({"choices": [{"delta": {}, "finish_reason": "tool_calls"}]}),
+                        ];
+                        let body = responses
+                            .into_iter()
+                            .map(|value| format!("data: {value}\n\n"))
+                            .chain(std::iter::once("data: [DONE]\n\n".to_string()))
+                            .collect::<String>();
+                        return ([(header::CONTENT_TYPE, "text/event-stream")], body)
+                            .into_response();
+                    }
+                    if attempt == 2 {
+                        return (
+                            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                            "temporary upstream failure",
+                        )
+                            .into_response();
+                    }
+                    let responses = [
+                        json!({"choices": [{"delta": {"content": "Recovered after tool round"}, "finish_reason": null}]}),
+                        json!({"choices": [{"delta": {}, "finish_reason": "stop"}]}),
+                    ];
+                    let body = responses
+                        .into_iter()
+                        .map(|value| format!("data: {value}\n\n"))
+                        .chain(std::iter::once("data: [DONE]\n\n".to_string()))
+                        .collect::<String>();
+                    ([(header::CONTENT_TYPE, "text/event-stream")], body).into_response()
+                }
+            }
+        }),
+    );
+    let harness = Harness::start_with_retry(router, Arc::clone(&requests), 2, vec![0, 0, 0]).await;
     fs::write(harness.workspace.join("notes.txt"), "alpha\nbeta\n").expect("notes");
 
-    let entry = harness.enqueue("cm-tool-retry", "read then fail");
+    let entry = harness.enqueue("cm-tool-retry", "read then recover");
     let outcome = harness
         .runner
         .run_prompt(entry, harness.context())
         .await
         .expect("run prompt");
-    assert!(!outcome.ok);
-    assert_eq!(harness.request_bodies().len(), 2);
-    assert!(harness.events_of("retry").is_empty());
+    assert!(outcome.ok, "expected round 2 retry to recover: {:?}", outcome.error);
+    let bodies = harness.request_bodies();
+    assert_eq!(bodies.len(), 3, "round 0 tool + round 1 500 + round 1 retry");
+    assert_eq!(harness.events_of("retry").len(), 1);
+    // Round 0 tool result is preserved in round 1 retry without re-invoking the tool.
+    let tool_messages = bodies[2]["messages"]
+        .as_array()
+        .expect("messages")
+        .iter()
+        .filter(|message| message["role"] == "tool")
+        .count();
+    assert_eq!(tool_messages, 1);
     assert_eq!(
         harness.transcript_status(),
-        NativeTranscriptTurnStatus::Failed
+        NativeTranscriptTurnStatus::Completed
     );
     harness.drain().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn retries_premature_sse_eof_on_chat_and_responses() {
+    // 1. Chat SSE stream terminates without `data: [DONE]` on attempt 1 -> retried as transient.
+    let chat_requests = Arc::new(Mutex::new(Vec::new()));
+    let chat_router = Router::new().route(
+        "/v1/chat/completions",
+        post({
+            let requests = Arc::clone(&chat_requests);
+            move |body: String| {
+                let requests = Arc::clone(&requests);
+                async move {
+                    let payload: Value = serde_json::from_str(&body).expect("chat body");
+                    let attempt = {
+                        let mut guard = requests.lock().expect("requests");
+                        guard.push(payload);
+                        guard.len()
+                    };
+                    if attempt == 1 {
+                        let truncated = format!(
+                            "data: {}\n\n",
+                            json!({"choices": [{"delta": {"content": "partial"}, "finish_reason": null}]})
+                        );
+                        return ([(header::CONTENT_TYPE, "text/event-stream")], truncated)
+                            .into_response();
+                    }
+                    let body = format!(
+                        "data: {}\n\ndata: {}\n\ndata: [DONE]\n\n",
+                        json!({"choices": [{"delta": {"content": "chat eof recovered"}, "finish_reason": null}]}),
+                        json!({"choices": [{"delta": {}, "finish_reason": "stop"}]})
+                    );
+                    ([(header::CONTENT_TYPE, "text/event-stream")], body).into_response()
+                }
+            }
+        }),
+    );
+    let chat_harness =
+        Harness::start_with_retry(chat_router, Arc::clone(&chat_requests), 2, vec![0, 0]).await;
+    let chat_entry = chat_harness.enqueue("cm-chat-eof", "survive chat eof");
+    let chat_outcome = chat_harness
+        .runner
+        .run_prompt(chat_entry, chat_harness.context())
+        .await
+        .expect("chat eof run");
+    assert!(
+        chat_outcome.ok,
+        "premature chat SSE EOF must retry as transient: {:?}",
+        chat_outcome.error
+    );
+    assert_eq!(chat_harness.request_bodies().len(), 2);
+    assert_eq!(chat_harness.events_of("retry").len(), 1);
+    chat_harness.drain().await;
+
+    // 2. Responses SSE stream terminates before `response.completed` on attempt 1 -> retried as transient.
+    let resp_requests = Arc::new(Mutex::new(Vec::new()));
+    let resp_router = Router::new().route(
+        "/v1/responses",
+        post({
+            let requests = Arc::clone(&resp_requests);
+            move |body: String| {
+                let requests = Arc::clone(&requests);
+                async move {
+                    let payload: Value = serde_json::from_str(&body).expect("responses body");
+                    let attempt = {
+                        let mut guard = requests.lock().expect("requests");
+                        guard.push(payload);
+                        guard.len()
+                    };
+                    if attempt == 1 {
+                        // Proxy closed stream right after response.created before any delta.
+                        let truncated = format!(
+                            "data: {}\n\n",
+                            json!({"type": "response.created", "response": {"id": "resp-1", "status": "in_progress"}})
+                        );
+                        return ([(header::CONTENT_TYPE, "text/event-stream")], truncated)
+                            .into_response();
+                    }
+                    let completed = format!(
+                        "data: {}\n\n",
+                        json!({
+                            "type": "response.completed",
+                            "response": {
+                                "id": "resp-2",
+                                "status": "completed",
+                                "output": [{
+                                    "type": "message",
+                                    "id": "msg-2",
+                                    "role": "assistant",
+                                    "status": "completed",
+                                    "content": [{"type": "output_text", "text": "responses eof recovered", "annotations": []}]
+                                }]
+                            }
+                        })
+                    );
+                    ([(header::CONTENT_TYPE, "text/event-stream")], completed).into_response()
+                }
+            }
+        }),
+    );
+    let resp_harness =
+        Harness::start_with_wire(resp_router, "responses", Arc::clone(&resp_requests)).await;
+    let resp_entry = resp_harness.enqueue("cm-resp-eof", "survive responses eof");
+    let resp_outcome = resp_harness
+        .runner
+        .run_prompt(resp_entry, resp_harness.context())
+        .await
+        .expect("responses eof run");
+    assert!(
+        resp_outcome.ok,
+        "premature responses SSE EOF must retry as transient: {:?}",
+        resp_outcome.error
+    );
+    assert_eq!(resp_harness.request_bodies().len(), 2);
+    assert_eq!(resp_harness.events_of("retry").len(), 1);
+    resp_harness.drain().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn per_chunk_stream_idle_timeout_classifies_as_transient_and_recovers() {
+    let attempts = Arc::new(Mutex::new(0usize));
+    let router = Router::new().route(
+        "/v1/chat/completions",
+        post({
+            let attempts = Arc::clone(&attempts);
+            move || {
+                let attempts = Arc::clone(&attempts);
+                async move {
+                    let attempt = {
+                        let mut guard = attempts.lock().expect("attempts");
+                        *guard += 1;
+                        *guard
+                    };
+                    if attempt == 1 {
+                        tokio::time::sleep(Duration::from_millis(400)).await;
+                    }
+                    let body = format!(
+                        "data: {}\n\ndata: {}\n\ndata: [DONE]\n\n",
+                        json!({"choices": [{"delta": {"content": "recovered from idle stream"}, "finish_reason": null}]}),
+                        json!({"choices": [{"delta": {}, "finish_reason": "stop"}]})
+                    );
+                    ([(header::CONTENT_TYPE, "text/event-stream")], body).into_response()
+                }
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("local addr");
+    let server = tokio::spawn(async move {
+        let _ = axum::serve(listener, router).await;
+    });
+
+    let request = ads_native::NativeCompletionRequest {
+        wire_api: ads_native::WireApi::Chat,
+        base_url: format!("http://{addr}/v1"),
+        api_key: "test-key".to_string(),
+        model: "test-model".to_string(),
+        messages: vec![ads_native::NativeChatMessage::text("user", "ping")],
+        tools: Vec::new(),
+        streaming: true,
+        output_schema: None,
+        options: ads_native::NativeRequestOptions {
+            stream_idle_timeout: Some(Duration::from_millis(120)),
+            ..Default::default()
+        },
+    };
+    let cancellation = ads_native::Cancellation::new();
+    let first_err = ads_native::complete_native_model(&request, &cancellation, None)
+        .await
+        .expect_err("first stalled attempt should hit stream idle timeout");
+    assert!(
+        ads_native::is_retryable_model_error(&first_err),
+        "stream idle timeout must be retryable: {first_err:?}"
+    );
+    let second = ads_native::complete_native_model(&request, &cancellation, None)
+        .await
+        .expect("second attempt succeeds");
+    assert_eq!(second.text, "recovered from idle stream");
+    server.abort();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

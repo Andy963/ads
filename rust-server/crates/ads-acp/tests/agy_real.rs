@@ -1065,11 +1065,14 @@ async fn acp_prompt_runner_lifecycle_cancel_timeout_isolation_and_images() {
 
     runner.shutdown().await;
 
-    // 7. Short idle_timeout watchdog fires cleanly on hung turn.
+    // 7. Short idle_timeout watchdog fires cleanly on hung turn and recycles the session.
+    let mut timeout_sup_cfg = ads_acp::AcpSupervisorConfig::default();
+    timeout_sup_cfg.session.cancel_drain_timeout = Duration::from_millis(200);
     let timeout_runner = AcpPromptRunner::new(
         db,
         AcpPromptRunnerConfig::new(driver)
             .with_agent_id("mock-timeout")
+            .with_supervisor_config(timeout_sup_cfg)
             .with_idle_timeout(Some(Duration::from_millis(120))),
     );
     let mut hang_payload = Map::new();

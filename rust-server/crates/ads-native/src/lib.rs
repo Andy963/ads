@@ -27,7 +27,10 @@ pub use cfmem::{
     CfMemClient, CfMemMiddleware, CfMemScope, normalize_cfmem_url, resolve_cfmem_scope,
 };
 pub use compact::compact_execution;
-pub use completion::{complete_native_model, normalize_upstream_base_url};
+pub use completion::{
+    DEFAULT_NATIVE_STREAM_IDLE_TIMEOUT, NATIVE_STREAM_IDLE_TIMEOUT_ENV, complete_native_model,
+    normalize_upstream_base_url, resolve_native_stream_idle_timeout,
+};
 pub use context::{
     ContextBudget, ContextDiagnostic, ContextProjection, TokenCalibration,
     format_context_diagnostic, project_messages, project_messages_with_calibration,

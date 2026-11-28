@@ -25,13 +25,41 @@ use crate::bridge::{
 };
 use crate::driver::{AcpDriver, AcpLaunchContext, AcpSessionContext};
 use crate::protocol::{PermissionOutcome, SessionMode, StopReason, ToolCallInfo};
-use crate::session::{AcpPromptRequest, AcpSession, AcpSessionConfig, DesiredConfigAlignment};
+use crate::session::{
+    AcpPromptRequest, AcpSession, AcpSessionConfig, AcpTurnLiveness, DEFAULT_CANCEL_DRAIN_TIMEOUT,
+    DesiredConfigAlignment, spawn_inactivity_watchdog,
+};
+
+pub const DEFAULT_REVIEWER_IDLE_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+pub const REVIEWER_IDLE_TIMEOUT_ENV: &str = "ADS_REVIEWER_IDLE_TIMEOUT_MS";
+pub const REVIEWER_MAX_DURATION_ENV: &str = "ADS_REVIEWER_MAX_DURATION_MS";
 
 const MAX_VERIFICATION_COMMANDS: usize = 32;
 const MAX_VERIFICATION_OUTPUT_CHARS: usize = 6_000;
 const MAX_SHELL_UNWRAP_DEPTH: usize = 6;
 const DEFAULT_INCOMPLETE_SUMMARY: &str =
     "Reviewer reported insufficient evidence; developer rework was not requested.";
+
+/// Resolves the activity-aware inactivity timeout for Actions Reviewer turns.
+/// Defaults to 15 minutes; set `ADS_REVIEWER_IDLE_TIMEOUT_MS=0` to disable.
+pub fn resolve_reviewer_idle_timeout() -> Option<Duration> {
+    std::env::var(REVIEWER_IDLE_TIMEOUT_ENV)
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .map_or(Some(DEFAULT_REVIEWER_IDLE_TIMEOUT), |ms| {
+            (ms > 0).then(|| Duration::from_millis(ms))
+        })
+}
+
+/// Resolves an optional opt-in hard wall-clock ceiling for Actions Reviewer turns.
+/// Disabled (`None`) by default so active reviews making progress are never hard-killed.
+pub fn resolve_reviewer_max_duration() -> Option<Duration> {
+    std::env::var(REVIEWER_MAX_DURATION_ENV)
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .filter(|ms| *ms > 0)
+        .map(Duration::from_millis)
+}
 
 pub struct AcpReviewRequest {
     pub db: StateDb,
@@ -40,7 +68,10 @@ pub struct AcpReviewRequest {
     pub repo_path: PathBuf,
     pub profile_id: Option<String>,
     pub job_id: String,
-    pub timeout: Duration,
+    /// Activity-aware, tool-paused inactivity timeout (defaults to 15 minutes; `None` disables).
+    pub idle_timeout: Option<Duration>,
+    /// Optional opt-in hard wall-clock safety cap (`None` disables hard wall-clock termination).
+    pub max_duration: Option<Duration>,
     pub cancellation: Cancellation,
     pub verification_report: Arc<StdMutex<ReviewVerificationReport>>,
 }
@@ -164,16 +195,51 @@ fn extract_permission_command(info: &ToolCallInfo) -> Option<String> {
     None
 }
 
-struct AbortOnDrop(tokio::task::JoinHandle<()>);
+struct AbortOnDrop(Option<tokio::task::JoinHandle<()>>);
 
 impl Drop for AbortOnDrop {
     fn drop(&mut self) {
-        self.0.abort();
+        if let Some(handle) = self.0.take() {
+            handle.abort();
+        }
     }
 }
 
-async fn shutdown_session_bounded(session: Arc<AcpSession>, deadline: tokio::time::Instant) {
-    if tokio::time::timeout_at(deadline, session.shutdown())
+fn format_reviewer_duration(duration: Duration) -> String {
+    let secs = duration.as_secs();
+    if secs >= 60 && secs % 60 == 0 {
+        let mins = secs / 60;
+        if mins == 1 {
+            "1 minute".to_string()
+        } else {
+            format!("{mins} minutes")
+        }
+    } else if secs > 0 {
+        format!("{secs}s")
+    } else {
+        format!("{}ms", duration.as_millis())
+    }
+}
+
+async fn shutdown_session_bounded(session: Arc<AcpSession>, deadline: Option<tokio::time::Instant>) {
+    let Some(deadline) = deadline else {
+        session.shutdown().await;
+        return;
+    };
+    let Some(remaining) = deadline.checked_duration_since(tokio::time::Instant::now()) else {
+        tokio::spawn(async move {
+            session.shutdown().await;
+        });
+        return;
+    };
+    if remaining.is_zero() {
+        tokio::spawn(async move {
+            session.shutdown().await;
+        });
+        return;
+    }
+    let session_for_shutdown = Arc::clone(&session);
+    if tokio::time::timeout(remaining, session_for_shutdown.shutdown())
         .await
         .is_err()
     {
@@ -185,6 +251,11 @@ async fn shutdown_session_bounded(session: Arc<AcpSession>, deadline: tokio::tim
 
 /// Runs a clean-room, verification-bounded Actions Reviewer turn over any `AcpDriver`
 /// (preserving ADR 0066 runtime unification and ADR 0060 verification capture).
+///
+/// Uses an activity-aware, tool-paused inactivity watchdog (`idle_timeout`) rather than a
+/// hard wall-clock cutoff so long-running verification suites and deep inspections are never
+/// killed while making progress. An optional `max_duration` safety ceiling is honored when
+/// explicitly configured.
 pub async fn run_acp_review(request: AcpReviewRequest) -> Result<ReviewVerdict, ReviewerError> {
     run_acp_review_with_retry(
         request,
@@ -201,12 +272,20 @@ pub async fn run_acp_review_with_retry(
     retry_count: usize,
     backoff_ms: Option<&[u64]>,
 ) -> Result<ReviewVerdict, ReviewerError> {
-    let deadline = tokio::time::Instant::now() + request.timeout;
-    let timeout_err = || {
-        ReviewerError::Incomplete(format!(
-            "Reviewer timed out after {} seconds.",
-            request.timeout.as_secs()
-        ))
+    let idle_timeout = request.idle_timeout.filter(|duration| !duration.is_zero());
+    let max_duration = request.max_duration.filter(|duration| !duration.is_zero());
+    let hard_deadline = max_duration.map(|cap| tokio::time::Instant::now() + cap);
+    let max_duration_err = || {
+        let label = max_duration
+            .map(format_reviewer_duration)
+            .unwrap_or_else(|| "configured limit".to_string());
+        ReviewerError::Incomplete(format!("Reviewer exceeded maximum duration ({label})."))
+    };
+    let inactivity_err = || {
+        let label = idle_timeout
+            .map(format_reviewer_duration)
+            .unwrap_or_else(|| "inactivity limit".to_string());
+        ReviewerError::Incomplete(format!("Reviewer timed out after {label} of inactivity."))
     };
 
     if request.payload.diff_capture_error.is_some() {
@@ -317,24 +396,29 @@ pub async fn run_acp_review_with_retry(
             .check()
             .map_err(|_| ReviewerError::Cancelled)?;
 
-        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-        if remaining.is_zero() {
-            return Err(timeout_err());
+        let mut transport_cfg = crate::transport::AcpTransportConfig::from_env();
+        let mut cancel_drain_timeout = DEFAULT_CANCEL_DRAIN_TIMEOUT;
+        if let Some(deadline) = hard_deadline {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                return Err(max_duration_err());
+            }
+            transport_cfg.rpc_timeout = transport_cfg.rpc_timeout.min(remaining);
+            transport_cfg.lifecycle_rpc_timeout =
+                transport_cfg.lifecycle_rpc_timeout.min(remaining);
+            cancel_drain_timeout = cancel_drain_timeout.min(remaining);
         }
-
         let session_cfg = AcpSessionConfig {
-            transport: crate::transport::AcpTransportConfig {
-                rpc_timeout: remaining.min(Duration::from_secs(60)),
-                ..Default::default()
-            },
-            // The single hard deadline is enforced by `timeout_at(deadline, ...)` across
-            // spawn, initialize, new_session, alignment, prompt, and shutdown so stages
-            // never reuse or extend `request.timeout`.
+            transport: transport_cfg,
+            // Never apply a hard wall-clock `prompt_timeout`; liveness is enforced by the
+            // activity-aware, tool-paused watchdog (and optional `max_duration` ceiling).
             prompt_timeout: Duration::ZERO,
-            cancel_drain_timeout: remaining.min(crate::session::DEFAULT_CANCEL_DRAIN_TIMEOUT),
+            cancel_drain_timeout,
             ..Default::default()
         };
+
         let unsafe_to_retry = Arc::new(AtomicBool::new(false));
+        let inactivity_timed_out = Arc::new(AtomicBool::new(false));
         let active_session: Arc<StdMutex<Option<Arc<AcpSession>>>> = Arc::new(StdMutex::new(None));
 
         let attempt_fut = async {
@@ -372,10 +456,23 @@ pub async fn run_acp_review_with_retry(
             }
 
             let (cancel_tx, cancel_rx) = watch::channel(request.cancellation.is_cancelled());
+            let cancel_tx_for_bridge = cancel_tx.clone();
             let cancellation = request.cancellation.clone();
-            let _cancel_bridge = AbortOnDrop(tokio::spawn(async move {
+            let _cancel_bridge = AbortOnDrop(Some(tokio::spawn(async move {
                 cancellation.cancelled().await;
-                let _ = cancel_tx.send(true);
+                let _ = cancel_tx_for_bridge.send(true);
+            })));
+
+            let liveness = AcpTurnLiveness::new();
+            let (watchdog_stop_tx, watchdog_stop_rx) = watch::channel(false);
+            let _watchdog = AbortOnDrop(idle_timeout.map(|timeout| {
+                spawn_inactivity_watchdog(
+                    timeout,
+                    Arc::clone(&liveness),
+                    Arc::clone(&inactivity_timed_out),
+                    cancel_tx.clone(),
+                    watchdog_stop_rx,
+                )
             }));
 
             let prompt_req = AcpPromptRequest::text(request.job_id.clone(), prompt.clone())
@@ -386,51 +483,81 @@ pub async fn run_acp_review_with_retry(
                     extra_options: Vec::new(),
                 })
                 .with_cancel(cancel_rx)
+                .with_liveness(liveness)
                 .with_retry_fence(Arc::clone(&unsafe_to_retry));
 
-            session
-                .prompt(prompt_req)
-                .await
-                .map_err(|error| ("ACP reviewer execution failed", error))
+            let prompt_res = session.prompt(prompt_req).await;
+            let _ = watchdog_stop_tx.send(true);
+            prompt_res.map_err(|error| ("ACP reviewer execution failed", error))
         };
 
-        let timed_attempt = tokio::time::timeout_at(deadline, attempt_fut).await;
-        let spawned_session = active_session
-            .lock()
-            .expect("active review session lock")
-            .take();
-
-        let attempt_res = match timed_attempt {
-            Ok(result) => {
+        let attempt_res = match hard_deadline {
+            Some(deadline) => match tokio::time::timeout_at(deadline, attempt_fut).await {
+                Ok(result) => {
+                    let spawned_session = active_session
+                        .lock()
+                        .expect("active review session lock")
+                        .take();
+                    if let Some(session) = spawned_session {
+                        shutdown_session_bounded(session, Some(deadline)).await;
+                    }
+                    result
+                }
+                Err(_) => {
+                    let spawned_session = active_session
+                        .lock()
+                        .expect("active review session lock")
+                        .take();
+                    if let Some(session) = spawned_session {
+                        tokio::spawn(async move {
+                            session.shutdown().await;
+                        });
+                    }
+                    if request.cancellation.is_cancelled() {
+                        return Err(ReviewerError::Cancelled);
+                    }
+                    return Err(max_duration_err());
+                }
+            },
+            None => {
+                let result = attempt_fut.await;
+                let spawned_session = active_session
+                    .lock()
+                    .expect("active review session lock")
+                    .take();
                 if let Some(session) = spawned_session {
-                    shutdown_session_bounded(session, deadline).await;
+                    shutdown_session_bounded(session, None).await;
                 }
                 result
             }
-            Err(_) => {
-                if let Some(session) = spawned_session {
-                    tokio::spawn(async move {
-                        session.shutdown().await;
-                    });
-                }
-                if request.cancellation.is_cancelled() {
-                    return Err(ReviewerError::Cancelled);
-                }
-                return Err(timeout_err());
-            }
         };
 
+        let is_inactivity_timed_out = inactivity_timed_out.load(Ordering::Acquire);
         match attempt_res {
             Ok(turn) => {
+                if is_inactivity_timed_out {
+                    return Err(inactivity_err());
+                }
+                if request.cancellation.is_cancelled() || turn.stop_reason == StopReason::Cancelled {
+                    return Err(ReviewerError::Cancelled);
+                }
                 completed_turn = Some(turn);
                 break;
             }
             Err((stage, error)) => {
+                if is_inactivity_timed_out {
+                    return Err(inactivity_err());
+                }
                 if request.cancellation.is_cancelled() || error.is_cancelled() {
                     return Err(ReviewerError::Cancelled);
                 }
                 if error.is_timeout() {
-                    return Err(timeout_err());
+                    if let Some(deadline) = hard_deadline
+                        && tokio::time::Instant::now() >= deadline
+                    {
+                        return Err(max_duration_err());
+                    }
+                    return Err(ReviewerError::Incomplete(format!("{stage}: {error}")));
                 }
                 let can_retry = attempt < attempts
                     && !unsafe_to_retry.load(Ordering::Acquire)
@@ -442,20 +569,33 @@ pub async fn run_acp_review_with_retry(
                         backoff_ms,
                         now_unix_millis(),
                     );
-                    let remaining_after =
-                        deadline.saturating_duration_since(tokio::time::Instant::now());
-                    if remaining_after.is_zero() {
-                        return Err(timeout_err());
-                    }
-                    if Duration::from_millis(delay_ms) < remaining_after {
+                    if let Some(deadline) = hard_deadline {
+                        let remaining_after =
+                            deadline.saturating_duration_since(tokio::time::Instant::now());
+                        if remaining_after.is_zero() {
+                            return Err(max_duration_err());
+                        }
+                        if Duration::from_millis(delay_ms) < remaining_after {
+                            if delay_ms > 0 {
+                                tokio::select! {
+                                    biased;
+                                    _ = request.cancellation.cancelled() => {
+                                        return Err(ReviewerError::Cancelled);
+                                    }
+                                    _ = tokio::time::sleep_until(deadline) => {
+                                        return Err(max_duration_err());
+                                    }
+                                    _ = tokio::time::sleep(Duration::from_millis(delay_ms)) => {}
+                                }
+                            }
+                            continue;
+                        }
+                    } else {
                         if delay_ms > 0 {
                             tokio::select! {
                                 biased;
                                 _ = request.cancellation.cancelled() => {
                                     return Err(ReviewerError::Cancelled);
-                                }
-                                _ = tokio::time::sleep_until(deadline) => {
-                                    return Err(timeout_err());
                                 }
                                 _ = tokio::time::sleep(Duration::from_millis(delay_ms)) => {}
                             }
@@ -470,10 +610,6 @@ pub async fn run_acp_review_with_retry(
 
     let turn = completed_turn
         .ok_or_else(|| ReviewerError::Execution("ACP reviewer retry loop exhausted".to_string()))?;
-
-    if request.cancellation.is_cancelled() || turn.stop_reason == StopReason::Cancelled {
-        return Err(ReviewerError::Cancelled);
-    }
 
     record_acp_verification_events(&request.verification_report, &turn.events);
 

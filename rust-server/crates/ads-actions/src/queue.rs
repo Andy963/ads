@@ -20,7 +20,10 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 use tokio::process::Command;
 
-use crate::defaults::{default_publisher, default_reviewer_runner};
+use crate::defaults::{
+    default_publisher, default_reviewer_runner, resolve_reviewer_idle_timeout,
+    resolve_reviewer_max_duration,
+};
 use crate::dispatch::{canonical_project_id, is_operational_review_outcome, issue_id_from_branch};
 use crate::types::{
     AcopilotWake, BoxFuture, IssueCommentRequest, LaneMessage, LaneMessageRole,
@@ -30,7 +33,6 @@ use crate::types::{
 
 const DEFAULT_LEASE_TTL: Duration = Duration::from_secs(90);
 const DEFAULT_HEARTBEAT: Duration = Duration::from_secs(30);
-const DEFAULT_REVIEWER_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
 #[derive(Clone)]
 pub struct ReviewQueue {
@@ -986,11 +988,13 @@ impl ReviewQueue {
 
     fn reviewer(&self) -> ReviewerRunner {
         self.options.reviewer.clone().unwrap_or_else(|| {
-            let timeout = self
+            let idle_timeout = resolve_reviewer_idle_timeout();
+            let max_duration = self
                 .options
                 .reviewer_timeout
-                .unwrap_or(DEFAULT_REVIEWER_TIMEOUT);
-            default_reviewer_runner(self.db.clone(), timeout)
+                .filter(|duration| !duration.is_zero())
+                .or_else(resolve_reviewer_max_duration);
+            default_reviewer_runner(self.db.clone(), idle_timeout, max_duration)
         })
     }
 }

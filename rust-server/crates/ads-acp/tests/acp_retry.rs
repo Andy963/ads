@@ -532,7 +532,8 @@ async fn acp_reviewer_retries_transient_failure_and_respects_output_fence() {
             repo_path: repo_path.clone(),
             profile_id: None,
             job_id: "job-755-ok".to_string(),
-            timeout: Duration::from_secs(30),
+            idle_timeout: Some(Duration::from_secs(30)),
+            max_duration: None,
             cancellation: Cancellation::new(),
             verification_report: Arc::new(Mutex::new(ReviewVerificationReport::default())),
         },
@@ -555,7 +556,8 @@ async fn acp_reviewer_retries_transient_failure_and_respects_output_fence() {
             repo_path,
             profile_id: None,
             job_id: "job-755-fenced".to_string(),
-            timeout: Duration::from_secs(30),
+            idle_timeout: Some(Duration::from_secs(30)),
+            max_duration: None,
             cancellation: Cancellation::new(),
             verification_report: Arc::new(Mutex::new(ReviewVerificationReport::default())),
         },
@@ -626,7 +628,8 @@ async fn acp_reviewer_enforces_hard_deadline_across_init_session_and_prompt() {
             repo_path: repo_path.clone(),
             profile_id: None,
             job_id: "job-755-deadline-stages".to_string(),
-            timeout: Duration::from_secs(1),
+            idle_timeout: Some(Duration::from_secs(30)),
+            max_duration: Some(Duration::from_secs(1)),
             cancellation: Cancellation::new(),
             verification_report: Arc::new(Mutex::new(ReviewVerificationReport::default())),
         },
@@ -638,7 +641,7 @@ async fn acp_reviewer_enforces_hard_deadline_across_init_session_and_prompt() {
     let elapsed = started.elapsed();
 
     assert!(
-        matches!(&err, ReviewerError::Incomplete(msg) if msg.contains("timed out after 1 seconds")),
+        matches!(&err, ReviewerError::Incomplete(msg) if msg.contains("exceeded maximum duration (1s)")),
         "expected Incomplete timeout error, got {err:?}"
     );
     assert!(
@@ -669,7 +672,8 @@ async fn acp_reviewer_enforces_hard_deadline_across_init_session_and_prompt() {
             repo_path,
             profile_id: None,
             job_id: "job-755-deadline-retry".to_string(),
-            timeout: Duration::from_secs(1),
+            idle_timeout: Some(Duration::from_secs(30)),
+            max_duration: Some(Duration::from_secs(1)),
             cancellation: Cancellation::new(),
             verification_report: Arc::new(Mutex::new(ReviewVerificationReport::default())),
         },
@@ -681,7 +685,7 @@ async fn acp_reviewer_enforces_hard_deadline_across_init_session_and_prompt() {
     let elapsed_retry = started_retry.elapsed();
 
     assert!(
-        matches!(&err_retry, ReviewerError::Incomplete(msg) if msg.contains("timed out after 1 seconds")),
+        matches!(&err_retry, ReviewerError::Incomplete(msg) if msg.contains("exceeded maximum duration (1s)")),
         "expected Incomplete timeout error across retries, got {err_retry:?}"
     );
     assert!(

@@ -14,6 +14,7 @@ use tokio::sync::Mutex;
 
 use crate::bridge::AutoDenyPermissionHandler;
 use crate::driver::{AcpDriver, AcpLaunchContext, AcpLaunchSpec, AcpSessionContext};
+use crate::drivers::agy::resolve_acp_probe_timeout;
 use crate::error::{AcpError, AcpResult};
 use crate::protocol::{
     AuthMethod, ClientCapabilities, ConfigOption, ConfigOptionValue, ConfigOptionsState,
@@ -26,7 +27,6 @@ pub const CODEX_ACP_BINARY_ENV: &str = "ADS_CODEX_ACP_BIN";
 pub const DEFAULT_CODEX_ACP_BINARY: &str = "codex-acp";
 pub const DEFAULT_CODEX_PROBE_TTL: Duration = Duration::from_secs(300);
 
-const DEFAULT_PROBE_TIMEOUT: Duration = Duration::from_secs(20);
 const MAX_AUTH_META_FILE_BYTES: u64 = 256 * 1024;
 const MAX_UPDATE_PLAN_TRACKED: usize = 256;
 const TOOL_TEXT_LIMIT: usize = 8_000;
@@ -58,7 +58,7 @@ impl Default for CodexDriverConfig {
             client_file_reads: false,
             extra_args: Vec::new(),
             extra_env: HashMap::new(),
-            probe_timeout: DEFAULT_PROBE_TIMEOUT,
+            probe_timeout: resolve_acp_probe_timeout(),
         }
     }
 }
@@ -504,7 +504,11 @@ impl AcpDriver for CodexDriver {
 
 fn is_codex_auth_error(code: i64, message: &str, data: Option<&Value>) -> bool {
     if code == -32000 {
-        return true;
+        let is_transient_upstream = data
+            .and_then(ads_native::is_transient_upstream_payload)
+            .unwrap_or(false)
+            || ads_native::is_transient_upstream_model_error(message);
+        return !is_transient_upstream;
     }
     let lower = message.to_ascii_lowercase();
     if lower.contains("unauthenticated")
@@ -1044,7 +1048,7 @@ pub async fn probe_codex_runtime(
     let mut effective_config = config.clone();
     effective_config.binary = binary_str.clone();
     let timeout = if effective_config.probe_timeout.is_zero() {
-        DEFAULT_PROBE_TIMEOUT
+        resolve_acp_probe_timeout()
     } else {
         effective_config.probe_timeout
     };
@@ -1063,10 +1067,7 @@ pub async fn probe_codex_runtime(
         mcp_servers: Vec::new(),
     };
     let session_config = AcpSessionConfig {
-        transport: crate::transport::AcpTransportConfig {
-            rpc_timeout: timeout,
-            ..Default::default()
-        },
+        transport: crate::transport::AcpTransportConfig::default().with_rpc_timeout(timeout),
         ..Default::default()
     };
 

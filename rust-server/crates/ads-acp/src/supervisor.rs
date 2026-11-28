@@ -11,8 +11,22 @@ use crate::driver::{AcpDriver, AcpLaunchContext, AcpSessionContext};
 use crate::error::{AcpError, AcpResult};
 use crate::session::{AcpPromptRequest, AcpSession, AcpSessionConfig, AcpTurnResult};
 
-pub const DEFAULT_IDLE_TTL: Duration = Duration::from_secs(300);
+pub const DEFAULT_IDLE_TTL: Duration = Duration::from_secs(30 * 60);
 pub const DEFAULT_REAP_INTERVAL: Duration = Duration::from_secs(30);
+pub const ACP_SESSION_IDLE_TTL_ENV: &str = "ADS_ACP_SESSION_IDLE_TTL_MS";
+
+pub fn resolve_acp_session_idle_ttl() -> Duration {
+    std::env::var(ACP_SESSION_IDLE_TTL_ENV)
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .map_or(DEFAULT_IDLE_TTL, |ms| {
+            if ms == 0 {
+                Duration::ZERO
+            } else {
+                Duration::from_millis(ms)
+            }
+        })
+}
 
 #[derive(Debug, Clone)]
 pub struct AcpSupervisorConfig {
@@ -20,7 +34,7 @@ pub struct AcpSupervisorConfig {
     pub reap_interval: Duration,
     pub session: AcpSessionConfig,
     /// When `session/resume` or `session/load` fails because the remote session no longer
-    /// exists, fall back to `session/new` automatically if true.
+    /// exists (or times out), fall back to `session/new` automatically if true.
     pub fallback_to_new_on_resume_error: bool,
 }
 
@@ -30,6 +44,20 @@ impl Default for AcpSupervisorConfig {
             idle_ttl: DEFAULT_IDLE_TTL,
             reap_interval: DEFAULT_REAP_INTERVAL,
             session: AcpSessionConfig::default(),
+            fallback_to_new_on_resume_error: true,
+        }
+    }
+}
+
+impl AcpSupervisorConfig {
+    pub fn from_env() -> Self {
+        Self {
+            idle_ttl: resolve_acp_session_idle_ttl(),
+            reap_interval: DEFAULT_REAP_INTERVAL,
+            session: AcpSessionConfig {
+                transport: crate::transport::AcpTransportConfig::from_env(),
+                ..AcpSessionConfig::default()
+            },
             fallback_to_new_on_resume_error: true,
         }
     }
@@ -357,6 +385,16 @@ impl AcpSessionSupervisor {
     }
 
     pub async fn shutdown_session(&self, session_key: &str) {
+        self.shutdown_session_inner(session_key, false).await;
+    }
+
+    /// Shuts down the active subprocess and forgets any cached `acp_session_id` so the next
+    /// turn starts from a fresh `session/new` (used after inactivity timeout or corruption).
+    pub async fn discard_session(&self, session_key: &str) {
+        self.shutdown_session_inner(session_key, true).await;
+    }
+
+    async fn shutdown_session_inner(&self, session_key: &str, clear_session_id: bool) {
         let session_lock = {
             let entries = self.entries.lock().expect("supervisor entries lock");
             entries
@@ -376,13 +414,22 @@ impl AcpSessionSupervisor {
         if let Some(session) = session {
             session.shutdown().await;
             let mut entries = self.entries.lock().expect("supervisor entries lock");
-            if let Some(entry) = entries.get_mut(session_key)
-                && entry
+            if let Some(entry) = entries.get_mut(session_key) {
+                if entry
                     .session
                     .as_ref()
                     .is_some_and(|current| Arc::ptr_eq(current, &session))
-            {
-                entry.session = None;
+                {
+                    entry.session = None;
+                }
+                if clear_session_id {
+                    entry.acp_session_id = None;
+                }
+            }
+        } else if clear_session_id {
+            let mut entries = self.entries.lock().expect("supervisor entries lock");
+            if let Some(entry) = entries.get_mut(session_key) {
+                entry.acp_session_id = None;
             }
         }
     }
@@ -447,11 +494,9 @@ impl AcpSessionSupervisor {
                         return Ok((session, SessionAttachMode::Loaded, loaded.replayed_events));
                     }
                     Err(error) => {
-                        if !self.should_fallback_to_new(&session, &error) {
-                            session.shutdown().await;
-                            return Err(error);
-                        }
-                        return self.fallback_to_new(session, &session_ctx).await;
+                        return self
+                            .handle_resume_or_load_error(session, &launch_ctx, &session_ctx, error)
+                            .await;
                     }
                 }
             } else {
@@ -468,19 +513,20 @@ impl AcpSessionSupervisor {
                                     ));
                                 }
                                 Err(load_error) => {
-                                    if !self.should_fallback_to_new(&session, &load_error) {
-                                        session.shutdown().await;
-                                        return Err(load_error);
-                                    }
-                                    return self.fallback_to_new(session, &session_ctx).await;
+                                    return self
+                                        .handle_resume_or_load_error(
+                                            session,
+                                            &launch_ctx,
+                                            &session_ctx,
+                                            load_error,
+                                        )
+                                        .await;
                                 }
                             }
                         }
-                        if !self.should_fallback_to_new(&session, &error) {
-                            session.shutdown().await;
-                            return Err(error);
-                        }
-                        return self.fallback_to_new(session, &session_ctx).await;
+                        return self
+                            .handle_resume_or_load_error(session, &launch_ctx, &session_ctx, error)
+                            .await;
                     }
                 }
             }
@@ -493,11 +539,51 @@ impl AcpSessionSupervisor {
         Ok((session, SessionAttachMode::CreatedNew, Vec::new()))
     }
 
-    fn should_fallback_to_new(&self, session: &AcpSession, error: &AcpError) -> bool {
-        self.config.fallback_to_new_on_resume_error
-            && !session.is_closed()
-            && !error.is_auth_required()
-            && !error.is_timeout()
+    async fn handle_resume_or_load_error(
+        &self,
+        session: Arc<AcpSession>,
+        launch_ctx: &AcpLaunchContext,
+        session_ctx: &AcpSessionContext,
+        error: AcpError,
+    ) -> AcpResult<(Arc<AcpSession>, SessionAttachMode, Vec<AcpStreamEvent>)> {
+        if !self.config.fallback_to_new_on_resume_error || error.is_auth_required() {
+            session.shutdown().await;
+            return Err(error);
+        }
+        if error.is_timeout() {
+            // A timed-out `session/resume` or `session/load` may leave the subprocess busy
+            // processing the stale request. Recycle the subprocess cleanly and start a fresh
+            // session so a single slow/poisoned saved session ID never traps the lane in a loop.
+            return self
+                .respawn_fallback_to_new(session, launch_ctx, session_ctx)
+                .await;
+        }
+        if session.is_closed() {
+            session.shutdown().await;
+            return Err(error);
+        }
+        self.fallback_to_new(session, session_ctx).await
+    }
+
+    async fn respawn_fallback_to_new(
+        &self,
+        stale_session: Arc<AcpSession>,
+        launch_ctx: &AcpLaunchContext,
+        session_ctx: &AcpSessionContext,
+    ) -> AcpResult<(Arc<AcpSession>, SessionAttachMode, Vec<AcpStreamEvent>)> {
+        stale_session.shutdown().await;
+        let fresh = AcpSession::spawn(
+            Arc::clone(&self.driver),
+            launch_ctx,
+            Arc::clone(&self.permission_handler),
+            self.config.session.clone(),
+        )
+        .await?;
+        if let Err(init_error) = fresh.initialize().await {
+            fresh.shutdown().await;
+            return Err(init_error);
+        }
+        self.fallback_to_new(fresh, session_ctx).await
     }
 
     async fn fallback_to_new(

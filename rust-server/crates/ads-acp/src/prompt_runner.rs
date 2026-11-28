@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 
@@ -29,14 +29,16 @@ use tokio::sync::watch;
 use crate::bridge::{AcpStreamEvent, AutoApprovePermissionHandler, AutoDenyPermissionHandler};
 use crate::driver::AcpDriver;
 use crate::protocol::{ConfigOptionsState, ContentBlock, SessionMode, StopReason};
-use crate::session::{AcpPromptRequest, DesiredConfigAlignment};
+use crate::session::{
+    AcpPromptRequest, AcpTurnLiveness, DesiredConfigAlignment, spawn_inactivity_watchdog,
+};
 use crate::supervisor::{
     AcpSessionSupervisor, AcpSupervisorConfig, SessionAttachMode, SupervisedSessionRequest,
 };
 
 pub const ACP_THREAD_NAMESPACE: &str = "web_acp_thread";
 
-const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
+pub const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 const DEFAULT_MAX_IMAGE_BYTES: usize = 25 * 1024 * 1024;
 const DEFAULT_MAX_REQUEST_IMAGE_BYTES: usize = 50 * 1024 * 1024;
 const MAX_INJECTED_HISTORY_ENTRIES: usize = 16;
@@ -62,7 +64,7 @@ impl AcpPromptRunnerConfig {
         let agent_id = driver.id().to_string();
         Self {
             driver,
-            supervisor_config: AcpSupervisorConfig::default(),
+            supervisor_config: AcpSupervisorConfig::from_env(),
             agent_id,
             account_id: None,
             default_model: None,
@@ -421,6 +423,16 @@ impl AcpPromptRunner {
         };
         let attempts = ads_native::max_attempts(self.config.upstream_retry_count);
         let turn_cancel_rx = cancel_rx.clone();
+        let timeout_message = || {
+            let idle_label = self
+                .config
+                .idle_timeout
+                .map(format_idle_duration)
+                .unwrap_or_else(|| "the configured inactivity window".to_string());
+            format!(
+                "ACP agent sent no activity for {idle_label}; stopped the turn and restarted the agent process."
+            )
+        };
 
         let mut completed_turn = None;
         for attempt in 1..=attempts {
@@ -435,11 +447,10 @@ impl AcpPromptRunner {
                 );
             }
 
-            let last_activity_ms = Arc::new(AtomicI64::new(now_unix_millis()));
+            let liveness = AcpTurnLiveness::new();
             let timed_out = Arc::new(AtomicBool::new(false));
             let unsafe_to_retry = Arc::new(AtomicBool::new(false));
-            let activity_context =
-                wrap_context_with_activity(&context, Arc::clone(&last_activity_ms));
+            let activity_context = wrap_context_with_activity(&context, Arc::clone(&liveness));
 
             let prompt_req = AcpPromptRequest::with_blocks(
                 entry.client_message_id.clone(),
@@ -453,18 +464,23 @@ impl AcpPromptRunner {
             })
             .with_context(activity_context)
             .with_cancel(cancel_rx.clone())
+            .with_liveness(Arc::clone(&liveness))
             .with_retry_fence(Arc::clone(&unsafe_to_retry));
 
             let (watchdog_stop_tx, watchdog_stop_rx) = watch::channel(false);
-            let watchdog_handle = self.config.idle_timeout.map(|timeout| {
-                spawn_idle_watchdog(
-                    timeout,
-                    Arc::clone(&last_activity_ms),
-                    Arc::clone(&timed_out),
-                    cancel_tx.clone(),
-                    watchdog_stop_rx,
-                )
-            });
+            let watchdog_handle = self
+                .config
+                .idle_timeout
+                .filter(|timeout| !timeout.is_zero())
+                .map(|timeout| {
+                    spawn_inactivity_watchdog(
+                        timeout,
+                        Arc::clone(&liveness),
+                        Arc::clone(&timed_out),
+                        cancel_tx.clone(),
+                        watchdog_stop_rx,
+                    )
+                });
 
             let turn_res = supervisor.run_turn(session_req.clone(), prompt_req).await;
             let _ = watchdog_stop_tx.send(true);
@@ -474,6 +490,13 @@ impl AcpPromptRunner {
 
             let is_timed_out = timed_out.load(Ordering::Acquire);
             let is_signal_cancelled = !is_timed_out && *turn_cancel_rx.borrow();
+
+            if is_timed_out {
+                // Recycle the stalled subprocess and forget its in-memory session ID (matching
+                // T3 Code's inactivity recovery) so the next turn starts cleanly without resuming
+                // a wedged session.
+                supervisor.discard_session(&storage_key).await;
+            }
 
             match turn_res {
                 Ok(supervised) => {
@@ -527,7 +550,7 @@ impl AcpPromptRunner {
                     let is_cancelled =
                         !is_timed_out && (error.is_cancelled() || is_signal_cancelled);
                     let message = if is_timed_out {
-                        "ACP turn timed out waiting for agent response".to_string()
+                        timeout_message()
                     } else if is_cancelled {
                         "已中断，输出可能不完整".to_string()
                     } else {
@@ -568,15 +591,11 @@ impl AcpPromptRunner {
             );
         };
 
-        if !supervised.turn.session_id.trim().is_empty() {
-            save_acp_session_id(&self.db, &storage_key, &supervised.turn.session_id)?;
-        }
-
         if is_timed_out {
             return self.fail_after_user_persisted(
                 &entry,
                 &context,
-                "ACP turn timed out waiting for agent response".to_string(),
+                timeout_message(),
                 "acp_timeout",
                 false,
                 false,
@@ -591,6 +610,10 @@ impl AcpPromptRunner {
                 false,
                 false,
             );
+        }
+
+        if !supervised.turn.session_id.trim().is_empty() {
+            save_acp_session_id(&self.db, &storage_key, &supervised.turn.session_id)?;
         }
 
         let raw_output = supervised.turn.response_text.trim().to_string();
@@ -891,43 +914,29 @@ fn collect_assistant_phases(
 
 fn wrap_context_with_activity(
     inner: &PromptRunContext,
-    last_activity_ms: Arc<AtomicI64>,
+    liveness: Arc<AcpTurnLiveness>,
 ) -> PromptRunContext {
     let inner = inner.clone();
     PromptRunContext::new(Arc::new(move |payload: Value| {
-        last_activity_ms.store(now_unix_millis(), Ordering::Release);
+        liveness.touch();
         inner.emit(payload);
     }))
 }
 
-fn spawn_idle_watchdog(
-    idle_timeout: Duration,
-    last_activity_ms: Arc<AtomicI64>,
-    timed_out: Arc<AtomicBool>,
-    cancel_tx: watch::Sender<bool>,
-    mut stop_rx: watch::Receiver<bool>,
-) -> tokio::task::JoinHandle<()> {
-    let poll_interval = (idle_timeout / 4).max(Duration::from_millis(25));
-    let timeout_ms = i64::try_from(idle_timeout.as_millis()).unwrap_or(i64::MAX);
-    tokio::spawn(async move {
-        loop {
-            tokio::select! {
-                _ = tokio::time::sleep(poll_interval) => {
-                    let elapsed = now_unix_millis().saturating_sub(last_activity_ms.load(Ordering::Acquire));
-                    if elapsed >= timeout_ms {
-                        timed_out.store(true, Ordering::Release);
-                        let _ = cancel_tx.send(true);
-                        return;
-                    }
-                }
-                changed = stop_rx.changed() => {
-                    if changed.is_err() || *stop_rx.borrow() {
-                        return;
-                    }
-                }
-            }
+fn format_idle_duration(duration: Duration) -> String {
+    let secs = duration.as_secs();
+    if secs >= 60 && secs % 60 == 0 {
+        let mins = secs / 60;
+        if mins == 1 {
+            "1 minute".to_string()
+        } else {
+            format!("{mins} minutes")
         }
-    })
+    } else if secs > 0 {
+        format!("{secs}s")
+    } else {
+        format!("{}ms", duration.as_millis())
+    }
 }
 
 async fn wait_until_cancelled(cancel: &mut watch::Receiver<bool>) {

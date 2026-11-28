@@ -907,8 +907,11 @@ impl AgentMessageService {
         let prompt_queue = Arc::clone(&self.prompt_queue);
         let runner = Arc::clone(&self.runner);
         tokio::spawn(async move {
+            const MAX_TRANSIENT_RENEW_RETRIES: usize = 5;
+            const TRANSIENT_RENEW_RETRY_DELAY: Duration = Duration::from_millis(150);
             let mut ticker = tokio::time::interval(LANE_TURN_RENEW_MS);
             ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            let mut last_renewed_ms = ads_contract::time::now_unix_millis();
             loop {
                 ticker.tick().await;
                 if !prompt_queue.is_owner() {
@@ -916,24 +919,37 @@ impl AgentMessageService {
                     runner.abort_lane_turn(&turn);
                     return;
                 }
-                let now = ads_contract::time::now_unix_millis();
-                let Ok(connection) = db.connect() else {
-                    lease_lost.store(true, Ordering::SeqCst);
-                    runner.abort_lane_turn(&turn);
-                    return;
-                };
-                let Ok(store) = AgentMessageStore::new(&connection) else {
-                    lease_lost.store(true, Ordering::SeqCst);
-                    runner.abort_lane_turn(&turn);
-                    return;
-                };
-                if !store
-                    .renew(&message_id, &worker_id, now + LANE_TURN_LEASE_MS, now)
-                    .unwrap_or(false)
+                match renew_agent_message_lease_with_retry(
+                    &db,
+                    &message_id,
+                    &worker_id,
+                    MAX_TRANSIENT_RENEW_RETRIES,
+                    TRANSIENT_RENEW_RETRY_DELAY,
+                )
+                .await
                 {
-                    lease_lost.store(true, Ordering::SeqCst);
-                    runner.abort_lane_turn(&turn);
-                    return;
+                    LeaseRenewOutcome::Renewed(now) => {
+                        last_renewed_ms = now;
+                    }
+                    LeaseRenewOutcome::Lost => {
+                        lease_lost.store(true, Ordering::SeqCst);
+                        runner.abort_lane_turn(&turn);
+                        return;
+                    }
+                    LeaseRenewOutcome::TransientDbError(error) => {
+                        let now = ads_contract::time::now_unix_millis();
+                        if now.saturating_sub(last_renewed_ms) >= LANE_TURN_LEASE_MS {
+                            eprintln!(
+                                "[ads-agent-messages] aborting turn after lease expired during DB contention ({message_id}): {error}"
+                            );
+                            lease_lost.store(true, Ordering::SeqCst);
+                            runner.abort_lane_turn(&turn);
+                            return;
+                        }
+                        eprintln!(
+                            "[ads-agent-messages] transient DB error renewing lease ({message_id}); keeping turn alive until next tick: {error}"
+                        );
+                    }
                 }
             }
         })
@@ -970,6 +986,44 @@ impl AgentMessageService {
     fn report(&self, message: String) {
         eprintln!("[ads-agent-messages] {message}");
     }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum LeaseRenewOutcome {
+    Renewed(i64),
+    Lost,
+    TransientDbError(String),
+}
+
+async fn renew_agent_message_lease_with_retry(
+    db: &StateDb,
+    message_id: &str,
+    worker_id: &str,
+    max_retries: usize,
+    retry_delay: Duration,
+) -> LeaseRenewOutcome {
+    let attempts = max_retries.saturating_add(1).max(1);
+    let mut last_error = None;
+    for attempt in 1..=attempts {
+        let now = ads_contract::time::now_unix_millis();
+        let outcome = db.connect().and_then(|connection| {
+            let store = AgentMessageStore::new(&connection)?;
+            store.renew(message_id, worker_id, now + LANE_TURN_LEASE_MS, now)
+        });
+        match outcome {
+            Ok(true) => return LeaseRenewOutcome::Renewed(now),
+            Ok(false) => return LeaseRenewOutcome::Lost,
+            Err(error) => {
+                last_error = Some(error.to_string());
+                if attempt < attempts && !retry_delay.is_zero() {
+                    tokio::time::sleep(retry_delay).await;
+                }
+            }
+        }
+    }
+    LeaseRenewOutcome::TransientDbError(
+        last_error.unwrap_or_else(|| "SQLite lease renewal failed".to_string()),
+    )
 }
 
 fn prompt_lane(message: &AgentMessageRecord) -> PromptQueueLane {
@@ -2575,5 +2629,104 @@ mod tests {
         let turn_service = build_handoff_lane_turn(&db, &enqueued.message);
         assert_eq!(turn_service.payload["model"], "model-svc");
         assert_eq!(turn_service.payload["modelReasoningEffort"], "medium");
+    }
+
+    #[tokio::test]
+    async fn renew_agent_message_lease_retries_transient_sqlite_lock_and_detects_loss() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let db = StateDb::open(dir.path().join("state.db")).expect("state db");
+        let now = ads_contract::time::now_unix_millis();
+        let message_id = "review-verdict:job-lease-retry";
+        {
+            let conn = db.connect().expect("conn");
+            conn.execute(
+                "INSERT INTO action_jobs
+                   (id, project_id, job_kind, issue_title, status, created_at, updated_at,
+                    requires_agent_handoff, agent_handoff_ready)
+                 VALUES ('job-lease-retry', 'project-1', 'pull_request_review',
+                         'Lease retry', 'completed', 1, 1, 1, 1)",
+                [],
+            )
+            .expect("seed action_job");
+            let store = AgentMessageStore::new(&conn).expect("store");
+            let mut payload = serde_json::Map::new();
+            payload.insert("text".to_string(), json!("verdict"));
+            store
+                .enqueue(
+                    ads_state::NewAgentMessage {
+                        message_id: message_id.to_string(),
+                        auth_user_id: "user-1".to_string(),
+                        user_id: 1,
+                        project_id: "project-1".to_string(),
+                        chat_session_id: "acopilot".to_string(),
+                        history_key: "hk".to_string(),
+                        logical_history_key: "hk".to_string(),
+                        lane_namespace: WEB_ACOPILOT_NAMESPACE.to_string(),
+                        lane_generation: 1,
+                        workspace_root: "/repo".to_string(),
+                        from_lane: "actions".to_string(),
+                        from_role: "reviewer".to_string(),
+                        to_lane: "acopilot".to_string(),
+                        to_role: "acopilot".to_string(),
+                        kind: REVIEW_VERDICT_HANDOFF_KIND.to_string(),
+                        correlation_id: "job-lease-retry".to_string(),
+                        issue_id: Some(757),
+                        issue_title: "Lease retry".to_string(),
+                        issue_url: None,
+                        pr_number: Some(757),
+                        branch: Some("fix/757".to_string()),
+                        base_sha: Some("base".to_string()),
+                        head_sha: Some("head".to_string()),
+                        payload,
+                        source_created_at: now,
+                        force_superseded: false,
+                        created_at: now,
+                    },
+                    now,
+                )
+                .expect("enqueue");
+            let claimed = store
+                .claim(message_id, "worker-a", now + LANE_TURN_LEASE_MS, now)
+                .expect("claim")
+                .expect("claimed row");
+            assert_eq!(claimed.message_id, message_id);
+        }
+
+        // 1. Authoritative lease loss (wrong worker_id) returns Lost immediately.
+        let lost = renew_agent_message_lease_with_retry(
+            &db,
+            message_id,
+            "worker-b",
+            3,
+            Duration::from_millis(10),
+        )
+        .await;
+        assert_eq!(lost, LeaseRenewOutcome::Lost);
+
+        // 2. Temporary exclusive SQLite lock is tolerated and recovers once released.
+        let locker_db = db.clone();
+        let (locked_tx, locked_rx) = tokio::sync::oneshot::channel::<()>();
+        let locker = std::thread::spawn(move || {
+            let conn = locker_db.connect().expect("locker conn");
+            conn.execute_batch("BEGIN EXCLUSIVE").expect("lock db");
+            let _ = locked_tx.send(());
+            std::thread::sleep(Duration::from_millis(200));
+            conn.execute_batch("COMMIT").expect("unlock db");
+        });
+        let _ = locked_rx.await;
+
+        let renewed = renew_agent_message_lease_with_retry(
+            &db,
+            message_id,
+            "worker-a",
+            5,
+            Duration::from_millis(50),
+        )
+        .await;
+        locker.join().expect("locker thread");
+        assert!(
+            matches!(renewed, LeaseRenewOutcome::Renewed(_)),
+            "expected transient SQLite lock to retry and succeed, got {renewed:?}"
+        );
     }
 }

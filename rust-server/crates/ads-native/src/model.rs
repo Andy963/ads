@@ -311,6 +311,7 @@ fn request_options(config: Option<&Value>) -> NativeRequestOptions {
             == NativeProviderCapabilityStatus::Unsupported)
             .then_some(false),
         include_usage: capabilities.usage == NativeProviderCapabilityStatus::Supported,
+        stream_idle_timeout: None,
     }
 }
 

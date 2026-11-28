@@ -2,10 +2,11 @@ use std::collections::{HashMap, VecDeque};
 use std::future::Future;
 use std::pin::Pin;
 use std::process::Stdio;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
 use std::time::Duration;
 
+use ads_contract::time::now_unix_millis;
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::process::{ChildStderr, Command};
@@ -16,8 +17,10 @@ use crate::error::{AcpError, AcpResult};
 use crate::protocol::JsonRpcId;
 
 pub const DEFAULT_RPC_TIMEOUT: Duration = Duration::from_secs(60);
+pub const DEFAULT_LIFECYCLE_RPC_TIMEOUT: Duration = Duration::from_secs(180);
 pub const DEFAULT_GRACEFUL_EXIT_TIMEOUT: Duration = Duration::from_secs(2);
 pub const DEFAULT_TERM_EXIT_TIMEOUT: Duration = Duration::from_secs(1);
+pub const ACP_RPC_TIMEOUT_ENV: &str = "ADS_ACP_RPC_TIMEOUT_MS";
 const PIPE_DRAIN_WAIT_ON_EXIT: Duration = Duration::from_millis(250);
 const MAX_STDERR_TAIL_LINES: usize = 32;
 const MAX_MALFORMED_LINE_LEN: usize = 512;
@@ -32,6 +35,9 @@ type CloseHandler = Arc<dyn Fn(AcpError) + Send + Sync>;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AcpTransportConfig {
     pub rpc_timeout: Duration,
+    /// Timeout for heavier lifecycle RPCs (`initialize`, `session/new`, `session/resume`,
+    /// `session/load`) that may unpack binaries or replay large conversation histories.
+    pub lifecycle_rpc_timeout: Duration,
     pub graceful_exit_timeout: Duration,
     pub term_exit_timeout: Duration,
 }
@@ -40,8 +46,39 @@ impl Default for AcpTransportConfig {
     fn default() -> Self {
         Self {
             rpc_timeout: DEFAULT_RPC_TIMEOUT,
+            lifecycle_rpc_timeout: DEFAULT_LIFECYCLE_RPC_TIMEOUT,
             graceful_exit_timeout: DEFAULT_GRACEFUL_EXIT_TIMEOUT,
             term_exit_timeout: DEFAULT_TERM_EXIT_TIMEOUT,
+        }
+    }
+}
+
+impl AcpTransportConfig {
+    pub fn from_env() -> Self {
+        let mut config = Self::default();
+        if let Some(ms) = std::env::var(ACP_RPC_TIMEOUT_ENV)
+            .ok()
+            .and_then(|value| value.trim().parse::<u64>().ok())
+            .filter(|ms| *ms > 0)
+        {
+            let duration = Duration::from_millis(ms);
+            config.rpc_timeout = duration;
+            config.lifecycle_rpc_timeout = duration.max(DEFAULT_LIFECYCLE_RPC_TIMEOUT);
+        }
+        config
+    }
+
+    pub fn with_rpc_timeout(mut self, timeout: Duration) -> Self {
+        self.rpc_timeout = timeout;
+        self.lifecycle_rpc_timeout = timeout;
+        self
+    }
+
+    pub fn effective_lifecycle_rpc_timeout(&self) -> Duration {
+        if self.lifecycle_rpc_timeout.is_zero() {
+            self.rpc_timeout
+        } else {
+            self.lifecycle_rpc_timeout
         }
     }
 }
@@ -141,6 +178,7 @@ struct TransportInner {
     exit_code: std::sync::Mutex<Option<i32>>,
     fatal_error: std::sync::Mutex<Option<AcpError>>,
     stderr_tail: std::sync::Mutex<VecDeque<String>>,
+    last_io_activity_ms: Arc<AtomicI64>,
     closed_notify: Notify,
     exit_notify: Notify,
     pipe_drain_notify: Notify,
@@ -282,6 +320,7 @@ impl AcpTransport {
             exit_code: std::sync::Mutex::new(None),
             fatal_error: std::sync::Mutex::new(None),
             stderr_tail: std::sync::Mutex::new(VecDeque::new()),
+            last_io_activity_ms: Arc::new(AtomicI64::new(now_unix_millis())),
             closed_notify: Notify::new(),
             exit_notify: Notify::new(),
             pipe_drain_notify: Notify::new(),
@@ -312,6 +351,14 @@ impl AcpTransport {
 
     pub fn stderr_tail(&self) -> Option<String> {
         self.inner.stderr_tail_string()
+    }
+
+    pub fn last_io_activity_ms(&self) -> i64 {
+        self.inner.last_io_activity_ms.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn io_activity_handle(&self) -> Arc<AtomicI64> {
+        Arc::clone(&self.inner.last_io_activity_ms)
     }
 
     pub(crate) fn closed_error(&self) -> AcpError {
@@ -729,6 +776,9 @@ where
         let Some(inner) = inner.upgrade() else {
             return;
         };
+        inner
+            .last_io_activity_ms
+            .store(now_unix_millis(), Ordering::Release);
         if !dispatch_line(&inner, &line).await {
             inner.stdout_done.store(true, Ordering::Release);
             inner.pipe_drain_notify.notify_waiters();
@@ -935,6 +985,9 @@ fn drain_stderr(inner: Weak<TransportInner>, stderr: ChildStderr) {
             let Some(inner) = inner.upgrade() else {
                 return;
             };
+            inner
+                .last_io_activity_ms
+                .store(now_unix_millis(), Ordering::Release);
             let mut tail = inner.stderr_tail.lock().expect("stderr tail lock");
             if tail.len() >= MAX_STDERR_TAIL_LINES {
                 tail.pop_front();
